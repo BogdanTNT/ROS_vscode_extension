@@ -26,6 +26,11 @@
           "type": "string",
           "default": "",
           "description": "Path to your ROS setup.bash (e.g. /opt/ros/humble/setup.bash). If empty, the extension will auto-detect and fall back to ~/.bashrc."
+        },
+        "rosDevToolkit.launchInExternalTerminal": {
+          "type": "boolean",
+          "default": true,
+          "description": "Launch ROS launch files in an external terminal window so GUI apps (RViz, Gazebo, rqt) can display correctly."
         }
       }
     },

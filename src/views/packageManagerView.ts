@@ -8,7 +8,7 @@ import { getWebviewHtml } from './webviewHelper';
 export class PackageManagerViewProvider implements vscode.WebviewViewProvider {
     private _view?: vscode.WebviewView;
     private _pinnedLaunchFiles: string[] = [];
-    private _launchArgs: Record<string, string> = {};
+    private _launchArgConfigs: Record<string, { selectedId: string; configs: Array<{ id: string; name: string; args: string }> }> = {};
 
     constructor(
         private readonly _extensionUri: vscode.Uri,
@@ -44,7 +44,7 @@ export class PackageManagerViewProvider implements vscode.WebviewViewProvider {
                     await this._openLaunchFile(msg.path);
                     break;
                 case 'launchFile':
-                    await this._launchFile(msg.pkg, msg.file, msg.path);
+                    await this._launchFile(msg.pkg, msg.file, msg.path, msg.args, msg.argsName);
                     break;
                 case 'togglePin':
                     await this._togglePin(msg.path);
@@ -52,10 +52,32 @@ export class PackageManagerViewProvider implements vscode.WebviewViewProvider {
                 case 'setLaunchArgs':
                     await this._setLaunchArgs(msg.path, msg.args);
                     break;
+                case 'setLaunchArgConfigs':
+                    await this._setLaunchArgConfigs(msg.path, msg.selectedId, msg.configs);
+                    break;
+                case 'selectLaunchArgConfig':
+                    await this._selectLaunchArgConfig(msg.path, msg.id);
+                    break;
                 case 'requestLaunchArgs':
                     await this._sendLaunchArgOptions(msg.path);
                     break;
+                case 'killTerminal':
+                    await this._killTerminal(msg.id);
+                    break;
+                case 'focusTerminal':
+                    await this._focusTerminal(msg.id);
+                    break;
+                case 'setPreferredTerminal':
+                    await this._setPreferredTerminal(msg.id);
+                    break;
             }
+        });
+
+        this._ros.onTerminalsChanged((terminals) => {
+            this._view?.webview.postMessage({
+                command: 'terminalList',
+                terminals,
+            });
         });
 
         // Send the initial package list once the view is visible
@@ -83,13 +105,31 @@ export class PackageManagerViewProvider implements vscode.WebviewViewProvider {
 
     private async _sendPackageList() {
         this._pinnedLaunchFiles = this._context.globalState.get<string[]>('pinnedLaunchFiles', []);
-        this._launchArgs = this._context.globalState.get<Record<string, string>>('launchArgs', {});
+        const legacyArgs = this._context.globalState.get<Record<string, string>>('launchArgs', {});
+        this._launchArgConfigs = this._context.globalState.get<Record<string, { selectedId: string; configs: Array<{ id: string; name: string; args: string }> }>>('launchArgConfigs', {});
+
+        // Migrate legacy single-args to config list
+        let migrated = false;
+        for (const [path, args] of Object.entries(legacyArgs)) {
+            if (!this._launchArgConfigs[path]) {
+                this._launchArgConfigs[path] = {
+                    selectedId: 'default',
+                    configs: [{ id: 'default', name: 'default', args }],
+                };
+                migrated = true;
+            }
+        }
+        if (migrated) {
+            await this._context.globalState.update('launchArgConfigs', this._launchArgConfigs);
+        }
         const packages = await this._ros.listWorkspacePackageDetails();
         this._view?.webview.postMessage({
             command: 'packageList',
             packages,
             pinned: this._pinnedLaunchFiles,
-            launchArgs: this._launchArgs,
+            launchArgConfigs: this._launchArgConfigs,
+            terminals: this._ros.getTrackedTerminals(),
+            preferredTerminalId: this._ros.getPreferredTerminalId(),
         });
     }
 
@@ -110,12 +150,47 @@ export class PackageManagerViewProvider implements vscode.WebviewViewProvider {
         await vscode.window.showTextDocument(uri, { preview: false });
     }
 
-    private async _launchFile(pkg: string, file: string, path: string) {
+    private async _launchFile(
+        pkg: string,
+        file: string,
+        path: string,
+        argsOverride?: string,
+        argsNameOverride?: string,
+    ) {
         if (!pkg || !file) {
             return;
         }
-        const args = path ? this._launchArgs[path] : undefined;
-        this._ros.launchFile(pkg, file, args);
+        const config = path ? this._launchArgConfigs[path] : undefined;
+        const selectedId = config?.selectedId;
+        const selectedCfg = selectedId
+            ? config?.configs.find((c) => c.id === selectedId)
+            : undefined;
+
+        const args = argsOverride !== undefined
+            ? argsOverride
+            : selectedCfg?.args;
+
+        const argsLabel = argsNameOverride ?? selectedCfg?.name;
+
+        this._ros.launchFile(pkg, file, args, path, argsLabel);
+    }
+
+    private async _killTerminal(id: string) {
+        if (!id) {
+            return;
+        }
+        this._ros.killTrackedTerminal(id);
+    }
+
+    private async _focusTerminal(id: string) {
+        if (!id) {
+            return;
+        }
+        this._ros.focusTrackedTerminal(id);
+    }
+
+    private async _setPreferredTerminal(id: string) {
+        this._ros.setPreferredTerminal(id);
     }
 
     private async _togglePin(path: string) {
@@ -137,15 +212,59 @@ export class PackageManagerViewProvider implements vscode.WebviewViewProvider {
             return;
         }
 
-        const current = this._context.globalState.get<Record<string, string>>('launchArgs', {});
+        const current = this._context.globalState.get<Record<string, { selectedId: string; configs: Array<{ id: string; name: string; args: string }> }>>('launchArgConfigs', {});
+        const trimmed = args?.trim() ?? '';
 
-        if (!args || args.trim().length === 0) {
-            delete current[path];
+        if (!current[path]) {
+            current[path] = {
+                selectedId: 'default',
+                configs: [{ id: 'default', name: 'default', args: trimmed }],
+            };
         } else {
-            current[path] = args.trim();
+            const cfg = current[path];
+            const active = cfg.configs.find((c) => c.id === cfg.selectedId);
+            if (active) {
+                active.args = trimmed;
+            }
         }
 
-        await this._context.globalState.update('launchArgs', current);
+        await this._context.globalState.update('launchArgConfigs', current);
+        await this._sendPackageList();
+    }
+
+    private async _setLaunchArgConfigs(
+        path: string,
+        selectedId: string,
+        configs: Array<{ id: string; name: string; args: string }>,
+    ) {
+        if (!path) {
+            return;
+        }
+
+        const current = this._context.globalState.get<Record<string, { selectedId: string; configs: Array<{ id: string; name: string; args: string }> }>>('launchArgConfigs', {});
+        current[path] = {
+            selectedId,
+            configs: configs.map((c) => ({
+                id: c.id,
+                name: c.name?.trim() || 'config',
+                args: c.args?.trim() || '',
+            })),
+        };
+
+        await this._context.globalState.update('launchArgConfigs', current);
+        await this._sendPackageList();
+    }
+
+    private async _selectLaunchArgConfig(path: string, id: string) {
+        if (!path || !id) {
+            return;
+        }
+        const current = this._context.globalState.get<Record<string, { selectedId: string; configs: Array<{ id: string; name: string; args: string }> }>>('launchArgConfigs', {});
+        if (!current[path]) {
+            return;
+        }
+        current[path].selectedId = id;
+        await this._context.globalState.update('launchArgConfigs', current);
         await this._sendPackageList();
     }
 
@@ -178,6 +297,13 @@ export class PackageManagerViewProvider implements vscode.WebviewViewProvider {
     </div>
 
     <div id="pkgStatus" class="text-muted text-sm mb"></div>
+
+    <div class="subsection">
+        <h3>Active Launch Terminals</h3>
+        <ul class="item-list" id="terminalList">
+            <li class="text-muted">No active launch terminals</li>
+        </ul>
+    </div>
 
     <div class="subsection">
         <h3>Pinned Launch Files</h3>
@@ -230,6 +356,18 @@ export class PackageManagerViewProvider implements vscode.WebviewViewProvider {
             <button class="secondary small" id="btnCloseArgs">✕</button>
         </div>
         <div class="modal-body">
+                    <div class="config-row">
+                        <label>Configurations</label>
+                        <div class="config-actions">
+                            <button class="secondary small" id="btnAddConfig">＋ Add</button>
+                            <button class="secondary small" id="btnRemoveConfig">－ Remove</button>
+                        </div>
+                    </div>
+                    <div class="config-list" id="configList"></div>
+
+                    <label for="configName">Config name</label>
+                    <input type="text" id="configName" placeholder="default" />
+
             <label for="argsInput">Arguments</label>
             <input type="text" id="argsInput" placeholder="use_sim_time:=true namespace:=robot1" />
 
@@ -262,9 +400,14 @@ const pkgStatusEl    = document.getElementById('pkgStatus');
 const filterInput    = document.getElementById('pkgFilter');
 const pkgCount       = document.getElementById('pkgCount');
 const pinnedList     = document.getElementById('pinnedList');
+const terminalList   = document.getElementById('terminalList');
 const argsModal      = document.getElementById('argsModal');
 const argsBackdrop   = document.getElementById('argsBackdrop');
 const argsInput      = document.getElementById('argsInput');
+const configName     = document.getElementById('configName');
+const configList     = document.getElementById('configList');
+const btnAddConfig   = document.getElementById('btnAddConfig');
+const btnRemoveConfig = document.getElementById('btnRemoveConfig');
 const argsList       = document.getElementById('argsList');
 const btnInsertAll   = document.getElementById('btnInsertAll');
 const btnSaveArgs    = document.getElementById('btnSaveArgs');
@@ -273,9 +416,12 @@ const btnCloseArgs   = document.getElementById('btnCloseArgs');
 
 let allPackages = [];
 let pinnedPaths = [];
-let launchArgs = {};
+let launchArgConfigs = {};
 let argsOptions = [];
 let currentArgsPath = '';
+let terminals = [];
+let preferredTerminalId = '';
+let currentConfigId = '';
 
 const openCreate = () => {
     createModal.classList.remove('hidden');
@@ -290,9 +436,15 @@ const closeCreate = () => {
 
 const openArgsModal = (path) => {
     currentArgsPath = path;
-    argsInput.value = launchArgs[path] || '';
+    const cfg = launchArgConfigs[path] || { selectedId: 'default', configs: [{ id: 'default', name: 'default', args: '' }] };
+    launchArgConfigs[path] = cfg;
+    currentConfigId = cfg.selectedId || (cfg.configs[0]?.id || 'default');
+    const currentCfg = cfg.configs.find(c => c.id === currentConfigId) || cfg.configs[0];
+    argsInput.value = currentCfg?.args || '';
+    configName.value = currentCfg?.name || '';
     argsOptions = [];
     renderArgsOptions();
+    renderConfigTabs();
     argsModal.classList.remove('hidden');
     argsInput.focus();
     if (currentArgsPath) {
@@ -332,9 +484,105 @@ const renderArgsOptions = () => {
     });
 };
 
+const renderConfigTabs = () => {
+    if (!configList) { return; }
+    const cfg = launchArgConfigs[currentArgsPath];
+    if (!cfg || !cfg.configs?.length) {
+        configList.innerHTML = '<span class="text-muted text-sm">No configs</span>';
+        return;
+    }
+
+    configList.innerHTML = cfg.configs.map(c => {
+        const active = c.id === currentConfigId ? ' active' : '';
+        return '<button class="config-pill' + active + '" data-id="' + c.id + '">' + c.name + '</button>';
+    }).join('');
+
+    configList.querySelectorAll('.config-pill').forEach(el => {
+        el.addEventListener('click', () => {
+            const id = el.dataset.id;
+            if (!id) { return; }
+            currentConfigId = id;
+            const cfgItem = cfg.configs.find(c => c.id === currentConfigId);
+            argsInput.value = cfgItem?.args || '';
+            configName.value = cfgItem?.name || '';
+            renderConfigTabs();
+        });
+    });
+};
+
+const getRunningLaunchPaths = () => {
+    const running = new Set();
+    (terminals || []).forEach(t => {
+        if (t.launchPath) { running.add(t.launchPath); }
+    });
+    return running;
+};
+
+const renderTerminals = () => {
+    if (!terminalList) { return; }
+
+    if (!terminals.length) {
+        terminalList.innerHTML = '<li class="text-muted">No active launch terminals</li>';
+        return;
+    }
+
+    terminalList.innerHTML = terminals.map(t => {
+        const kindLabel = t.kind === 'external' ? 'External' : 'VS Code';
+        const kindBadge = '<span class="badge info">' + kindLabel + '</span>';
+        const statusBadge = t.status === 'running'
+            ? '<span class="badge success">running</span>'
+            : '<span class="badge error">closed</span>';
+        const launchLabel = t.launchLabel ? t.launchLabel : 'Idle';
+        const preferred = t.isPreferred ? '<span class="badge info">active</span>' : '';
+        const useBtn = t.kind === 'integrated'
+            ? '<button class="secondary small term-use">Use</button>'
+            : '';
+        const focusBtn = t.kind === 'integrated'
+            ? '<button class="secondary small term-focus">Focus</button>'
+            : '';
+
+        return (
+            '<li class="terminal-item" data-id="' + t.id + '">' +
+                '<div class="terminal-main">' +
+                    '<div class="terminal-title">' +
+                        '<span class="terminal-name">' + t.name + '</span>' +
+                        kindBadge +
+                        statusBadge +
+                        preferred +
+                    '</div>' +
+                    '<div class="terminal-sub text-muted text-sm">' + launchLabel + '</div>' +
+                '</div>' +
+                '<div class="terminal-actions">' +
+                    useBtn +
+                    focusBtn +
+                    '<button class="danger small term-kill">Kill</button>' +
+                '</div>' +
+            '</li>'
+        );
+    }).join('');
+
+    terminalList.querySelectorAll('.terminal-item').forEach(el => {
+        const id = el.dataset.id;
+        const useBtn = el.querySelector('.term-use');
+        const focusBtn = el.querySelector('.term-focus');
+        const killBtn = el.querySelector('.term-kill');
+
+        if (useBtn) {
+            useBtn.addEventListener('click', () => setPreferredTerminal(id));
+        }
+        if (focusBtn) {
+            focusBtn.addEventListener('click', () => focusTerminal(id));
+        }
+        if (killBtn) {
+            killBtn.addEventListener('click', () => killTerminal(id));
+        }
+    });
+};
+
 const renderPackages = () => {
     const list = document.getElementById('pkgList');
     const filter = filterInput.value.trim().toLowerCase();
+    const running = getRunningLaunchPaths();
     const filtered = allPackages.filter(p => {
         if (!filter) { return true; }
         const nameMatch = p.name.toLowerCase().includes(filter);
@@ -352,13 +600,22 @@ const renderPackages = () => {
         const launchFiles = (p.launchFiles || []).map(f => {
             const fileName = f.split('/').pop();
             const isPinned = pinnedPaths.includes(f);
-            const argLabel = launchArgs[f] ? '<span class="badge info">args</span>' : '';
+            const cfg = launchArgConfigs[f];
+            const configButtons = cfg?.configs?.length
+                ? cfg.configs.map(c => {
+                    const active = c.id === cfg.selectedId ? ' active' : '';
+                    return '<button class="config-pill small' + active + '" data-path="' + f + '" data-id="' + c.id + '">' + c.name + '</button>';
+                }).join('')
+                : '';
+            const runningBadge = running.has(f) ? '<span class="badge success">running</span>' : '';
+            const runningClass = running.has(f) ? ' running' : '';
             return (
-                '<li class="launch-item" data-path="' + f + '" data-pkg="' + p.name + '" data-file="' + fileName + '">' +
+                '<li class="launch-item' + runningClass + '" data-path="' + f + '" data-pkg="' + p.name + '" data-file="' + fileName + '">' +
                     '<span class="launch-action launch-run" tabindex="0">Run</span>' +
                     '<span class="launch-action launch-open" tabindex="0">' + fileName + '</span>' +
                     '<button class="args-btn" title="Edit args">⚙</button>' +
-                    argLabel +
+                    '<span class="config-pill-group">' + configButtons + '</span>' +
+                    runningBadge +
                     '<button class="pin-btn ' + (isPinned ? 'pinned' : '') + '" title="Pin">★</button>' +
                 '</li>'
             );
@@ -391,14 +648,31 @@ const renderPackages = () => {
         const openEl = el.querySelector('.launch-open');
         const pinEl = el.querySelector('.pin-btn');
         const argsEl = el.querySelector('.args-btn');
+        const configEls = el.querySelectorAll('.config-pill');
 
-        runEl.addEventListener('click', () => launchFile(el.dataset.pkg, el.dataset.file, el.dataset.path));
-        runEl.addEventListener('keydown', (e) => { if (e.key === 'Enter') { launchFile(el.dataset.pkg, el.dataset.file, el.dataset.path); } });
+        runEl.addEventListener('click', () => launchFile(el.dataset.pkg, el.dataset.file, el.dataset.path, ''));
+        runEl.addEventListener('keydown', (e) => { if (e.key === 'Enter') { launchFile(el.dataset.pkg, el.dataset.file, el.dataset.path, ''); } });
 
         openEl.addEventListener('click', () => openLaunch(el.dataset.path));
         openEl.addEventListener('keydown', (e) => { if (e.key === 'Enter') { openLaunch(el.dataset.path); } });
 
         argsEl.addEventListener('click', () => editLaunchArgs(el.dataset.path));
+
+        configEls.forEach(btn => {
+            btn.addEventListener('click', (e) => {
+                e.stopPropagation();
+                const id = btn.dataset.id;
+                const path = btn.dataset.path;
+                if (id && path) {
+                    selectLaunchArgConfig(path, id);
+                    const cfg = launchArgConfigs[path];
+                    const match = cfg?.configs?.find(c => c.id === id);
+                    const args = match?.args || '';
+                    const argsName = match?.name || '';
+                    launchFile(el.dataset.pkg, el.dataset.file, path, args, argsName);
+                }
+            });
+        });
 
         pinEl.addEventListener('click', () => togglePin(el.dataset.path));
     });
@@ -410,18 +684,28 @@ const renderPinned = () => {
         return;
     }
 
+    const running = getRunningLaunchPaths();
     const pinnedItems = [];
     for (const pkg of allPackages) {
         for (const file of (pkg.launchFiles || [])) {
             if (!pinnedPaths.includes(file)) { continue; }
             const fileName = file.split('/').pop();
-            const argLabel = launchArgs[file] ? '<span class="badge info">args</span>' : '';
+            const cfg = launchArgConfigs[file];
+            const configButtons = cfg?.configs?.length
+                ? cfg.configs.map(c => {
+                    const active = c.id === cfg.selectedId ? ' active' : '';
+                    return '<button class="config-pill small' + active + '" data-path="' + file + '" data-id="' + c.id + '">' + c.name + '</button>';
+                }).join('')
+                : '';
+            const runningBadge = running.has(file) ? '<span class="badge success">running</span>' : '';
+            const runningClass = running.has(file) ? ' running' : '';
             pinnedItems.push(
-                '<li class="launch-item" data-path="' + file + '" data-pkg="' + pkg.name + '" data-file="' + fileName + '">' +
+                '<li class="launch-item' + runningClass + '" data-path="' + file + '" data-pkg="' + pkg.name + '" data-file="' + fileName + '">' +
                     '<span class="launch-action launch-run" tabindex="0">Run</span>' +
                     '<span class="launch-action launch-open" tabindex="0">' + pkg.name + ' / ' + fileName + '</span>' +
                     '<button class="args-btn" title="Edit args">⚙</button>' +
-                    argLabel +
+                    '<span class="config-pill-group">' + configButtons + '</span>' +
+                    runningBadge +
                     '<button class="pin-btn pinned" title="Unpin">★</button>' +
                 '</li>'
             );
@@ -437,14 +721,31 @@ const renderPinned = () => {
         const openEl = el.querySelector('.launch-open');
         const pinEl = el.querySelector('.pin-btn');
         const argsEl = el.querySelector('.args-btn');
+        const configEls = el.querySelectorAll('.config-pill');
 
-        runEl.addEventListener('click', () => launchFile(el.dataset.pkg, el.dataset.file, el.dataset.path));
-        runEl.addEventListener('keydown', (e) => { if (e.key === 'Enter') { launchFile(el.dataset.pkg, el.dataset.file, el.dataset.path); } });
+        runEl.addEventListener('click', () => launchFile(el.dataset.pkg, el.dataset.file, el.dataset.path, ''));
+        runEl.addEventListener('keydown', (e) => { if (e.key === 'Enter') { launchFile(el.dataset.pkg, el.dataset.file, el.dataset.path, ''); } });
 
         openEl.addEventListener('click', () => openLaunch(el.dataset.path));
         openEl.addEventListener('keydown', (e) => { if (e.key === 'Enter') { openLaunch(el.dataset.path); } });
 
         argsEl.addEventListener('click', () => editLaunchArgs(el.dataset.path));
+
+        configEls.forEach(btn => {
+            btn.addEventListener('click', (e) => {
+                e.stopPropagation();
+                const id = btn.dataset.id;
+                const path = btn.dataset.path;
+                if (id && path) {
+                    selectLaunchArgConfig(path, id);
+                    const cfg = launchArgConfigs[path];
+                    const match = cfg?.configs?.find(c => c.id === id);
+                    const args = match?.args || '';
+                    const argsName = match?.name || '';
+                    launchFile(el.dataset.pkg, el.dataset.file, path, args, argsName);
+                }
+            });
+        });
 
         pinEl.addEventListener('click', () => togglePin(el.dataset.path));
     });
@@ -464,8 +765,8 @@ const openLaunch = (path) => {
     vscode.postMessage({ command: 'openLaunch', path });
 };
 
-const launchFile = (pkg, file, path) => {
-    vscode.postMessage({ command: 'launchFile', pkg, file, path });
+const launchFile = (pkg, file, path, args, argsName) => {
+    vscode.postMessage({ command: 'launchFile', pkg, file, path, args, argsName });
 };
 
 const togglePin = (path) => {
@@ -474,6 +775,27 @@ const togglePin = (path) => {
 
 const editLaunchArgs = (path) => {
     openArgsModal(path);
+};
+
+const killTerminal = (id) => {
+    if (!id) { return; }
+    vscode.postMessage({ command: 'killTerminal', id });
+};
+
+const focusTerminal = (id) => {
+    if (!id) { return; }
+    vscode.postMessage({ command: 'focusTerminal', id });
+};
+
+const setPreferredTerminal = (id) => {
+    if (!id) { return; }
+    preferredTerminalId = id;
+    vscode.postMessage({ command: 'setPreferredTerminal', id });
+};
+
+const selectLaunchArgConfig = (path, id) => {
+    if (!path || !id) { return; }
+    vscode.postMessage({ command: 'selectLaunchArgConfig', path, id });
 };
 
 btnCreate.addEventListener('click', () => {
@@ -506,8 +828,44 @@ btnInsertAll.addEventListener('click', () => {
 });
 
 btnSaveArgs.addEventListener('click', () => {
-    vscode.postMessage({ command: 'setLaunchArgs', path: currentArgsPath, args: argsInput.value });
+    const cfg = launchArgConfigs[currentArgsPath] || { selectedId: 'default', configs: [] };
+    const list = cfg.configs.length ? cfg.configs : [{ id: 'default', name: 'default', args: '' }];
+    const idx = list.findIndex(c => c.id === currentConfigId);
+    if (idx >= 0) {
+        list[idx].args = argsInput.value;
+        list[idx].name = configName.value || list[idx].name || 'config';
+    }
+    cfg.configs = list;
+    cfg.selectedId = currentConfigId || list[0].id;
+    launchArgConfigs[currentArgsPath] = cfg;
+    vscode.postMessage({ command: 'setLaunchArgConfigs', path: currentArgsPath, selectedId: cfg.selectedId, configs: cfg.configs });
     closeArgsModal();
+});
+
+btnAddConfig.addEventListener('click', () => {
+    const cfg = launchArgConfigs[currentArgsPath] || { selectedId: 'default', configs: [] };
+    const id = 'cfg-' + Date.now();
+    const name = 'config ' + (cfg.configs.length + 1);
+    cfg.configs.push({ id, name, args: '' });
+    cfg.selectedId = id;
+    launchArgConfigs[currentArgsPath] = cfg;
+    currentConfigId = id;
+    configName.value = name;
+    argsInput.value = '';
+    renderConfigTabs();
+});
+
+btnRemoveConfig.addEventListener('click', () => {
+    const cfg = launchArgConfigs[currentArgsPath];
+    if (!cfg || cfg.configs.length <= 1) { return; }
+    cfg.configs = cfg.configs.filter(c => c.id !== currentConfigId);
+    cfg.selectedId = cfg.configs[0].id;
+    currentConfigId = cfg.selectedId;
+    const currentCfg = cfg.configs[0];
+    configName.value = currentCfg?.name || '';
+    argsInput.value = currentCfg?.args || '';
+    launchArgConfigs[currentArgsPath] = cfg;
+    renderConfigTabs();
 });
 
 btnCancelArgs.addEventListener('click', closeArgsModal);
@@ -520,9 +878,12 @@ window.addEventListener('message', (event) => {
         case 'packageList': {
             allPackages = msg.packages.slice().sort((a, b) => a.name.localeCompare(b.name));
             pinnedPaths = msg.pinned || [];
-            launchArgs = msg.launchArgs || {};
+            launchArgConfigs = msg.launchArgConfigs || {};
+            terminals = msg.terminals || [];
+            preferredTerminalId = msg.preferredTerminalId || '';
             renderPackages();
             renderPinned();
+            renderTerminals();
             break;
         }
         case 'createDone': {
@@ -544,6 +905,13 @@ window.addEventListener('message', (event) => {
             if (msg.path !== currentArgsPath) { break; }
             argsOptions = msg.options || [];
             renderArgsOptions();
+            break;
+        }
+        case 'terminalList': {
+            terminals = msg.terminals || [];
+            renderPackages();
+            renderPinned();
+            renderTerminals();
             break;
         }
     }

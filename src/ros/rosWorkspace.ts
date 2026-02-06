@@ -27,6 +27,27 @@ export interface LaunchArgOption {
     defaultValue?: string;
 }
 
+export interface TrackedTerminalInfo {
+    id: string;
+    kind: 'integrated' | 'external';
+    name: string;
+    status: 'running' | 'closed';
+    cmd: string;
+    pid?: number;
+    launchLabel?: string;
+    launchPath?: string;
+    createdAt: number;
+    lastUsed: number;
+    isPreferred?: boolean;
+}
+
+interface TrackedTerminal extends TrackedTerminalInfo {
+    terminal?: vscode.Terminal;
+    childProcess?: cp.ChildProcess;
+    pidFile?: string;
+    innerPid?: number;
+}
+
 /**
  * Central helper that interacts with the ROS CLI tools installed on the host.
  * All shell calls go through here so views stay decoupled from the system.
@@ -34,6 +55,23 @@ export interface LaunchArgOption {
 export class RosWorkspace {
     private _env: RosEnvironmentInfo | undefined;
     private _terminal: vscode.Terminal | undefined;
+    private _trackedTerminals: Map<string, TrackedTerminal> = new Map();
+    private _terminalSeq = 1;
+    private _preferredTerminalId: string | undefined;
+    private _terminalsEmitter = new vscode.EventEmitter<TrackedTerminalInfo[]>();
+    public readonly onTerminalsChanged = this._terminalsEmitter.event;
+
+    constructor() {
+        vscode.window.onDidCloseTerminal((terminal) => {
+            for (const [id, tracked] of this._trackedTerminals.entries()) {
+                if (tracked.kind === 'integrated' && tracked.terminal === terminal) {
+                    this._trackedTerminals.delete(id);
+                    this._emitTerminalsChanged();
+                    break;
+                }
+            }
+        });
+    }
 
     // ── Environment detection ──────────────────────────────────
     async detectEnvironment(): Promise<RosEnvironmentInfo | undefined> {
@@ -192,7 +230,7 @@ export class RosWorkspace {
     }
 
     // ── Launch file ────────────────────────────────────────────
-    launchFile(pkg: string, launchFile: string, args: string = ''): void {
+    launchFile(pkg: string, launchFile: string, args: string = '', launchPath?: string, argsLabel?: string): void {
         const argString = args?.trim() ? ` ${args.trim()}` : '';
         const cmd = this.isRos2()
             ? `ros2 launch ${pkg} ${launchFile}${argString}`
@@ -200,12 +238,15 @@ export class RosWorkspace {
 
         const useExternal = vscode.workspace
             .getConfiguration('rosDevToolkit')
-            .get<boolean>('launchInExternalTerminal', false);
+            .get<boolean>('launchInExternalTerminal', true);
+
+        const labelSuffix = argsLabel ? ` [${argsLabel}]` : '';
+        const launchLabel = `${pkg} / ${launchFile}${labelSuffix}`;
 
         if (useExternal) {
-            this.runInExternalTerminal(cmd);
+            this.runInExternalTerminal(cmd, launchLabel, launchPath);
         } else {
-            this.runInTerminal(cmd);
+            this.runInLaunchTerminal(cmd, launchLabel, launchPath);
         }
     }
 
@@ -218,7 +259,7 @@ export class RosWorkspace {
      * gnome-terminal (and other GTK apps) crash with a symbol-lookup
      * error.  We strip them before spawning the external terminal.
      */
-    runInExternalTerminal(cmd: string): void {
+    runInExternalTerminal(cmd: string, launchLabel?: string, launchPath?: string): void {
         const fullCmd = this.buildSourcedCommand(cmd);
         const bashPath = this.resolveBashPath() || '/bin/bash';
 
@@ -234,8 +275,11 @@ export class RosWorkspace {
             return;
         }
 
-        // Keep the terminal alive after the command finishes
-        const wrappedCmd = `${fullCmd}; exec ${bashPath}`;
+        // PID file so we can discover the real bash PID inside gnome-terminal
+        const pidFile = `/tmp/ros-devtool-${Date.now()}-${this._terminalSeq}.pid`;
+
+        // Inner bash writes its own PID, runs the command, then stays open
+        const wrappedCmd = `echo $$ > "${pidFile}"; ${fullCmd}; exec ${bashPath}`;
         const args = this.buildExternalTerminalArgs(terminalBin, bashPath, wrappedCmd);
 
         try {
@@ -244,6 +288,7 @@ export class RosWorkspace {
                 stdio: 'ignore',
                 env: cleanEnv,
             });
+            this.trackExternalTerminal(child, terminalBin, cmd, launchLabel, launchPath, pidFile);
             child.on('error', () => {
                 vscode.window.showWarningMessage(
                     'Failed to open external terminal. Falling back to integrated terminal.'
@@ -257,6 +302,270 @@ export class RosWorkspace {
             );
             this.runInTerminal(cmd);
         }
+    }
+
+    runInLaunchTerminal(cmd: string, launchLabel?: string, launchPath?: string): void {
+        const fullCmd = this.buildSourcedCommand(cmd);
+        let tracked = this.pickLaunchTerminal();
+
+        if (!tracked || !tracked.terminal || tracked.terminal.exitStatus !== undefined) {
+            if (tracked) {
+                this._trackedTerminals.delete(tracked.id);
+            }
+            tracked = this.createLaunchTerminal();
+        }
+
+        tracked.cmd = cmd;
+        tracked.lastUsed = Date.now();
+        tracked.launchLabel = launchLabel;
+        tracked.launchPath = launchPath;
+
+        if (!tracked.terminal) {
+            return;
+        }
+
+        tracked.terminal.show();
+        tracked.terminal.sendText(fullCmd);
+        this._emitTerminalsChanged();
+    }
+
+    getTrackedTerminals(): TrackedTerminalInfo[] {
+        return Array.from(this._trackedTerminals.values()).map((t) => ({
+            id: t.id,
+            kind: t.kind,
+            name: t.name,
+            status: t.status,
+            cmd: t.cmd,
+            pid: t.pid,
+            launchLabel: t.launchLabel,
+            launchPath: t.launchPath,
+            createdAt: t.createdAt,
+            lastUsed: t.lastUsed,
+            isPreferred: t.id === this._preferredTerminalId,
+        }));
+    }
+
+    getPreferredTerminalId(): string | undefined {
+        return this._preferredTerminalId;
+    }
+
+    setPreferredTerminal(id?: string): void {
+        if (id && this._trackedTerminals.has(id)) {
+            this._preferredTerminalId = id;
+        } else {
+            this._preferredTerminalId = undefined;
+        }
+        this._emitTerminalsChanged();
+    }
+
+    focusTrackedTerminal(id: string): void {
+        const tracked = this._trackedTerminals.get(id);
+        if (tracked?.kind === 'integrated' && tracked.terminal) {
+            tracked.terminal.show();
+        }
+    }
+
+    killTrackedTerminal(id: string): void {
+        const tracked = this._trackedTerminals.get(id);
+        if (!tracked) {
+            return;
+        }
+
+        if (tracked.kind === 'integrated') {
+            if (tracked.terminal) {
+                tracked.terminal.sendText('\x03');
+            }
+        } else {
+            // Read the real inner bash PID and send SIGINT (Ctrl+C)
+            const innerPid = this.readInnerPid(tracked);
+            if (innerPid) {
+                this.interruptProcess(innerPid);
+            }
+        }
+
+        tracked.lastUsed = Date.now();
+        this._emitTerminalsChanged();
+    }
+
+    private pickLaunchTerminal(): TrackedTerminal | undefined {
+        if (this._preferredTerminalId) {
+            const preferred = this._trackedTerminals.get(this._preferredTerminalId);
+            if (preferred?.kind === 'integrated' && preferred.status === 'running') {
+                return preferred;
+            }
+        }
+
+        const active = Array.from(this._trackedTerminals.values())
+            .filter((t) => t.kind === 'integrated' && t.status === 'running');
+
+        if (!active.length) {
+            return undefined;
+        }
+
+        active.sort((a, b) => b.lastUsed - a.lastUsed);
+        return active[0];
+    }
+
+    private createLaunchTerminal(): TrackedTerminal {
+        const bashPath = this.resolveBashPath();
+        const env = this.getTerminalEnv();
+        const num = this._terminalSeq++;
+        const name = `ROS Launch ${num}`;
+        const terminal = bashPath
+            ? vscode.window.createTerminal({ name, shellPath: bashPath, env })
+            : vscode.window.createTerminal({ name, env });
+
+        const tracked: TrackedTerminal = {
+            id: `launch-${num}`,
+            kind: 'integrated',
+            name,
+            status: 'running',
+            cmd: '',
+            createdAt: Date.now(),
+            lastUsed: Date.now(),
+            terminal,
+        };
+
+        this._trackedTerminals.set(tracked.id, tracked);
+        this._emitTerminalsChanged();
+        return tracked;
+    }
+
+    private trackExternalTerminal(
+        child: cp.ChildProcess,
+        terminalBin: string,
+        cmd: string,
+        launchLabel?: string,
+        launchPath?: string,
+        pidFile?: string,
+    ): void {
+        const num = this._terminalSeq++;
+        const name = `External (${path.basename(terminalBin)}) ${num}`;
+        const tracked: TrackedTerminal = {
+            id: `external-${num}`,
+            kind: 'external',
+            name,
+            status: 'running',
+            cmd,
+            pid: child.pid ?? undefined,
+            launchLabel,
+            launchPath,
+            createdAt: Date.now(),
+            lastUsed: Date.now(),
+            childProcess: child,
+            pidFile,
+        };
+
+        this._trackedTerminals.set(tracked.id, tracked);
+        this._emitTerminalsChanged();
+
+        // Poll for the PID file so we cache the inner bash PID early
+        if (pidFile) {
+            let attempts = 0;
+            const poll = setInterval(() => {
+                attempts++;
+                try {
+                    if (fs.existsSync(pidFile)) {
+                        const content = fs.readFileSync(pidFile, 'utf8').trim();
+                        const pid = parseInt(content, 10);
+                        if (pid > 0) {
+                            tracked.innerPid = pid;
+                            clearInterval(poll);
+                        }
+                    }
+                } catch { /* ignore */ }
+                if (attempts > 20) { clearInterval(poll); }
+            }, 250);
+        }
+
+        child.on('exit', () => {
+            this.cleanupPidFile(tracked);
+            this._trackedTerminals.delete(tracked.id);
+            if (this._preferredTerminalId === tracked.id) {
+                this._preferredTerminalId = undefined;
+            }
+            this._emitTerminalsChanged();
+        });
+    }
+
+    /**
+     * Read the real inner bash PID from the PID file.
+     * Falls back to the cached innerPid or the child PID.
+     */
+    private readInnerPid(tracked: TrackedTerminal): number | undefined {
+        // Try cached first
+        if (tracked.innerPid) {
+            return tracked.innerPid;
+        }
+
+        // Try reading from PID file
+        if (tracked.pidFile) {
+            try {
+                const content = fs.readFileSync(tracked.pidFile, 'utf8').trim();
+                const pid = parseInt(content, 10);
+                if (pid > 0) {
+                    tracked.innerPid = pid;
+                    return pid;
+                }
+            } catch { /* file not ready yet */ }
+        }
+
+        // Last resort: use the spawned child PID (won't work for gnome-terminal)
+        return tracked.pid;
+    }
+
+    /**
+     * Kill the inner bash process and its entire child tree.
+     * Sends SIGTERM, then SIGKILL after 500ms.
+     */
+    private killProcessTree(pid: number): void {
+        // Kill all children first, then the parent
+        try {
+            cp.execSync(`pkill -TERM -P ${pid} 2>/dev/null`);
+        } catch { /* ignore */ }
+        try {
+            process.kill(pid, 'SIGTERM');
+        } catch { /* ignore */ }
+
+        // Force kill after delay
+        setTimeout(() => {
+            try {
+                cp.execSync(`pkill -KILL -P ${pid} 2>/dev/null`);
+            } catch { /* ignore */ }
+            try {
+                process.kill(pid, 'SIGKILL');
+            } catch { /* ignore */ }
+        }, 500);
+    }
+
+    /**
+     * Send SIGINT (Ctrl+C) to the inner bash's child processes.
+     * This interrupts ros2 launch without closing the terminal.
+     */
+    private interruptProcess(pid: number): void {
+        // Send SIGINT to children of the bash (ros2 launch, etc)
+        try {
+            cp.execSync(`pkill -INT -P ${pid} 2>/dev/null`);
+        } catch { /* ignore */ }
+        // Also send to the bash itself in case it's the foreground
+        try {
+            process.kill(pid, 'SIGINT');
+        } catch { /* ignore */ }
+    }
+
+    /**
+     * Remove the temporary PID file.
+     */
+    private cleanupPidFile(tracked: TrackedTerminal): void {
+        if (tracked.pidFile) {
+            try {
+                fs.unlinkSync(tracked.pidFile);
+            } catch { /* ignore */ }
+        }
+    }
+
+    private _emitTerminalsChanged(): void {
+        this._terminalsEmitter.fire(this.getTrackedTerminals());
     }
 
     /**
@@ -335,7 +644,7 @@ export class RosWorkspace {
         const base = path.basename(terminalBin);
 
         if (base.startsWith('gnome-terminal')) {
-            return ['--', bashPath, '-ic', wrappedCmd];
+            return ['--wait', '--', bashPath, '-ic', wrappedCmd];
         }
         if (base === 'konsole') {
             return ['-e', bashPath, '-ic', wrappedCmd];

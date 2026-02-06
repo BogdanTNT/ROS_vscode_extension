@@ -47,7 +47,10 @@ export function activate(context: vscode.ExtensionContext) {
     // Detect ROS distro on startup
     rosWorkspace.detectEnvironment().then((info) => {
         if (info) {
-            vscode.window.showInformationMessage(`ROS Dev Toolkit: detected ${info.distro} (ROS ${info.version})`);
+            vscode.window.setStatusBarMessage(
+                `ROS Dev Toolkit: detected ${info.distro} (ROS ${info.version})`,
+                4000
+            );
         }
     });
 }

@@ -241,6 +241,10 @@ button.small {
     gap: 6px;
 }
 
+.launch-item.running {
+    border-color: var(--success);
+}
+
 .launch-item:hover,
 .launch-item:focus {
     outline: 1px solid var(--accent);
@@ -287,6 +291,57 @@ button.small {
     cursor: pointer;
 }
 
+.config-pill-group {
+    display: inline-flex;
+    gap: 4px;
+    flex-wrap: wrap;
+}
+
+.config-pill {
+    border: 1px solid var(--accent);
+    background: transparent;
+    color: var(--accent);
+    padding: 2px 8px;
+    border-radius: 999px;
+    cursor: pointer;
+    font-size: 0.75em;
+}
+
+.config-pill.small {
+    padding: 2px 6px;
+    font-size: 0.7em;
+}
+
+.config-pill:hover {
+    background: var(--accent);
+    color: #fff;
+}
+
+.config-pill.active {
+    border-color: var(--accent);
+    background: transparent;
+    color: var(--accent);
+}
+
+.config-list {
+    display: flex;
+    gap: 6px;
+    flex-wrap: wrap;
+    margin: 6px 0 10px;
+}
+
+.config-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 4px;
+}
+
+.config-actions {
+    display: flex;
+    gap: 6px;
+}
+
 .args-btn:hover,
 .pin-btn:hover {
     border-color: var(--accent);
@@ -310,6 +365,42 @@ button.small {
 
 .item-list li:last-child {
     border-bottom: none;
+}
+
+/* ── Terminals ─────────────────────────────────────────────── */
+
+.terminal-item {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 8px;
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    margin-bottom: 6px;
+}
+
+.terminal-main {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+}
+
+.terminal-title {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    flex-wrap: wrap;
+}
+
+.terminal-name {
+    font-weight: 600;
+}
+
+.terminal-actions {
+    display: flex;
+    gap: 6px;
+    flex-wrap: wrap;
 }
 
 /* ── Graph / Visualizer ────────────────────────────────────── */
