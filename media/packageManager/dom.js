@@ -1,0 +1,32 @@
+/* Package Manager Webview DOM */
+(function () {
+    window.PM = window.PM || {};
+
+    window.PM.dom = {
+        btnCreate: document.getElementById('btnCreate'),
+        btnRefresh: document.getElementById('btnRefresh'),
+        btnOpenCreate: document.getElementById('btnOpenCreate'),
+        btnCloseCreate: document.getElementById('btnCloseCreate'),
+        btnCancelCreate: document.getElementById('btnCancelCreate'),
+        createModal: document.getElementById('createModal'),
+        createBackdrop: document.getElementById('createBackdrop'),
+        statusEl: document.getElementById('createStatus'),
+        pkgStatusEl: document.getElementById('pkgStatus'),
+        filterInput: document.getElementById('pkgFilter'),
+        pkgCount: document.getElementById('pkgCount'),
+        pinnedList: document.getElementById('pinnedList'),
+        terminalList: document.getElementById('terminalList'),
+        argsModal: document.getElementById('argsModal'),
+        argsBackdrop: document.getElementById('argsBackdrop'),
+        argsInput: document.getElementById('argsInput'),
+        configName: document.getElementById('configName'),
+        configList: document.getElementById('configList'),
+        btnAddConfig: document.getElementById('btnAddConfig'),
+        btnRemoveConfig: document.getElementById('btnRemoveConfig'),
+        argsList: document.getElementById('argsList'),
+        btnInsertAll: document.getElementById('btnInsertAll'),
+        btnSaveArgs: document.getElementById('btnSaveArgs'),
+        btnCancelArgs: document.getElementById('btnCancelArgs'),
+        btnCloseArgs: document.getElementById('btnCloseArgs'),
+    };
+})();

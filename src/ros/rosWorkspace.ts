@@ -48,6 +48,15 @@ interface TrackedTerminal extends TrackedTerminalInfo {
     innerPid?: number;
 }
 
+type LaunchBuildMode = 'smart' | 'always' | 'never';
+
+interface WorkspacePackageMeta {
+    name: string;
+    packagePath: string;
+    buildType: string;
+    dependencies: string[];
+}
+
 /**
  * Central helper that interacts with the ROS CLI tools installed on the host.
  * All shell calls go through here so views stay decoupled from the system.
@@ -211,14 +220,10 @@ export class RosWorkspace {
 
     // ── Build ──────────────────────────────────────────────────
     buildPackages(packages: string[]): void {
-        const wsPath = this.getWorkspacePath();
-        const pkgArg = packages.length > 0 ? ` --packages-select ${packages.join(' ')}` : '';
-
-        const cmd = this.isRos2()
-            ? `cd "${wsPath}" && colcon build${pkgArg} && source "${wsPath}/install/setup.bash"`
-            : `cd "${wsPath}" && catkin_make && source "${wsPath}/devel/setup.bash"`;
-
-        this.runInTerminal(cmd);
+        const cmd = this.buildWorkspaceBuildCommand(packages);
+        if (cmd) {
+            this.runInTerminal(cmd);
+        }
     }
 
     // ── Run node ───────────────────────────────────────────────
@@ -232,9 +237,14 @@ export class RosWorkspace {
     // ── Launch file ────────────────────────────────────────────
     launchFile(pkg: string, launchFile: string, args: string = '', launchPath?: string, argsLabel?: string): void {
         const argString = args?.trim() ? ` ${args.trim()}` : '';
-        const cmd = this.isRos2()
+        const launchCmd = this.isRos2()
             ? `ros2 launch ${pkg} ${launchFile}${argString}`
             : `roslaunch ${pkg} ${launchFile}${argString}`;
+        const buildPlan = this.getLaunchBuildPlan(pkg, launchPath);
+        const buildCmd = buildPlan.shouldBuild
+            ? this.buildWorkspaceBuildCommand(buildPlan.packages)
+            : undefined;
+        const cmd = buildCmd ? `${buildCmd} && ${launchCmd}` : launchCmd;
 
         const useExternal = vscode.workspace
             .getConfiguration('rosDevToolkit')
@@ -243,11 +253,407 @@ export class RosWorkspace {
         const labelSuffix = argsLabel ? ` [${argsLabel}]` : '';
         const launchLabel = `${pkg} / ${launchFile}${labelSuffix}`;
 
+        if (buildPlan.shouldBuild) {
+            const mode = this.getLaunchBuildMode();
+            const buildTargetLabel = buildPlan.packages.length > 0
+                ? buildPlan.packages.join(', ')
+                : 'workspace';
+            const modeLabel = mode === 'always' ? 'always' : 'smart';
+            vscode.window.setStatusBarMessage(
+                `ROS Dev Toolkit: pre-launch build (${modeLabel}) ${buildTargetLabel}`,
+                3500,
+            );
+        }
+
         if (useExternal) {
             this.runInExternalTerminal(cmd, launchLabel, launchPath);
         } else {
             this.runInLaunchTerminal(cmd, launchLabel, launchPath);
         }
+    }
+
+    private getLaunchBuildMode(): LaunchBuildMode {
+        const mode = vscode.workspace
+            .getConfiguration('rosDevToolkit')
+            .get<string>('launchBuildMode', 'smart')
+            .toLowerCase();
+        if (mode === 'always' || mode === 'never') {
+            return mode;
+        }
+        return 'smart';
+    }
+
+    private getLaunchBuildPlan(pkg: string, launchPath?: string): { shouldBuild: boolean; packages: string[] } {
+        const mode = this.getLaunchBuildMode();
+        if (mode === 'never') {
+            return { shouldBuild: false, packages: [] };
+        }
+
+        const packageMap = this.getWorkspacePackageMetaMap();
+        const launchWorkspacePkg = this.resolveLaunchWorkspacePackageName(pkg, launchPath, packageMap);
+        if (!launchWorkspacePkg) {
+            return { shouldBuild: false, packages: [] };
+        }
+
+        const closure = this.getWorkspaceDependencyClosure(launchWorkspacePkg, packageMap);
+        const packagesToBuild = this.filterValidPackageNames(closure);
+        if (!packagesToBuild.length) {
+            return { shouldBuild: false, packages: [] };
+        }
+
+        if (mode === 'always') {
+            if (this.isRos2()) {
+                return { shouldBuild: true, packages: packagesToBuild };
+            }
+            return { shouldBuild: true, packages: [] };
+        }
+
+        const needsBuild = packagesToBuild.some((name) => {
+            const meta = packageMap.get(name);
+            if (!meta) {
+                return true;
+            }
+            return this.packageNeedsBuild(meta);
+        });
+
+        if (!needsBuild) {
+            return { shouldBuild: false, packages: [] };
+        }
+
+        if (this.isRos2()) {
+            return { shouldBuild: true, packages: packagesToBuild };
+        }
+        return { shouldBuild: true, packages: [] };
+    }
+
+    private buildWorkspaceBuildCommand(packages: string[]): string {
+        const wsPath = this.getWorkspacePath();
+
+        if (!this.isRos2()) {
+            return `cd "${wsPath}" && catkin_make && source "${wsPath}/devel/setup.bash"`;
+        }
+
+        const safePackages = this.filterValidPackageNames(packages);
+        const pkgArg = safePackages.length > 0
+            ? ` --packages-select ${safePackages.join(' ')}`
+            : '';
+        return `cd "${wsPath}" && colcon build${pkgArg} && source "${wsPath}/install/setup.bash"`;
+    }
+
+    private filterValidPackageNames(packages: string[]): string[] {
+        const seen = new Set<string>();
+        const valid: string[] = [];
+        for (const pkg of packages) {
+            if (!/^[A-Za-z0-9_]+$/.test(pkg)) {
+                continue;
+            }
+            if (seen.has(pkg)) {
+                continue;
+            }
+            seen.add(pkg);
+            valid.push(pkg);
+        }
+        return valid;
+    }
+
+    private getWorkspacePackageMetaMap(): Map<string, WorkspacePackageMeta> {
+        const map = new Map<string, WorkspacePackageMeta>();
+        const srcDir = this.getSrcDir();
+        if (!srcDir) {
+            return map;
+        }
+
+        const defaultBuildType = this.isRos2() ? 'ament_cmake' : 'catkin';
+        const packageXmlFiles = this.findPackageXmlFiles(srcDir, 4);
+        for (const file of packageXmlFiles) {
+            try {
+                const xml = fs.readFileSync(file, 'utf8');
+                const parsed = this.parsePackageManifest(xml);
+                if (!parsed.name || map.has(parsed.name)) {
+                    continue;
+                }
+                map.set(parsed.name, {
+                    name: parsed.name,
+                    packagePath: path.dirname(file),
+                    buildType: parsed.buildType || defaultBuildType,
+                    dependencies: parsed.dependencies,
+                });
+            } catch {
+                // ignore malformed package.xml
+            }
+        }
+
+        return map;
+    }
+
+    private parsePackageManifest(xml: string): { name?: string; buildType?: string; dependencies: string[] } {
+        const nameMatch = xml.match(/<name>\s*([^<\s]+)\s*<\/name>/);
+        const buildTypeMatch = xml.match(/<build_type>\s*([^<\s]+)\s*<\/build_type>/);
+        const depTags = ['depend', 'build_depend', 'exec_depend', 'run_depend', 'build_export_depend'];
+        const deps = new Set<string>();
+
+        for (const tag of depTags) {
+            const regex = new RegExp(`<${tag}>\\s*([^<\\s]+)\\s*<\\/${tag}>`, 'g');
+            let match: RegExpExecArray | null;
+            while ((match = regex.exec(xml)) !== null) {
+                if (match[1]) {
+                    deps.add(match[1]);
+                }
+            }
+        }
+
+        return {
+            name: nameMatch?.[1],
+            buildType: buildTypeMatch?.[1],
+            dependencies: Array.from(deps),
+        };
+    }
+
+    private resolveLaunchWorkspacePackageName(
+        pkg: string,
+        launchPath: string | undefined,
+        packageMap: Map<string, WorkspacePackageMeta>,
+    ): string | undefined {
+        if (launchPath) {
+            const normalizedLaunch = path.resolve(launchPath);
+            for (const meta of packageMap.values()) {
+                const packageRoot = path.resolve(meta.packagePath);
+                if (normalizedLaunch === packageRoot || normalizedLaunch.startsWith(packageRoot + path.sep)) {
+                    return meta.name;
+                }
+            }
+        }
+
+        if (packageMap.has(pkg)) {
+            return pkg;
+        }
+
+        return undefined;
+    }
+
+    private getWorkspaceDependencyClosure(
+        rootPackage: string,
+        packageMap: Map<string, WorkspacePackageMeta>,
+    ): string[] {
+        const queue: string[] = [rootPackage];
+        const seen = new Set<string>();
+
+        while (queue.length > 0) {
+            const current = queue.shift();
+            if (!current || seen.has(current)) {
+                continue;
+            }
+            seen.add(current);
+
+            const meta = packageMap.get(current);
+            if (!meta) {
+                continue;
+            }
+
+            for (const dep of meta.dependencies) {
+                if (packageMap.has(dep) && !seen.has(dep)) {
+                    queue.push(dep);
+                }
+            }
+        }
+
+        return Array.from(seen);
+    }
+
+    private packageNeedsBuild(meta: WorkspacePackageMeta): boolean {
+        const buildStamp = this.getPackageBuildTimestamp(meta.name);
+        if (buildStamp <= 0) {
+            return true;
+        }
+
+        const changedFiles = this.listFilesChangedAfter(meta.packagePath, buildStamp);
+        if (changedFiles.length === 0) {
+            return false;
+        }
+
+        if (changedFiles.every((file) => this.isRuntimeOnlyChange(meta.packagePath, file))) {
+            return false;
+        }
+
+        if (
+            this.isRos2() &&
+            meta.buildType === 'ament_python' &&
+            this.isPackageSymlinkInstalled(meta.name) &&
+            changedFiles.every((file) => this.isSymlinkSafePythonChange(meta.packagePath, file))
+        ) {
+            return false;
+        }
+
+        return true;
+    }
+
+    private getPackageBuildTimestamp(packageName: string): number {
+        const wsPath = this.getWorkspacePath();
+        const candidates = this.isRos2()
+            ? [
+                path.join(wsPath, 'install', packageName, 'share', packageName, 'package.xml'),
+                path.join(wsPath, 'install', packageName),
+                path.join(wsPath, 'build', packageName),
+            ]
+            : [
+                path.join(wsPath, 'devel', 'lib', packageName),
+                path.join(wsPath, 'devel', 'share', packageName),
+                path.join(wsPath, 'build', packageName),
+            ];
+
+        let latest = 0;
+        for (const candidate of candidates) {
+            latest = Math.max(latest, this.getPathTimestamp(candidate));
+        }
+        return latest;
+    }
+
+    private getPathTimestamp(filePath: string): number {
+        try {
+            return fs.statSync(filePath).mtimeMs;
+        } catch {
+            return 0;
+        }
+    }
+
+    private listFilesChangedAfter(rootDir: string, sinceMs: number): string[] {
+        const changed: string[] = [];
+        const excludedDirs = new Set([
+            '.git',
+            '.svn',
+            '.hg',
+            'build',
+            'install',
+            'log',
+            'node_modules',
+            '__pycache__',
+            '.vscode',
+            '.idea',
+        ]);
+
+        const walk = (dir: string) => {
+            let entries: fs.Dirent[] = [];
+            try {
+                entries = fs.readdirSync(dir, { withFileTypes: true });
+            } catch {
+                return;
+            }
+
+            for (const entry of entries) {
+                const fullPath = path.join(dir, entry.name);
+                if (entry.isDirectory()) {
+                    if (excludedDirs.has(entry.name) || entry.name.startsWith('.')) {
+                        continue;
+                    }
+                    walk(fullPath);
+                    continue;
+                }
+                if (!entry.isFile()) {
+                    continue;
+                }
+                try {
+                    const stat = fs.statSync(fullPath);
+                    if (stat.mtimeMs > sinceMs) {
+                        changed.push(fullPath);
+                    }
+                } catch {
+                    // ignore files that vanished while scanning
+                }
+            }
+        };
+
+        walk(rootDir);
+        return changed;
+    }
+
+    private toRelativePackagePath(packagePath: string, filePath: string): string {
+        return path.relative(packagePath, filePath).replace(/\\/g, '/');
+    }
+
+    private isRuntimeOnlyChange(packagePath: string, filePath: string): boolean {
+        const rel = this.toRelativePackagePath(packagePath, filePath);
+        if (!rel || rel.startsWith('..')) {
+            return false;
+        }
+
+        if (rel.startsWith('launch/')) {
+            return true;
+        }
+        if (rel.startsWith('config/') && /\.(yaml|yml|json|rviz|urdf|xacro)$/i.test(rel)) {
+            return true;
+        }
+        if (rel.startsWith('params/') && /\.(yaml|yml|json)$/i.test(rel)) {
+            return true;
+        }
+
+        return /\.(launch|launch\.py|launch\.xml|rviz|urdf|xacro)$/i.test(rel);
+    }
+
+    private isSymlinkSafePythonChange(packagePath: string, filePath: string): boolean {
+        if (this.isRuntimeOnlyChange(packagePath, filePath)) {
+            return true;
+        }
+
+        const rel = this.toRelativePackagePath(packagePath, filePath);
+        if (!rel || rel.startsWith('..')) {
+            return false;
+        }
+
+        const base = path.basename(rel).toLowerCase();
+        if (
+            base === 'package.xml' ||
+            base === 'setup.py' ||
+            base === 'setup.cfg' ||
+            base === 'pyproject.toml' ||
+            base === 'colcon.pkg' ||
+            base === 'cmakelists.txt'
+        ) {
+            return false;
+        }
+
+        if (
+            rel.startsWith('msg/') ||
+            rel.startsWith('srv/') ||
+            rel.startsWith('action/') ||
+            rel.startsWith('include/') ||
+            rel.startsWith('src/')
+        ) {
+            return false;
+        }
+
+        if (rel.endsWith('.py')) {
+            return true;
+        }
+
+        if (rel.startsWith('resource/')) {
+            return true;
+        }
+
+        return /\.(yaml|yml|json|txt|md)$/i.test(rel);
+    }
+
+    private isPackageSymlinkInstalled(packageName: string): boolean {
+        if (!this.isRos2()) {
+            return false;
+        }
+
+        const wsPath = this.getWorkspacePath();
+        const candidates = [
+            path.join(wsPath, 'install', packageName, 'share', packageName, 'package.xml'),
+            path.join(wsPath, 'install', packageName, 'share', packageName),
+        ];
+
+        for (const candidate of candidates) {
+            try {
+                if (fs.lstatSync(candidate).isSymbolicLink()) {
+                    return true;
+                }
+            } catch {
+                // ignore missing paths
+            }
+        }
+
+        return false;
     }
 
     /**

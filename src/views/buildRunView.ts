@@ -143,59 +143,9 @@ export class BuildRunViewProvider implements vscode.WebviewViewProvider {
 
 <datalist id="pkgSuggestions"></datalist>
 `;
-
-        const script = /* js */ `
-// ── Build ──
-document.getElementById('btnBuild').addEventListener('click', () => {
-    const raw = document.getElementById('buildPkgs').value.trim();
-    const packages = raw ? raw.split(/[\\s,]+/).filter(Boolean) : [];
-    vscode.postMessage({ command: 'build', packages });
-});
-
-document.getElementById('btnClean').addEventListener('click', () => {
-    vscode.postMessage({ command: 'cleanBuild' });
-});
-
-document.getElementById('btnSource').addEventListener('click', () => {
-    vscode.postMessage({ command: 'sourceWorkspace' });
-});
-
-// ── Run ──
-document.getElementById('btnRun').addEventListener('click', () => {
-    const pkg  = document.getElementById('runPkg').value.trim();
-    const exec = document.getElementById('runExec').value.trim();
-    const args = document.getElementById('runArgs').value.trim();
-    if (!pkg || !exec) { return; }
-    vscode.postMessage({ command: 'run', pkg, executable: exec, args });
-});
-
-// ── Launch ──
-document.getElementById('btnLaunch').addEventListener('click', () => {
-    const pkg  = document.getElementById('launchPkg').value.trim();
-    const file = document.getElementById('launchFile').value.trim();
-    if (!pkg || !file) { return; }
-    vscode.postMessage({ command: 'launch', pkg, launchFile: file });
-});
-
-// ── Package suggestions datalist ──
-window.addEventListener('message', (event) => {
-    const msg = event.data;
-    if (msg.command === 'packageList') {
-        const dl = document.getElementById('pkgSuggestions');
-        dl.innerHTML = msg.packages.map(p => '<option value="' + p + '">').join('');
-    }
-    if (msg.command === 'focusBuild') {
-        document.getElementById('buildPkgs').focus();
-    }
-    if (msg.command === 'focusRun') {
-        document.getElementById('runPkg').focus();
-    }
-});
-
-// Initial fetch
-vscode.postMessage({ command: 'refreshPackages' });
-`;
-
-        return getWebviewHtml(webview, this._extensionUri, body, script);
+        const scriptUris = [
+            vscode.Uri.joinPath(this._extensionUri, 'media', 'buildRun', 'index.js'),
+        ];
+        return getWebviewHtml(webview, this._extensionUri, body, '', undefined, scriptUris);
     }
 }

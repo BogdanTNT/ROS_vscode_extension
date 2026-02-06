@@ -20,9 +20,26 @@ export function getWebviewHtml(
     extensionUri: vscode.Uri,
     body: string,
     scriptContent: string,
+    scriptUri?: vscode.Uri,
+    scriptUris?: vscode.Uri[],
 ): string {
     const nonce = getNonce();
     const styleUri = webview.asWebviewUri(vscode.Uri.joinPath(extensionUri, 'media', 'style.css'));
+
+    const externalScriptTag = scriptUri
+        ? `<script nonce="${nonce}" src="${webview.asWebviewUri(scriptUri)}"></script>`
+        : '';
+
+    const externalScriptTags = (scriptUris ?? [])
+        .map((uri) => `<script nonce="${nonce}" src="${webview.asWebviewUri(uri)}"></script>`)
+        .join('\n');
+
+    const inlineScriptTag = scriptContent
+        ? `<script nonce="${nonce}">
+        const vscode = acquireVsCodeApi();
+        ${scriptContent}
+    </script>`
+        : '';
 
     return /* html */ `<!DOCTYPE html>
 <html lang="en">
@@ -38,10 +55,9 @@ export function getWebviewHtml(
 </head>
 <body>
     ${body}
-    <script nonce="${nonce}">
-        const vscode = acquireVsCodeApi();
-        ${scriptContent}
-    </script>
+    ${externalScriptTag}
+    ${externalScriptTags}
+    ${inlineScriptTag}
 </body>
 </html>`;
 }

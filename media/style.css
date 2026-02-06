@@ -123,6 +123,11 @@ button:hover {
     background: var(--btn-hover);
 }
 
+button:disabled {
+    opacity: 0.7;
+    cursor: default;
+}
+
 button.secondary {
     background: var(--btn-secondary-bg);
     color: var(--btn-secondary-fg);
@@ -401,6 +406,10 @@ button.small {
     display: flex;
     gap: 6px;
     flex-wrap: wrap;
+}
+
+button.term-kill.is-pending {
+    filter: saturate(0.7);
 }
 
 /* ── Graph / Visualizer ────────────────────────────────────── */

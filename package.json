@@ -31,6 +31,16 @@
           "type": "boolean",
           "default": true,
           "description": "Launch ROS launch files in an external terminal window so GUI apps (RViz, Gazebo, rqt) can display correctly."
+        },
+        "rosDevToolkit.launchBuildMode": {
+          "type": "string",
+          "enum": [
+            "smart",
+            "always",
+            "never"
+          ],
+          "default": "smart",
+          "description": "Build behavior before launching a launch file: smart builds only when workspace launch package/dependencies changed, always forces build, never skips pre-launch build."
         }
       }
     },
@@ -89,11 +99,18 @@
     "vscode:prepublish": "npm run compile",
     "compile": "tsc -p ./",
     "watch": "tsc -watch -p ./",
-    "lint": "eslint src --ext ts"
+    "lint": "eslint src --ext ts",
+    "test": "vitest run",
+    "test:unit": "vitest run tests/unit",
+    "test:webview": "vitest run tests/unit/webview",
+    "test:integration": "vitest run tests/integration",
+    "test:watch": "vitest"
   },
   "devDependencies": {
     "@types/node": "^20.11.0",
     "@types/vscode": "^1.85.0",
-    "typescript": "^5.3.3"
+    "jsdom": "^28.0.0",
+    "typescript": "^5.3.3",
+    "vitest": "^4.0.18"
   }
 }

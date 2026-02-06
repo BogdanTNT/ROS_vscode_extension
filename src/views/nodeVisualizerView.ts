@@ -52,11 +52,14 @@ export class NodeVisualizerViewProvider implements vscode.WebviewViewProvider {
         const nodes = await this._ros.getNodeList();
         const topics = await this._ros.getTopicList();
 
-        // Build connection map: node → {publishers, subscribers}
-        const connections: Record<string, { publishers: string[]; subscribers: string[] }> = {};
-        for (const node of nodes) {
-            connections[node] = await this._ros.getNodeInfo(node);
-        }
+        const nodeEntries = await Promise.all(
+            nodes.map(async (node) => {
+                const info = await this._ros.getNodeInfo(node);
+                return [node, info] as const;
+            }),
+        );
+        const connections: Record<string, { publishers: string[]; subscribers: string[] }> =
+            Object.fromEntries(nodeEntries);
 
         this._view?.webview.postMessage({
             command: 'graphData',
@@ -98,137 +101,9 @@ export class NodeVisualizerViewProvider implements vscode.WebviewViewProvider {
     </div>
 </div>
 `;
-
-        const script = /* js */ `
-const canvas    = document.getElementById('graphCanvas');
-const svgEl     = document.getElementById('edgeSvg');
-const statusEl  = document.getElementById('status');
-const detailEl  = document.getElementById('detailsCard');
-
-let graphState = { nodes: [], topics: [], connections: {} };
-
-document.getElementById('btnRefresh').addEventListener('click', () => {
-    vscode.postMessage({ command: 'refresh' });
-});
-
-document.getElementById('btnAutoLayout').addEventListener('click', () => {
-    renderGraph(graphState);
-});
-
-window.addEventListener('message', (event) => {
-    const msg = event.data;
-    if (msg.command === 'loading') {
-        statusEl.innerHTML = '<span class="spinner"></span> Fetching graph data…';
-    }
-    if (msg.command === 'graphData') {
-        graphState = msg;
-        statusEl.textContent = msg.nodes.length + ' nodes, ' + msg.topics.length + ' topics';
-        renderGraph(msg);
-    }
-});
-
-function renderGraph(data) {
-    // Clear old nodes (keep SVG)
-    canvas.querySelectorAll('.graph-node').forEach(el => el.remove());
-    svgEl.innerHTML = '';
-
-    const nodePositions = {};
-    const topicPositions = {};
-
-    const canvasW = canvas.clientWidth || 360;
-    const nodeCount = data.nodes.length;
-    const topicCount = data.topics.length;
-
-    // ── Place nodes on the left column ──
-    data.nodes.forEach((name, i) => {
-        const el = document.createElement('div');
-        el.className = 'graph-node node-type';
-        el.textContent = name;
-        el.title = name;
-        const x = 20;
-        const y = 20 + i * 50;
-        el.style.left = x + 'px';
-        el.style.top  = y + 'px';
-        el.addEventListener('click', () => showNodeDetails(name, data.connections[name]));
-        canvas.appendChild(el);
-        nodePositions[name] = { x: x + el.offsetWidth, y: y + 12 };
-    });
-
-    // ── Place topics on the right column ──
-    data.topics.forEach((t, i) => {
-        const el = document.createElement('div');
-        el.className = 'graph-node topic-type';
-        el.textContent = t.name;
-        el.title = t.type;
-        const x = Math.max(canvasW - 160, 200);
-        const y = 20 + i * 50;
-        el.style.left = x + 'px';
-        el.style.top  = y + 'px';
-        el.addEventListener('click', () => showTopicDetails(t));
-        canvas.appendChild(el);
-        topicPositions[t.name] = { x: x, y: y + 12 };
-    });
-
-    // ── Draw edges ──
-    const totalHeight = Math.max(
-        (nodeCount * 50) + 40,
-        (topicCount * 50) + 40,
-        300
-    );
-    canvas.style.minHeight = totalHeight + 'px';
-    svgEl.setAttribute('viewBox', '0 0 ' + canvasW + ' ' + totalHeight);
-    svgEl.style.width  = canvasW + 'px';
-    svgEl.style.height = totalHeight + 'px';
-
-    for (const [node, info] of Object.entries(data.connections)) {
-        const nPos = nodePositions[node];
-        if (!nPos) continue;
-
-        (info.publishers || []).forEach(topic => {
-            const tPos = topicPositions[topic];
-            if (!tPos) return;
-            drawEdge(nPos, tPos, '#27ae60'); // green = publishes
-        });
-
-        (info.subscribers || []).forEach(topic => {
-            const tPos = topicPositions[topic];
-            if (!tPos) return;
-            drawEdge(tPos, nPos, '#e67e22'); // orange = subscribes
-        });
-    }
-}
-
-function drawEdge(from, to, color) {
-    const line = document.createElementNS('http://www.w3.org/2000/svg', 'line');
-    line.setAttribute('x1', from.x);
-    line.setAttribute('y1', from.y);
-    line.setAttribute('x2', to.x);
-    line.setAttribute('y2', to.y);
-    line.setAttribute('stroke', color);
-    line.setAttribute('stroke-width', '1.5');
-    line.setAttribute('stroke-opacity', '0.7');
-    svgEl.appendChild(line);
-}
-
-function showNodeDetails(name, info) {
-    const pubs = (info && info.publishers) || [];
-    const subs = (info && info.subscribers) || [];
-    detailEl.innerHTML =
-        '<strong>' + name + '</strong> (node)' +
-        '<br><br><em>Publishes:</em> ' + (pubs.length ? pubs.join(', ') : '—') +
-        '<br><em>Subscribes:</em> ' + (subs.length ? subs.join(', ') : '—');
-}
-
-function showTopicDetails(topic) {
-    detailEl.innerHTML =
-        '<strong>' + topic.name + '</strong> (topic)' +
-        '<br>Type: <code>' + topic.type + '</code>';
-}
-
-// Initial fetch
-vscode.postMessage({ command: 'refresh' });
-`;
-
-        return getWebviewHtml(webview, this._extensionUri, body, script);
+        const scriptUris = [
+            vscode.Uri.joinPath(this._extensionUri, 'media', 'nodeVisualizer', 'index.js'),
+        ];
+        return getWebviewHtml(webview, this._extensionUri, body, '', undefined, scriptUris);
     }
 }
