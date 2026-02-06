@@ -73,6 +73,9 @@ export class PackageManagerViewProvider implements vscode.WebviewViewProvider {
                 case PMToHostCommand.SET_PREFERRED_TERMINAL:
                     await this._setPreferredTerminal(msg.id);
                     break;
+                case PMToHostCommand.TOGGLE_BUILD_CHECK:
+                    await this._toggleBuildCheck(msg.enabled);
+                    break;
             }
         });
 
@@ -85,6 +88,7 @@ export class PackageManagerViewProvider implements vscode.WebviewViewProvider {
 
         // Send the initial package list once the view is visible
         this._sendPackageList();
+        this._sendBuildCheckState();
     }
 
     /** Called from the "ROS: Create Package" command. */
@@ -94,6 +98,22 @@ export class PackageManagerViewProvider implements vscode.WebviewViewProvider {
     }
 
     // ── Private ────────────────────────────────────────────────
+    private _sendBuildCheckState() {
+        const enabled = vscode.workspace
+            .getConfiguration('rosDevToolkit')
+            .get<boolean>('preLaunchBuildCheck', true);
+        this._view?.webview.postMessage({
+            command: PMToWebviewCommand.BUILD_CHECK_STATE,
+            enabled,
+        });
+    }
+
+    private async _toggleBuildCheck(enabled: boolean) {
+        await vscode.workspace
+            .getConfiguration('rosDevToolkit')
+            .update('preLaunchBuildCheck', enabled, vscode.ConfigurationTarget.Global);
+    }
+
     private async _handleCreate(msg: { name: string; buildType: string; deps: string }) {
         const deps = msg.deps
             .split(/[\s,]+/)
@@ -252,6 +272,14 @@ export class PackageManagerViewProvider implements vscode.WebviewViewProvider {
     <div class="toolbar">
         <button id="btnOpenCreate">＋ New Package</button>
         <button class="secondary small" id="btnRefresh">↻ Refresh</button>
+    </div>
+
+    <div class="toggle-row">
+        <label for="toggleBuildCheck">⚡ Auto build check before launch</label>
+        <span class="toggle-switch">
+            <input type="checkbox" id="toggleBuildCheck" checked />
+            <span class="toggle-slider"></span>
+        </span>
     </div>
 
     <div class="search-row">

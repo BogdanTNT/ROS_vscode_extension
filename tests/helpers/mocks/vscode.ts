@@ -87,6 +87,8 @@ const errorMessages: string[] = [];
 
 let workspaceFolders: Array<{ uri: Uri }> = [{ uri: Uri.file(process.cwd()) }];
 
+let warningMessageResponse: string | undefined = undefined;
+
 export const window = {
     onDidCloseTerminal: closeTerminalEmitter.event,
     createTerminal(options?: string | MockTerminalOptions): MockTerminal {
@@ -101,9 +103,9 @@ export const window = {
         infoMessages.push(message);
         return Promise.resolve(undefined);
     },
-    showWarningMessage(message: string): Promise<undefined> {
+    showWarningMessage(message: string, ..._args: unknown[]): Promise<string | undefined> {
         warningMessages.push(message);
-        return Promise.resolve(undefined);
+        return Promise.resolve(warningMessageResponse);
     },
     showErrorMessage(message: string): Promise<undefined> {
         errorMessages.push(message);
@@ -179,12 +181,17 @@ export function __getCreatedTerminals(): MockTerminal[] {
     return [...createdTerminals];
 }
 
+export function __setWarningMessageResponse(response: string | undefined): void {
+    warningMessageResponse = response;
+}
+
 export function __resetMockState(): void {
     workspaceFolders = [{ uri: Uri.file(process.cwd()) }];
     createdTerminals.length = 0;
     infoMessages.length = 0;
     warningMessages.length = 0;
     errorMessages.length = 0;
+    warningMessageResponse = undefined;
 
     configuration.rosDevToolkit = {
         rosSetupPath: '',

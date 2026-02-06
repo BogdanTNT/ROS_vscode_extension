@@ -9,6 +9,9 @@ export function activate(context: vscode.ExtensionContext) {
 
     const rosWorkspace = new RosWorkspace();
 
+    // Initialise smart-build subsystem (stamps, deps, policy).
+    rosWorkspace.initSmartBuild(context);
+
     // Prevent CMake Tools from prompting for a kit on startup.
     const cmakeConfig = vscode.workspace.getConfiguration('cmake');
     cmakeConfig.update('configureOnOpen', false, vscode.ConfigurationTarget.Workspace);
@@ -55,4 +58,8 @@ export function activate(context: vscode.ExtensionContext) {
     });
 }
 
-export function deactivate() {}
+export function deactivate() {
+    // Cleanup is handled by VS Code's disposable subscriptions,
+    // but the file watcher in the smart-build subsystem needs
+    // explicit disposal since it's not pushed to subscriptions.
+}

@@ -28,5 +28,6 @@
         btnSaveArgs: document.getElementById('btnSaveArgs'),
         btnCancelArgs: document.getElementById('btnCancelArgs'),
         btnCloseArgs: document.getElementById('btnCloseArgs'),
+        toggleBuildCheck: document.getElementById('toggleBuildCheck'),
     };
 })();

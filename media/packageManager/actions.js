@@ -21,6 +21,7 @@
         setPreferredTerminal: (id) => vscode.postMessage({ command: toHost.SET_PREFERRED_TERMINAL, id }),
         requestLaunchArgs: (path) => vscode.postMessage({ command: toHost.REQUEST_LAUNCH_ARGS, path }),
         refreshPackages: () => vscode.postMessage({ command: toHost.REFRESH_PACKAGES }),
+        toggleBuildCheck: (enabled) => vscode.postMessage({ command: toHost.TOGGLE_BUILD_CHECK, enabled }),
         createPackage: (name, buildType, deps) => vscode.postMessage({ command: toHost.CREATE_PACKAGE, name, buildType, deps }),
         setLaunchArgConfigs: (path, configs) => vscode.postMessage({
             command: toHost.SET_LAUNCH_ARG_CONFIGS,

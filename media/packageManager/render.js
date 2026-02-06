@@ -10,6 +10,20 @@
     const KILL_FEEDBACK_MS = 1200;
 
     const getPkgList = () => document.getElementById('pkgList');
+    const isPackageExpanded = (packageName) => Boolean(state.expandedPackages?.[packageName]);
+    const setPackageExpanded = (packageName, expanded) => {
+        if (!packageName) {
+            return;
+        }
+        if (!state.expandedPackages || typeof state.expandedPackages !== 'object') {
+            state.expandedPackages = {};
+        }
+        state.expandedPackages[packageName] = expanded;
+    };
+    const togglePackageExpanded = (packageName) => {
+        setPackageExpanded(packageName, !isPackageExpanded(packageName));
+        renderPackages();
+    };
     const escapeHtml = (value) => String(value ?? '').replace(/[&<>"']/g, (ch) => {
         if (ch === '&') {
             return '&amp;';
@@ -99,6 +113,12 @@
     const handleLaunchListClick = (event) => {
         const target = event.target;
         if (!(target instanceof Element)) {
+            return;
+        }
+
+        const pkgToggleEl = target.closest('.pkg-toggle');
+        if (pkgToggleEl) {
+            togglePackageExpanded(pkgToggleEl.dataset.pkgName || '');
             return;
         }
 
@@ -467,6 +487,9 @@
 
         list.innerHTML = filtered
             .map((pkg) => {
+                const launchCount = pkg.launchFiles?.length || 0;
+                const hasLaunchFiles = launchCount > 0;
+                const isExpanded = (filter.length > 0) || !hasLaunchFiles || isPackageExpanded(pkg.name);
                 const launchItemsHtml = (pkg.launchFiles || [])
                     .map((filePath) => {
                         const fileName = getFileName(filePath);
@@ -483,20 +506,36 @@
                 const launchSection = launchItemsHtml
                     ? '<ul class="launch-list">' + launchItemsHtml + '</ul>'
                     : '<div class="text-muted text-sm">No launch files</div>';
+                const toggleControl = hasLaunchFiles
+                    ? (
+                        '<button class="pkg-toggle" data-pkg-name="' +
+                        escapeAttr(pkg.name) +
+                        '" aria-expanded="' +
+                        (isExpanded ? 'true' : 'false') +
+                        '" title="' +
+                        escapeAttr(isExpanded ? 'Collapse package' : 'Expand package') +
+                        '">' +
+                        (isExpanded ? '▾' : '▸') +
+                        '</button>'
+                    )
+                    : '<span class="pkg-toggle-placeholder"></span>';
 
                 return (
                     '<li class="pkg-row">' +
                     '<div class="pkg-header">' +
+                    '<div class="pkg-main">' +
+                    toggleControl +
                     '<span class="pkg-name" tabindex="0" data-name="' +
                     escapeAttr(pkg.name) +
                     '">' +
                     escapeHtml(pkg.name) +
                     '</span>' +
+                    '</div>' +
                     '<span class="text-muted text-sm">' +
-                    (pkg.launchFiles?.length || 0) +
+                    launchCount +
                     ' launch</span>' +
                     '</div>' +
-                    '<div class="pkg-launches">' +
+                    '<div class="pkg-launches' + (isExpanded ? '' : ' hidden') + '">' +
                     launchSection +
                     '</div>' +
                     '</li>'

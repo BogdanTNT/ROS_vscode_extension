@@ -63,6 +63,10 @@
 
     dom.filterInput.addEventListener('input', render.renderPackages);
 
+    dom.toggleBuildCheck.addEventListener('change', () => {
+        actions.toggleBuildCheck(dom.toggleBuildCheck.checked);
+    });
+
     dom.btnInsertAll.addEventListener('click', () => {
         if (!state.argsOptions.length) {
             return;

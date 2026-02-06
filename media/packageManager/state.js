@@ -5,6 +5,7 @@
     window.PM.state = {
         allPackages: [],
         pinnedPaths: [],
+        expandedPackages: {},
         launchArgConfigs: {},
         argsOptions: [],
         currentArgsPath: '',

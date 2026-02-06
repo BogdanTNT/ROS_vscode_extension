@@ -149,6 +149,65 @@ button.small {
     margin-top: 6px;
 }
 
+.build-dropdown {
+    position: relative;
+    margin-bottom: 8px;
+}
+
+.build-dropdown > button {
+    width: 100%;
+    justify-content: space-between;
+}
+
+.build-dropdown-menu {
+    position: absolute;
+    left: 0;
+    right: 0;
+    top: calc(100% + 4px);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    background: var(--panel-bg);
+    padding: 8px;
+    z-index: 20;
+}
+
+.build-dropdown-actions {
+    display: flex;
+    gap: 6px;
+    margin-bottom: 8px;
+}
+
+.build-package-list {
+    list-style: none;
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    max-height: 220px;
+    overflow-y: auto;
+    background: var(--input-bg);
+}
+
+.build-package-list li {
+    padding: 4px 8px;
+    border-bottom: 1px solid var(--border);
+}
+
+.build-package-list li:last-child {
+    border-bottom: none;
+}
+
+.build-package-item {
+    display: block;
+}
+
+.build-package-label {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin: 0;
+    cursor: pointer;
+    color: var(--text);
+}
+
 /* ── Cards / sections ──────────────────────────────────────── */
 
 .card {
@@ -220,9 +279,40 @@ button.small {
     gap: 8px;
 }
 
+.pkg-main {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    min-width: 0;
+}
+
 .pkg-name {
     font-weight: 600;
     cursor: pointer;
+}
+
+.pkg-toggle {
+    width: 18px;
+    height: 18px;
+    padding: 0;
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    background: transparent;
+    color: var(--text-muted);
+    justify-content: center;
+    flex: 0 0 auto;
+}
+
+.pkg-toggle:hover {
+    border-color: var(--accent);
+    color: var(--text);
+    background: var(--input-bg);
+}
+
+.pkg-toggle-placeholder {
+    width: 18px;
+    height: 18px;
+    flex: 0 0 auto;
 }
 
 .pkg-launches {
@@ -541,7 +631,65 @@ button.term-kill.is-pending {
 @keyframes spin {
     to { transform: rotate(360deg); }
 }
+/* ── Toggle switch ──────────────────────────────────────────── */
 
+.toggle-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    padding: 6px 0;
+}
+
+.toggle-row label {
+    cursor: pointer;
+    font-size: 0.85em;
+    color: var(--text);
+    user-select: none;
+}
+
+.toggle-switch {
+    position: relative;
+    width: 32px;
+    height: 18px;
+    flex: 0 0 auto;
+}
+
+.toggle-switch input {
+    opacity: 0;
+    width: 0;
+    height: 0;
+}
+
+.toggle-slider {
+    position: absolute;
+    cursor: pointer;
+    inset: 0;
+    background: var(--input-border);
+    border-radius: 9px;
+    transition: background 0.2s;
+}
+
+.toggle-slider::before {
+    content: '';
+    position: absolute;
+    width: 12px;
+    height: 12px;
+    left: 3px;
+    bottom: 3px;
+    background: var(--text-muted);
+    border-radius: 50%;
+    transition: transform 0.2s, background 0.2s;
+}
+
+.toggle-switch input:checked + .toggle-slider {
+    background: var(--accent);
+}
+
+.toggle-switch input:checked + .toggle-slider::before {
+    transform: translateX(14px);
+    background: var(--btn-fg, #fff);
+}
 /* ── Utility ───────────────────────────────────────────────── */
 
 .mt { margin-top: 10px; }

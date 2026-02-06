@@ -14,6 +14,7 @@
             KILL_TERMINAL: 'killTerminal',
             FOCUS_TERMINAL: 'focusTerminal',
             SET_PREFERRED_TERMINAL: 'setPreferredTerminal',
+            TOGGLE_BUILD_CHECK: 'toggleBuildCheck',
         }),
         toWebview: Object.freeze({
             PACKAGE_LIST: 'packageList',
@@ -21,6 +22,7 @@
             FOCUS_CREATE: 'focusCreate',
             LAUNCH_ARGS_OPTIONS: 'launchArgsOptions',
             TERMINAL_LIST: 'terminalList',
+            BUILD_CHECK_STATE: 'buildCheckState',
         }),
     });
 })();

@@ -50,6 +50,13 @@
                 render.renderTerminals();
                 break;
             }
+            case toWebview.BUILD_CHECK_STATE: {
+                const { dom: d } = window.PM;
+                if (d.toggleBuildCheck) {
+                    d.toggleBuildCheck.checked = Boolean(msg.enabled);
+                }
+                break;
+            }
         }
     });
 })();

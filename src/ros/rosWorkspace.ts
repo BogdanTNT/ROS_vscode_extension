@@ -2,6 +2,12 @@ import * as vscode from 'vscode';
 import * as cp from 'child_process';
 import * as path from 'path';
 import * as fs from 'fs';
+import { BuildStampManager, StampStorage } from './buildStampManager';
+import { DependencyResolver } from './dependencyResolver';
+import {
+    BuildPolicy,
+    BuildEvaluation,
+} from './buildPolicy';
 
 export interface RosEnvironmentInfo {
     distro: string;   // e.g. "humble", "noetic"
@@ -27,6 +33,14 @@ export interface LaunchArgOption {
     defaultValue?: string;
 }
 
+/** Result from preLaunchBuildCheck. */
+export interface PreLaunchBuildResult {
+    /** What the launch flow should do next. */
+    action: 'launch' | 'build-and-launch' | 'cancel';
+    /** Packages that need building (only when action is 'build-and-launch'). */
+    stalePackages?: string[];
+}
+
 export interface TrackedTerminalInfo {
     id: string;
     kind: 'integrated' | 'external';
@@ -48,15 +62,6 @@ interface TrackedTerminal extends TrackedTerminalInfo {
     innerPid?: number;
 }
 
-type LaunchBuildMode = 'smart' | 'always' | 'never';
-
-interface WorkspacePackageMeta {
-    name: string;
-    packagePath: string;
-    buildType: string;
-    dependencies: string[];
-}
-
 /**
  * Central helper that interacts with the ROS CLI tools installed on the host.
  * All shell calls go through here so views stay decoupled from the system.
@@ -70,6 +75,16 @@ export class RosWorkspace {
     private _terminalsEmitter = new vscode.EventEmitter<TrackedTerminalInfo[]>();
     public readonly onTerminalsChanged = this._terminalsEmitter.event;
 
+    // ── Smart-build subsystem (initialised lazily via initSmartBuild) ──
+    private _stampManager: BuildStampManager | undefined;
+    private _depResolver: DependencyResolver | undefined;
+    private _buildPolicy: BuildPolicy | undefined;
+    private _fileWatcher: vscode.FileSystemWatcher | undefined;
+    private _buildStatusEmitter = new vscode.EventEmitter<BuildEvaluation | undefined>();
+    public readonly onBuildStatusChanged = this._buildStatusEmitter.event;
+    private _cachedEvaluation: BuildEvaluation | undefined;
+    private _evaluationDirty = true;
+
     constructor() {
         vscode.window.onDidCloseTerminal((terminal) => {
             for (const [id, tracked] of this._trackedTerminals.entries()) {
@@ -80,6 +95,129 @@ export class RosWorkspace {
                 }
             }
         });
+    }
+
+    /**
+     * Initialise the smart-build subsystem.  Must be called once after
+     * construction, passing the extension context for persistent storage.
+     */
+    initSmartBuild(context: vscode.ExtensionContext): void {
+        const storage: StampStorage = {
+            get: (key) => context.workspaceState.get(key),
+            update: (key, value) => { context.workspaceState.update(key, value); },
+        };
+
+        this._stampManager = new BuildStampManager(storage);
+        this._depResolver = new DependencyResolver();
+        this._buildPolicy = new BuildPolicy(this._stampManager, this._depResolver);
+
+        // Watch src/ for changes to invalidate cached evaluation
+        const srcDir = this.getSrcDir();
+        if (srcDir) {
+            const pattern = new vscode.RelativePattern(srcDir, '**/*');
+            this._fileWatcher = vscode.workspace.createFileSystemWatcher(pattern);
+
+            const invalidate = () => {
+                this._evaluationDirty = true;
+                this._buildStatusEmitter.fire(undefined);
+            };
+
+            this._fileWatcher.onDidChange(invalidate);
+            this._fileWatcher.onDidCreate(invalidate);
+            this._fileWatcher.onDidDelete(invalidate);
+        }
+    }
+
+    disposeSmartBuild(): void {
+        this._fileWatcher?.dispose();
+        this._buildStatusEmitter.dispose();
+    }
+
+    // ── Smart-build public API ─────────────────────────────────
+
+    /**
+     * Evaluate which packages need rebuilding.
+     * Uses a cache that is invalidated by the file watcher.
+     */
+    evaluateBuildNeeds(targetPackages?: string[]): BuildEvaluation | undefined {
+        if (!this._buildPolicy) {
+            return undefined;
+        }
+
+        const srcDir = this.getSrcDir();
+        if (!srcDir) {
+            return undefined;
+        }
+
+        // If no specific targets, evaluate all workspace packages
+        if (!targetPackages || targetPackages.length === 0) {
+            if (!this._evaluationDirty && this._cachedEvaluation) {
+                return this._cachedEvaluation;
+            }
+
+            const graph = this._depResolver!.buildGraph(srcDir);
+            targetPackages = Array.from(graph.keys());
+        }
+
+        const evaluation = this._buildPolicy.evaluateBuildNeeds(srcDir, targetPackages);
+
+        this._cachedEvaluation = evaluation;
+        this._evaluationDirty = false;
+
+        return evaluation;
+    }
+
+    /**
+     * Mark packages as successfully built, updating their stamps.
+     */
+    markPackagesBuilt(packageNames: string[]): void {
+        if (!this._stampManager || !this._depResolver) {
+            return;
+        }
+
+        const srcDir = this.getSrcDir();
+        if (!srcDir) {
+            return;
+        }
+
+        const graph = this._depResolver.buildGraph(srcDir);
+        const now = Date.now();
+
+        for (const name of packageNames) {
+            const pkg = graph.get(name);
+            const buildType = pkg?.buildType ?? 'unknown';
+            this._stampManager.markBuilt(name, buildType, now);
+        }
+
+        this._evaluationDirty = true;
+    }
+
+    /**
+     * Invalidate all build stamps (e.g. after a clean).
+     */
+    invalidateAllStamps(): void {
+        this._stampManager?.invalidateAll();
+        this._evaluationDirty = true;
+    }
+
+    /**
+     * Build only packages that need building.
+     * Returns the list of packages that were actually sent to build.
+     */
+    smartBuildPackages(packages: string[]): string[] {
+        const evaluation = this.evaluateBuildNeeds(packages);
+        if (!evaluation) {
+            this.buildPackages(packages);
+            return packages;
+        }
+
+        const toBuild = evaluation.packagesNeedingBuild;
+        if (toBuild.length === 0) {
+            return [];
+        }
+
+        this.buildPackages(toBuild);
+        return toBuild;
     }
 
     // ── Environment detection ──────────────────────────────────
@@ -220,9 +358,53 @@ export class RosWorkspace {
 
     // ── Build ──────────────────────────────────────────────────
     buildPackages(packages: string[]): void {
-        const cmd = this.buildWorkspaceBuildCommand(packages);
-        if (cmd) {
+        const wsPath = this.getWorkspacePath();
+        const pkgArg = packages.length > 0 ? ` --packages-select ${packages.join(' ')}` : '';
+
+        if (!this.isRos2()) {
+            const cmd = `cd "${wsPath}" && catkin_make && source "${wsPath}/devel/setup.bash"`;
             this.runInTerminal(cmd);
+            return;
+        }
+
+        const useSymlink = vscode.workspace
+            .getConfiguration('rosDevToolkit')
+            .get<boolean>('symlinkInstall', true);
+        const symlinkFlag = useSymlink ? ' --symlink-install' : '';
+
+        // Clean stale build & install artifacts per-package before building.
+        //   • install/<pkg>/ — prevents EEXIST when switching to --symlink-install
+        //   • build/<pkg>/   — removes stale CMakeCache.txt when the workspace
+        //     was moved / copied from a different path
+        let cleanCmd = '';
+        if (packages.length > 0) {
+            const rmTargets = packages
+                .flatMap(p => [`"${wsPath}/build/${p}"`, `"${wsPath}/install/${p}"`])
+                .join(' ');
+            cleanCmd = `rm -rf ${rmTargets} && `;
+        } else {
+            cleanCmd = `rm -rf "${wsPath}/build" "${wsPath}/install" && `;
+        }
+
+        // Only source the ROS base — NOT the workspace overlay.
+        // We just deleted install dirs so the overlay would reference missing
+        // paths and produce colcon AMENT_PREFIX_PATH warnings.
+        // The overlay is re-sourced at the end after the build recreates it.
+        const parts: string[] = [
+            this.getRosSourceCommand(),
+            `cd "${wsPath}"`,
+            `${cleanCmd}colcon build${symlinkFlag}${pkgArg}`,
+            `source "${wsPath}/install/setup.bash"`,
+        ];
+
+        this.sendRawCommand(parts.join(' && '));
+
+        // Update build stamps so the next evaluateBuildNeeds() knows these
+        // packages were sent to build.  The actual build runs asynchronously
+        // in the terminal, but we stamp now so a subsequent launch check sees
+        // them as up-to-date instead of re-triggering a build every time.
+        if (packages.length > 0) {
+            this.markPackagesBuilt(packages);
         }
     }
 
@@ -235,16 +417,17 @@ export class RosWorkspace {
     }
 
     // ── Launch file ────────────────────────────────────────────
-    launchFile(pkg: string, launchFile: string, args: string = '', launchPath?: string, argsLabel?: string): void {
+    async launchFile(
+        pkg: string,
+        launchFile: string,
+        args: string = '',
+        launchPath?: string,
+        argsLabel?: string,
+    ): Promise<void> {
         const argString = args?.trim() ? ` ${args.trim()}` : '';
         const launchCmd = this.isRos2()
             ? `ros2 launch ${pkg} ${launchFile}${argString}`
             : `roslaunch ${pkg} ${launchFile}${argString}`;
-        const buildPlan = this.getLaunchBuildPlan(pkg, launchPath);
-        const buildCmd = buildPlan.shouldBuild
-            ? this.buildWorkspaceBuildCommand(buildPlan.packages)
-            : undefined;
-        const cmd = buildCmd ? `${buildCmd} && ${launchCmd}` : launchCmd;
 
         const useExternal = vscode.workspace
             .getConfiguration('rosDevToolkit')
@@ -253,407 +436,105 @@ export class RosWorkspace {
         const labelSuffix = argsLabel ? ` [${argsLabel}]` : '';
         const launchLabel = `${pkg} / ${launchFile}${labelSuffix}`;
 
-        if (buildPlan.shouldBuild) {
-            const mode = this.getLaunchBuildMode();
-            const buildTargetLabel = buildPlan.packages.length > 0
-                ? buildPlan.packages.join(', ')
-                : 'workspace';
-            const modeLabel = mode === 'always' ? 'always' : 'smart';
-            vscode.window.setStatusBarMessage(
-                `ROS Dev Toolkit: pre-launch build (${modeLabel}) ${buildTargetLabel}`,
-                3500,
-            );
+        // Smart-build check before launching
+        const result = await this.preLaunchBuildCheck(pkg);
+
+        if (result.action === 'cancel') {
+            return;
         }
 
+        if (result.action === 'build-and-launch') {
+            this.buildThenLaunch(result.stalePackages!, launchCmd, launchLabel, launchPath);
+            return;
+        }
+
+        // No build needed — launch directly
         if (useExternal) {
-            this.runInExternalTerminal(cmd, launchLabel, launchPath);
+            this.runInExternalTerminal(launchCmd, launchLabel, launchPath);
         } else {
-            this.runInLaunchTerminal(cmd, launchLabel, launchPath);
+            this.runInLaunchTerminal(launchCmd, launchLabel, launchPath);
         }
     }
 
-    private getLaunchBuildMode(): LaunchBuildMode {
-        const mode = vscode.workspace
+    /**
+     * Check if packages need building before a launch.
+     * Controlled by the `rosDevToolkit.preLaunchBuildCheck` toggle:
+     *  - enabled (default) → auto-build stale packages, then launch
+     *  - disabled → skip check, launch directly
+     *
+     * Returns a structured result so the caller can chain build + launch.
+     */
+    async preLaunchBuildCheck(pkg: string): Promise<PreLaunchBuildResult> {
+        const enabled = vscode.workspace
             .getConfiguration('rosDevToolkit')
-            .get<string>('launchBuildMode', 'smart')
-            .toLowerCase();
-        if (mode === 'always' || mode === 'never') {
-            return mode;
+            .get<boolean>('preLaunchBuildCheck', true);
+        if (!enabled) {
+            return { action: 'launch' };
         }
-        return 'smart';
+
+        const evaluation = this.evaluateBuildNeeds([pkg]);
+        if (!evaluation || evaluation.packagesNeedingBuild.length === 0) {
+            return { action: 'launch' };
+        }
+
+        return { action: 'build-and-launch', stalePackages: evaluation.packagesNeedingBuild };
     }
 
-    private getLaunchBuildPlan(pkg: string, launchPath?: string): { shouldBuild: boolean; packages: string[] } {
-        const mode = this.getLaunchBuildMode();
-        if (mode === 'never') {
-            return { shouldBuild: false, packages: [] };
-        }
-
-        const packageMap = this.getWorkspacePackageMetaMap();
-        const launchWorkspacePkg = this.resolveLaunchWorkspacePackageName(pkg, launchPath, packageMap);
-        if (!launchWorkspacePkg) {
-            return { shouldBuild: false, packages: [] };
-        }
-
-        const closure = this.getWorkspaceDependencyClosure(launchWorkspacePkg, packageMap);
-        const packagesToBuild = this.filterValidPackageNames(closure);
-        if (!packagesToBuild.length) {
-            return { shouldBuild: false, packages: [] };
-        }
-
-        if (mode === 'always') {
-            if (this.isRos2()) {
-                return { shouldBuild: true, packages: packagesToBuild };
-            }
-            return { shouldBuild: true, packages: [] };
-        }
-
-        const needsBuild = packagesToBuild.some((name) => {
-            const meta = packageMap.get(name);
-            if (!meta) {
-                return true;
-            }
-            return this.packageNeedsBuild(meta);
-        });
-
-        if (!needsBuild) {
-            return { shouldBuild: false, packages: [] };
-        }
-
-        if (this.isRos2()) {
-            return { shouldBuild: true, packages: packagesToBuild };
-        }
-        return { shouldBuild: true, packages: [] };
-    }
-
-    private buildWorkspaceBuildCommand(packages: string[]): string {
+    /**
+     * Build stale packages, then run a launch command in the same terminal
+     * session.  The launch is chained with `&&` so it only starts after a
+     * successful build.
+     */
+    buildThenLaunch(
+        stalePackages: string[],
+        launchCmd: string,
+        launchLabel?: string,
+        launchPath?: string,
+    ): void {
         const wsPath = this.getWorkspacePath();
-
-        if (!this.isRos2()) {
-            return `cd "${wsPath}" && catkin_make && source "${wsPath}/devel/setup.bash"`;
-        }
-
-        const safePackages = this.filterValidPackageNames(packages);
-        const pkgArg = safePackages.length > 0
-            ? ` --packages-select ${safePackages.join(' ')}`
+        const pkgArg = stalePackages.length > 0
+            ? ` --packages-select ${stalePackages.join(' ')}`
             : '';
-        return `cd "${wsPath}" && colcon build${pkgArg} && source "${wsPath}/install/setup.bash"`;
-    }
 
-    private filterValidPackageNames(packages: string[]): string[] {
-        const seen = new Set<string>();
-        const valid: string[] = [];
-        for (const pkg of packages) {
-            if (!/^[A-Za-z0-9_]+$/.test(pkg)) {
-                continue;
-            }
-            if (seen.has(pkg)) {
-                continue;
-            }
-            seen.add(pkg);
-            valid.push(pkg);
-        }
-        return valid;
-    }
+        const useSymlink = vscode.workspace
+            .getConfiguration('rosDevToolkit')
+            .get<boolean>('symlinkInstall', true);
+        const symlinkFlag = useSymlink ? ' --symlink-install' : '';
 
-    private getWorkspacePackageMetaMap(): Map<string, WorkspacePackageMeta> {
-        const map = new Map<string, WorkspacePackageMeta>();
-        const srcDir = this.getSrcDir();
-        if (!srcDir) {
-            return map;
+        let cleanCmd = '';
+        if (stalePackages.length > 0) {
+            const rmTargets = stalePackages
+                .flatMap(p => [`"${wsPath}/build/${p}"`, `"${wsPath}/install/${p}"`])
+                .join(' ');
+            cleanCmd = `rm -rf ${rmTargets} && `;
+        } else {
+            cleanCmd = `rm -rf "${wsPath}/build" "${wsPath}/install" && `;
         }
 
-        const defaultBuildType = this.isRos2() ? 'ament_cmake' : 'catkin';
-        const packageXmlFiles = this.findPackageXmlFiles(srcDir, 4);
-        for (const file of packageXmlFiles) {
-            try {
-                const xml = fs.readFileSync(file, 'utf8');
-                const parsed = this.parsePackageManifest(xml);
-                if (!parsed.name || map.has(parsed.name)) {
-                    continue;
-                }
-                map.set(parsed.name, {
-                    name: parsed.name,
-                    packagePath: path.dirname(file),
-                    buildType: parsed.buildType || defaultBuildType,
-                    dependencies: parsed.dependencies,
-                });
-            } catch {
-                // ignore malformed package.xml
-            }
-        }
-
-        return map;
-    }
-
-    private parsePackageManifest(xml: string): { name?: string; buildType?: string; dependencies: string[] } {
-        const nameMatch = xml.match(/<name>\s*([^<\s]+)\s*<\/name>/);
-        const buildTypeMatch = xml.match(/<build_type>\s*([^<\s]+)\s*<\/build_type>/);
-        const depTags = ['depend', 'build_depend', 'exec_depend', 'run_depend', 'build_export_depend'];
-        const deps = new Set<string>();
-
-        for (const tag of depTags) {
-            const regex = new RegExp(`<${tag}>\\s*([^<\\s]+)\\s*<\\/${tag}>`, 'g');
-            let match: RegExpExecArray | null;
-            while ((match = regex.exec(xml)) !== null) {
-                if (match[1]) {
-                    deps.add(match[1]);
-                }
-            }
-        }
-
-        return {
-            name: nameMatch?.[1],
-            buildType: buildTypeMatch?.[1],
-            dependencies: Array.from(deps),
-        };
-    }
-
-    private resolveLaunchWorkspacePackageName(
-        pkg: string,
-        launchPath: string | undefined,
-        packageMap: Map<string, WorkspacePackageMeta>,
-    ): string | undefined {
-        if (launchPath) {
-            const normalizedLaunch = path.resolve(launchPath);
-            for (const meta of packageMap.values()) {
-                const packageRoot = path.resolve(meta.packagePath);
-                if (normalizedLaunch === packageRoot || normalizedLaunch.startsWith(packageRoot + path.sep)) {
-                    return meta.name;
-                }
-            }
-        }
-
-        if (packageMap.has(pkg)) {
-            return pkg;
-        }
-
-        return undefined;
-    }
-
-    private getWorkspaceDependencyClosure(
-        rootPackage: string,
-        packageMap: Map<string, WorkspacePackageMeta>,
-    ): string[] {
-        const queue: string[] = [rootPackage];
-        const seen = new Set<string>();
-
-        while (queue.length > 0) {
-            const current = queue.shift();
-            if (!current || seen.has(current)) {
-                continue;
-            }
-            seen.add(current);
-
-            const meta = packageMap.get(current);
-            if (!meta) {
-                continue;
-            }
-
-            for (const dep of meta.dependencies) {
-                if (packageMap.has(dep) && !seen.has(dep)) {
-                    queue.push(dep);
-                }
-            }
-        }
-
-        return Array.from(seen);
-    }
-
-    private packageNeedsBuild(meta: WorkspacePackageMeta): boolean {
-        const buildStamp = this.getPackageBuildTimestamp(meta.name);
-        if (buildStamp <= 0) {
-            return true;
-        }
-
-        const changedFiles = this.listFilesChangedAfter(meta.packagePath, buildStamp);
-        if (changedFiles.length === 0) {
-            return false;
-        }
-
-        if (changedFiles.every((file) => this.isRuntimeOnlyChange(meta.packagePath, file))) {
-            return false;
-        }
-
-        if (
-            this.isRos2() &&
-            meta.buildType === 'ament_python' &&
-            this.isPackageSymlinkInstalled(meta.name) &&
-            changedFiles.every((file) => this.isSymlinkSafePythonChange(meta.packagePath, file))
-        ) {
-            return false;
-        }
-
-        return true;
-    }
-
-    private getPackageBuildTimestamp(packageName: string): number {
-        const wsPath = this.getWorkspacePath();
-        const candidates = this.isRos2()
-            ? [
-                path.join(wsPath, 'install', packageName, 'share', packageName, 'package.xml'),
-                path.join(wsPath, 'install', packageName),
-                path.join(wsPath, 'build', packageName),
-            ]
-            : [
-                path.join(wsPath, 'devel', 'lib', packageName),
-                path.join(wsPath, 'devel', 'share', packageName),
-                path.join(wsPath, 'build', packageName),
-            ];
-
-        let latest = 0;
-        for (const candidate of candidates) {
-            latest = Math.max(latest, this.getPathTimestamp(candidate));
-        }
-        return latest;
-    }
-
-    private getPathTimestamp(filePath: string): number {
-        try {
-            return fs.statSync(filePath).mtimeMs;
-        } catch {
-            return 0;
-        }
-    }
-
-    private listFilesChangedAfter(rootDir: string, sinceMs: number): string[] {
-        const changed: string[] = [];
-        const excludedDirs = new Set([
-            '.git',
-            '.svn',
-            '.hg',
-            'build',
-            'install',
-            'log',
-            'node_modules',
-            '__pycache__',
-            '.vscode',
-            '.idea',
-        ]);
-
-        const walk = (dir: string) => {
-            let entries: fs.Dirent[] = [];
-            try {
-                entries = fs.readdirSync(dir, { withFileTypes: true });
-            } catch {
-                return;
-            }
-
-            for (const entry of entries) {
-                const fullPath = path.join(dir, entry.name);
-                if (entry.isDirectory()) {
-                    if (excludedDirs.has(entry.name) || entry.name.startsWith('.')) {
-                        continue;
-                    }
-                    walk(fullPath);
-                    continue;
-                }
-                if (!entry.isFile()) {
-                    continue;
-                }
-                try {
-                    const stat = fs.statSync(fullPath);
-                    if (stat.mtimeMs > sinceMs) {
-                        changed.push(fullPath);
-                    }
-                } catch {
-                    // ignore files that vanished while scanning
-                }
-            }
-        };
-
-        walk(rootDir);
-        return changed;
-    }
-
-    private toRelativePackagePath(packagePath: string, filePath: string): string {
-        return path.relative(packagePath, filePath).replace(/\\/g, '/');
-    }
-
-    private isRuntimeOnlyChange(packagePath: string, filePath: string): boolean {
-        const rel = this.toRelativePackagePath(packagePath, filePath);
-        if (!rel || rel.startsWith('..')) {
-            return false;
-        }
-
-        if (rel.startsWith('launch/')) {
-            return true;
-        }
-        if (rel.startsWith('config/') && /\.(yaml|yml|json|rviz|urdf|xacro)$/i.test(rel)) {
-            return true;
-        }
-        if (rel.startsWith('params/') && /\.(yaml|yml|json)$/i.test(rel)) {
-            return true;
-        }
-
-        return /\.(launch|launch\.py|launch\.xml|rviz|urdf|xacro)$/i.test(rel);
-    }
-
-    private isSymlinkSafePythonChange(packagePath: string, filePath: string): boolean {
-        if (this.isRuntimeOnlyChange(packagePath, filePath)) {
-            return true;
-        }
-
-        const rel = this.toRelativePackagePath(packagePath, filePath);
-        if (!rel || rel.startsWith('..')) {
-            return false;
-        }
-
-        const base = path.basename(rel).toLowerCase();
-        if (
-            base === 'package.xml' ||
-            base === 'setup.py' ||
-            base === 'setup.cfg' ||
-            base === 'pyproject.toml' ||
-            base === 'colcon.pkg' ||
-            base === 'cmakelists.txt'
-        ) {
-            return false;
-        }
-
-        if (
-            rel.startsWith('msg/') ||
-            rel.startsWith('srv/') ||
-            rel.startsWith('action/') ||
-            rel.startsWith('include/') ||
-            rel.startsWith('src/')
-        ) {
-            return false;
-        }
-
-        if (rel.endsWith('.py')) {
-            return true;
-        }
-
-        if (rel.startsWith('resource/')) {
-            return true;
-        }
-
-        return /\.(yaml|yml|json|txt|md)$/i.test(rel);
-    }
-
-    private isPackageSymlinkInstalled(packageName: string): boolean {
-        if (!this.isRos2()) {
-            return false;
-        }
-
-        const wsPath = this.getWorkspacePath();
-        const candidates = [
-            path.join(wsPath, 'install', packageName, 'share', packageName, 'package.xml'),
-            path.join(wsPath, 'install', packageName, 'share', packageName),
+        const parts: string[] = [
+            this.getRosSourceCommand(),
+            `cd "${wsPath}"`,
+            `${cleanCmd}colcon build${symlinkFlag}${pkgArg}`,
+            `source "${wsPath}/install/setup.bash"`,
+            launchCmd,
         ];
 
-        for (const candidate of candidates) {
-            try {
-                if (fs.lstatSync(candidate).isSymbolicLink()) {
-                    return true;
-                }
-            } catch {
-                // ignore missing paths
-            }
+        const fullCmd = parts.join(' && ');
+
+        const useExternal = vscode.workspace
+            .getConfiguration('rosDevToolkit')
+            .get<boolean>('launchInExternalTerminal', true);
+
+        if (useExternal) {
+            this.runInExternalTerminal(fullCmd, launchLabel, launchPath, true);
+        } else {
+            this.runInLaunchTerminal(fullCmd, launchLabel, launchPath, true);
         }
 
-        return false;
+        // Update stamps so a subsequent launch sees them as up-to-date.
+        if (stalePackages.length > 0) {
+            this.markPackagesBuilt(stalePackages);
+        }
     }
 
     /**
@@ -665,8 +546,8 @@ export class RosWorkspace {
      * gnome-terminal (and other GTK apps) crash with a symbol-lookup
      * error.  We strip them before spawning the external terminal.
      */
-    runInExternalTerminal(cmd: string, launchLabel?: string, launchPath?: string): void {
-        const fullCmd = this.buildSourcedCommand(cmd);
+    runInExternalTerminal(cmd: string, launchLabel?: string, launchPath?: string, raw?: boolean): void {
+        const fullCmd = raw ? cmd : this.buildSourcedCommand(cmd);
         const bashPath = this.resolveBashPath() || '/bin/bash';
 
         // Build a clean environment: remove snap-injected GTK / GIO vars
@@ -710,8 +591,8 @@ export class RosWorkspace {
         }
     }
 
-    runInLaunchTerminal(cmd: string, launchLabel?: string, launchPath?: string): void {
-        const fullCmd = this.buildSourcedCommand(cmd);
+    runInLaunchTerminal(cmd: string, launchLabel?: string, launchPath?: string, raw?: boolean): void {
+        const fullCmd = raw ? cmd : this.buildSourcedCommand(cmd);
         let tracked = this.pickLaunchTerminal();
 
         if (!tracked || !tracked.terminal || tracked.terminal.exitStatus !== undefined) {
@@ -1132,7 +1013,7 @@ export class RosWorkspace {
         return folders?.[0]?.uri.fsPath ?? process.cwd();
     }
 
-    private getSrcDir(): string | undefined {
+    getSrcDir(): string | undefined {
         const wsPath = this.getWorkspacePath();
         const srcPath = path.join(wsPath, 'src');
         if (fs.existsSync(srcPath)) {
@@ -1276,6 +1157,19 @@ export class RosWorkspace {
         }
     }
 
+    /**
+     * Send a fully-formed command to the terminal WITHOUT prepending
+     * the automatic source / overlay prefix.  Use this when the caller
+     * has already embedded its own sourcing logic (e.g. buildPackages).
+     */
+    sendRawCommand(cmd: string): void {
+        const terminal = this.ensureTerminal();
+        terminal.show();
+        if (cmd.trim().length > 0) {
+            terminal.sendText(cmd);
+        }
+    }
+
     openSourcedTerminal(): void {
         const terminal = this.ensureTerminal();
         terminal.show();
@@ -1318,7 +1212,12 @@ export class RosWorkspace {
      *   3. $ROS_DISTRO env var
      *   4. First distro found under /opt/ros
      */
-    private getRosSourceCommand(): string {
+    /**
+     * Returns the `source …/setup.bash` string for the base ROS install.
+     * Protected so that specialised command builders (e.g. buildPackages)
+     * can reference it without going through the full overlay pipeline.
+     */
+    protected getRosSourceCommand(): string {
         const setupPath = this.resolveRosSetupPath();
         return `source "${setupPath}"`;
     }

@@ -9,6 +9,7 @@ export const PMToHostCommand = {
     KILL_TERMINAL: 'killTerminal',
     FOCUS_TERMINAL: 'focusTerminal',
     SET_PREFERRED_TERMINAL: 'setPreferredTerminal',
+    TOGGLE_BUILD_CHECK: 'toggleBuildCheck',
 } as const;
 
 export const PMToWebviewCommand = {
@@ -17,4 +18,5 @@ export const PMToWebviewCommand = {
     FOCUS_CREATE: 'focusCreate',
     LAUNCH_ARGS_OPTIONS: 'launchArgsOptions',
     TERMINAL_LIST: 'terminalList',
+    BUILD_CHECK_STATE: 'buildCheckState',
 } as const;
