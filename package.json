@@ -1,0 +1,94 @@
+{
+  "name": "ros-dev-toolkit",
+  "displayName": "ROS Dev Toolkit",
+  "description": "A VS Code extension for ROS development – create packages, build & run nodes, and visualize the ROS graph.",
+  "version": "0.1.0",
+  "publisher": "ros-dev",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "activationEvents": [
+    "onCommand:rosDevToolkit.createPackage",
+    "onCommand:rosDevToolkit.buildPackage",
+    "onCommand:rosDevToolkit.runNode",
+    "onCommand:rosDevToolkit.openSourcedTerminal",
+    "onCommand:rosDevToolkit.refreshGraph"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "configuration": {
+      "title": "ROS Dev Toolkit",
+      "properties": {
+        "rosDevToolkit.rosSetupPath": {
+          "type": "string",
+          "default": "",
+          "description": "Path to your ROS setup.bash (e.g. /opt/ros/humble/setup.bash). If empty, the extension will auto-detect and fall back to ~/.bashrc."
+        }
+      }
+    },
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "ros-dev-toolkit",
+          "title": "ROS Dev Toolkit",
+          "icon": "media/ros-icon.svg"
+        }
+      ]
+    },
+    "views": {
+      "ros-dev-toolkit": [
+        {
+          "type": "webview",
+          "id": "rosPackageManager",
+          "name": "Package Manager"
+        },
+        {
+          "type": "webview",
+          "id": "rosBuildRun",
+          "name": "Build & Run"
+        },
+        {
+          "type": "webview",
+          "id": "rosNodeVisualizer",
+          "name": "Node Visualizer"
+        }
+      ]
+    },
+    "commands": [
+      {
+        "command": "rosDevToolkit.createPackage",
+        "title": "ROS: Create Package"
+      },
+      {
+        "command": "rosDevToolkit.buildPackage",
+        "title": "ROS: Build Package"
+      },
+      {
+        "command": "rosDevToolkit.runNode",
+        "title": "ROS: Run Node"
+      },
+      {
+        "command": "rosDevToolkit.openSourcedTerminal",
+        "title": "ROS: Open Sourced Terminal"
+      },
+      {
+        "command": "rosDevToolkit.refreshGraph",
+        "title": "ROS: Refresh Node Graph"
+      }
+    ]
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "lint": "eslint src --ext ts"
+  },
+  "devDependencies": {
+    "@types/node": "^20.11.0",
+    "@types/vscode": "^1.85.0",
+    "typescript": "^5.3.3"
+  }
+}
