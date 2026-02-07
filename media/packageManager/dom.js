@@ -10,6 +10,8 @@
         btnCancelCreate: document.getElementById('btnCancelCreate'),
         createModal: document.getElementById('createModal'),
         createBackdrop: document.getElementById('createBackdrop'),
+        buildTypeInput: document.getElementById('buildType'),
+        depsInput: document.getElementById('deps'),
         statusEl: document.getElementById('createStatus'),
         pkgStatusEl: document.getElementById('pkgStatus'),
         filterInput: document.getElementById('pkgFilter'),

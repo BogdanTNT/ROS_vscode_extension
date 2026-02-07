@@ -26,6 +26,12 @@ export interface RosWorkspacePackageDetails {
     name: string;
     packagePath: string;
     launchFiles: string[];
+    nodes: RosRunnableNodeInfo[];
+}
+
+export interface RosRunnableNodeInfo {
+    name: string;
+    sourcePath?: string;
 }
 
 export interface LaunchArgOption {
@@ -303,11 +309,13 @@ export class RosWorkspace {
                 }
                 const packagePath = path.dirname(file);
                 const launchFiles = this.findLaunchFiles(packagePath, 3);
+                const nodes = this.findRunnableNodes(packagePath);
 
                 packages.push({
                     name,
                     packagePath,
                     launchFiles,
+                    nodes,
                 });
                 seen.add(name);
             } catch {
@@ -346,14 +354,34 @@ export class RosWorkspace {
             return false;
         }
 
-        const depString = deps.length > 0 ? ` --dependencies ${deps.join(' ')}` : '';
+        const normalizedDeps = deps
+            .map(dep => dep.trim())
+            .filter(Boolean);
+
+        const defaultDeps = this.isRos2()
+            ? this.getDefaultCreatePackageDependencies(buildType)
+            : [];
+
+        const mergedDeps = [...defaultDeps, ...normalizedDeps].filter((dep, idx, arr) => arr.indexOf(dep) === idx);
+        const depString = mergedDeps.length > 0 ? ` --dependencies ${mergedDeps.join(' ')}` : '';
 
         const cmd = this.isRos2()
             ? `cd "${srcDir}" && ros2 pkg create ${name} --build-type ${buildType}${depString}`
-            : `cd "${srcDir}" && catkin_create_pkg ${name} ${deps.join(' ')}`;
+            : `cd "${srcDir}" && catkin_create_pkg ${name} ${mergedDeps.join(' ')}`;
 
         this.runInTerminal(cmd);
         return true;
+    }
+
+    private getDefaultCreatePackageDependencies(buildType: string): string[] {
+        switch (buildType) {
+            case 'ament_python':
+                return ['rclpy', 'std_msgs'];
+            case 'ament_cmake':
+                return ['rclcpp', 'std_msgs'];
+            default:
+                return [];
+        }
     }
 
     // ── Build ──────────────────────────────────────────────────
@@ -409,34 +437,23 @@ export class RosWorkspace {
     }
 
     // ── Run node ───────────────────────────────────────────────
-    runNode(pkg: string, executable: string, args: string = ''): void {
-        const cmd = this.isRos2()
-            ? `ros2 run ${pkg} ${executable} ${args}`
-            : `rosrun ${pkg} ${executable} ${args}`;
-        this.runInTerminal(cmd);
-    }
-
-    // ── Launch file ────────────────────────────────────────────
-    async launchFile(
+    async runNode(
         pkg: string,
-        launchFile: string,
+        executable: string,
         args: string = '',
-        launchPath?: string,
+        nodePath?: string,
         argsLabel?: string,
     ): Promise<void> {
         const argString = args?.trim() ? ` ${args.trim()}` : '';
-        const launchCmd = this.isRos2()
-            ? `ros2 launch ${pkg} ${launchFile}${argString}`
-            : `roslaunch ${pkg} ${launchFile}${argString}`;
+        const runCmd = this.isRos2()
+            ? `ros2 run ${pkg} ${executable}${argString}`
+            : `rosrun ${pkg} ${executable}${argString}`;
+        const normalizedArgsLabel = argsLabel?.trim();
+        const normalizedNodePath = nodePath?.trim() ? nodePath : undefined;
+        const labelSuffix = normalizedArgsLabel ? ` [${normalizedArgsLabel}]` : '';
+        const nodeLabel = `${pkg} / ${executable}${labelSuffix}`;
 
-        const useExternal = vscode.workspace
-            .getConfiguration('rosDevToolkit')
-            .get<boolean>('launchInExternalTerminal', true);
-
-        const labelSuffix = argsLabel ? ` [${argsLabel}]` : '';
-        const launchLabel = `${pkg} / ${launchFile}${labelSuffix}`;
-
-        // Smart-build check before launching
+        // Smart-build check before running
         const result = await this.preLaunchBuildCheck(pkg);
 
         if (result.action === 'cancel') {
@@ -444,52 +461,24 @@ export class RosWorkspace {
         }
 
         if (result.action === 'build-and-launch') {
-            this.buildThenLaunch(result.stalePackages!, launchCmd, launchLabel, launchPath);
+            this.buildThenRun(result.stalePackages!, runCmd, nodeLabel, normalizedNodePath);
             return;
         }
 
-        // No build needed — launch directly
-        if (useExternal) {
-            this.runInExternalTerminal(launchCmd, launchLabel, launchPath);
-        } else {
-            this.runInLaunchTerminal(launchCmd, launchLabel, launchPath);
-        }
+        // No build needed — run directly
+        this.runInConfiguredLaunchTerminal(runCmd, nodeLabel, normalizedNodePath);
     }
 
     /**
-     * Check if packages need building before a launch.
-     * Controlled by the `rosDevToolkit.preLaunchBuildCheck` toggle:
-     *  - enabled (default) → auto-build stale packages, then launch
-     *  - disabled → skip check, launch directly
-     *
-     * Returns a structured result so the caller can chain build + launch.
+     * Build stale packages, then run a command (node, launch, etc.) in the
+     * configured terminal.  The command is chained with `&&` so it only
+     * starts after a successful build.
      */
-    async preLaunchBuildCheck(pkg: string): Promise<PreLaunchBuildResult> {
-        const enabled = vscode.workspace
-            .getConfiguration('rosDevToolkit')
-            .get<boolean>('preLaunchBuildCheck', true);
-        if (!enabled) {
-            return { action: 'launch' };
-        }
-
-        const evaluation = this.evaluateBuildNeeds([pkg]);
-        if (!evaluation || evaluation.packagesNeedingBuild.length === 0) {
-            return { action: 'launch' };
-        }
-
-        return { action: 'build-and-launch', stalePackages: evaluation.packagesNeedingBuild };
-    }
-
-    /**
-     * Build stale packages, then run a launch command in the same terminal
-     * session.  The launch is chained with `&&` so it only starts after a
-     * successful build.
-     */
-    buildThenLaunch(
+    buildThenRun(
         stalePackages: string[],
-        launchCmd: string,
-        launchLabel?: string,
-        launchPath?: string,
+        runCmd: string,
+        runLabel?: string,
+        runPath?: string,
     ): void {
         const wsPath = this.getWorkspacePath();
         const pkgArg = stalePackages.length > 0
@@ -516,24 +505,116 @@ export class RosWorkspace {
             `cd "${wsPath}"`,
             `${cleanCmd}colcon build${symlinkFlag}${pkgArg}`,
             `source "${wsPath}/install/setup.bash"`,
-            launchCmd,
+            runCmd,
         ];
 
         const fullCmd = parts.join(' && ');
+        this.runInConfiguredLaunchTerminal(fullCmd, runLabel, runPath, true);
 
+        // Update stamps so a subsequent run sees them as up-to-date.
+        if (stalePackages.length > 0) {
+            this.markPackagesBuilt(stalePackages);
+        }
+    }
+
+    // ── Launch file ────────────────────────────────────────────
+    async launchFile(
+        pkg: string,
+        launchFile: string,
+        args: string = '',
+        launchPath?: string,
+        argsLabel?: string,
+    ): Promise<void> {
+        const argString = args?.trim() ? ` ${args.trim()}` : '';
+        const launchCmd = this.isRos2()
+            ? `ros2 launch ${pkg} ${launchFile}${argString}`
+            : `roslaunch ${pkg} ${launchFile}${argString}`;
+
+        const labelSuffix = argsLabel ? ` [${argsLabel}]` : '';
+        const launchLabel = `${pkg} / ${launchFile}${labelSuffix}`;
+
+        // Smart-build check before launching
+        const result = await this.preLaunchBuildCheck(pkg);
+
+        if (result.action === 'cancel') {
+            return;
+        }
+
+        if (result.action === 'build-and-launch') {
+            this.buildThenRun(result.stalePackages!, launchCmd, launchLabel, launchPath);
+            return;
+        }
+
+        // No build needed — launch directly
+        this.runInConfiguredLaunchTerminal(launchCmd, launchLabel, launchPath);
+    }
+
+    /**
+     * Check if packages need building before a launch.
+     * Controlled by the `rosDevToolkit.preLaunchBuildCheck` toggle:
+     *  - enabled (default) → auto-build stale packages, then launch
+     *  - disabled → skip check, launch directly
+     *
+     * Returns a structured result so the caller can chain build + launch.
+     */
+    async preLaunchBuildCheck(pkg: string): Promise<PreLaunchBuildResult> {
+        const enabled = vscode.workspace
+            .getConfiguration('rosDevToolkit')
+            .get<boolean>('preLaunchBuildCheck', true);
+        if (!enabled) {
+            return { action: 'launch' };
+        }
+
+        const evaluation = this.evaluateBuildNeeds([pkg]);
+        if (!evaluation || evaluation.packagesNeedingBuild.length === 0) {
+            return { action: 'launch' };
+        }
+
+        return { action: 'build-and-launch', stalePackages: evaluation.packagesNeedingBuild };
+    }
+
+    /** @deprecated Use {@link buildThenRun} instead. */
+    buildThenLaunch(
+        stalePackages: string[],
+        launchCmd: string,
+        launchLabel?: string,
+        launchPath?: string,
+    ): void {
+        this.buildThenRun(stalePackages, launchCmd, launchLabel, launchPath);
+    }
+
+    /** @deprecated Use {@link buildThenRun} instead. */
+    buildThenRunNode(
+        stalePackages: string[],
+        runCmd: string,
+        nodeLabel?: string,
+        nodePath?: string,
+    ): void {
+        this.buildThenRun(stalePackages, runCmd, nodeLabel, nodePath);
+    }
+
+    private runInConfiguredLaunchTerminal(
+        cmd: string,
+        launchLabel?: string,
+        launchPath?: string,
+        raw?: boolean,
+    ): void {
         const useExternal = vscode.workspace
             .getConfiguration('rosDevToolkit')
             .get<boolean>('launchInExternalTerminal', true);
 
         if (useExternal) {
-            this.runInExternalTerminal(fullCmd, launchLabel, launchPath, true);
+            if (raw === undefined) {
+                this.runInExternalTerminal(cmd, launchLabel, launchPath);
+            } else {
+                this.runInExternalTerminal(cmd, launchLabel, launchPath, raw);
+            }
         } else {
-            this.runInLaunchTerminal(fullCmd, launchLabel, launchPath, true);
-        }
-
-        // Update stamps so a subsequent launch sees them as up-to-date.
-        if (stalePackages.length > 0) {
-            this.markPackagesBuilt(stalePackages);
+            if (raw === undefined) {
+                this.runInLaunchTerminal(cmd, launchLabel, launchPath);
+            } else {
+                this.runInLaunchTerminal(cmd, launchLabel, launchPath, raw);
+            }
         }
     }
 
@@ -660,13 +741,18 @@ export class RosWorkspace {
 
         if (tracked.kind === 'integrated') {
             if (tracked.terminal) {
-                tracked.terminal.sendText('\x03');
+                // Send Ctrl+C without an appended newline so it behaves
+                // exactly like a manual keypress in the terminal.
+                tracked.terminal.sendText('\x03', false);
             }
         } else {
-            // Read the real inner bash PID and send SIGINT (Ctrl+C)
-            const innerPid = this.readInnerPid(tracked);
+            // Prefer the real inner bash PID so SIGINT behaves like Ctrl+C.
+            const innerPid = this.readInnerPid(tracked, false);
             if (innerPid) {
-                this.interruptProcess(innerPid);
+                this.interruptProcess(innerPid, true);
+            } else {
+                // PID file may not be ready yet right after spawn; retry briefly.
+                this.scheduleDeferredInterrupt(id);
             }
         }
 
@@ -779,7 +865,7 @@ export class RosWorkspace {
      * Read the real inner bash PID from the PID file.
      * Falls back to the cached innerPid or the child PID.
      */
-    private readInnerPid(tracked: TrackedTerminal): number | undefined {
+    private readInnerPid(tracked: TrackedTerminal, allowChildFallback: boolean = true): number | undefined {
         // Try cached first
         if (tracked.innerPid) {
             return tracked.innerPid;
@@ -798,7 +884,28 @@ export class RosWorkspace {
         }
 
         // Last resort: use the spawned child PID (won't work for gnome-terminal)
-        return tracked.pid;
+        return allowChildFallback ? tracked.pid : undefined;
+    }
+
+    private scheduleDeferredInterrupt(trackedId: string, attempt: number = 0): void {
+        if (attempt >= 10) {
+            return;
+        }
+
+        setTimeout(() => {
+            const tracked = this._trackedTerminals.get(trackedId);
+            if (!tracked || tracked.kind !== 'external') {
+                return;
+            }
+
+            const innerPid = this.readInnerPid(tracked, false);
+            if (innerPid) {
+                this.interruptProcess(innerPid, true);
+                return;
+            }
+
+            this.scheduleDeferredInterrupt(trackedId, attempt + 1);
+        }, 150);
     }
 
     /**
@@ -806,38 +913,77 @@ export class RosWorkspace {
      * Sends SIGTERM, then SIGKILL after 500ms.
      */
     private killProcessTree(pid: number): void {
-        // Kill all children first, then the parent
-        try {
-            cp.execSync(`pkill -TERM -P ${pid} 2>/dev/null`);
-        } catch { /* ignore */ }
-        try {
-            process.kill(pid, 'SIGTERM');
-        } catch { /* ignore */ }
+        const descendants = this.getDescendantPids(pid);
+
+        // SIGTERM descendants leaf-first, then the parent
+        for (const desc of descendants) {
+            try { process.kill(desc, 'SIGTERM'); } catch { /* ignore */ }
+        }
+        try { process.kill(pid, 'SIGTERM'); } catch { /* ignore */ }
 
         // Force kill after delay
         setTimeout(() => {
-            try {
-                cp.execSync(`pkill -KILL -P ${pid} 2>/dev/null`);
-            } catch { /* ignore */ }
-            try {
-                process.kill(pid, 'SIGKILL');
-            } catch { /* ignore */ }
+            for (const desc of descendants) {
+                try { process.kill(desc, 'SIGKILL'); } catch { /* ignore */ }
+            }
+            try { process.kill(pid, 'SIGKILL'); } catch { /* ignore */ }
         }, 500);
     }
 
     /**
      * Send SIGINT (Ctrl+C) to the inner bash's child processes.
      * This interrupts ros2 launch without closing the terminal.
+     *
+     * For `ros2 run` the actual node is a grandchild of the bash, so we
+     * must walk the full descendant tree — `pkill -P` only hits direct
+     * children and would leave the node process orphaned.
      */
-    private interruptProcess(pid: number): void {
-        // Send SIGINT to children of the bash (ros2 launch, etc)
-        try {
-            cp.execSync(`pkill -INT -P ${pid} 2>/dev/null`);
-        } catch { /* ignore */ }
+    private interruptProcess(pid: number, includeProcessGroup: boolean = false): void {
+        // Collect ALL descendant PIDs (recursive), leaf-first, so children
+        // are signalled before parents.
+        const descendants = this.getDescendantPids(pid);
+
+        if (includeProcessGroup) {
+            // Best-effort: signal the shell's process group to mimic Ctrl+C.
+            try {
+                process.kill(-pid, 'SIGINT');
+            } catch { /* ignore */ }
+        }
+
+        // Signal every descendant individually (leaf → root order).
+        for (const desc of descendants) {
+            try {
+                process.kill(desc, 'SIGINT');
+            } catch { /* ignore */ }
+        }
+
         // Also send to the bash itself in case it's the foreground
         try {
             process.kill(pid, 'SIGINT');
         } catch { /* ignore */ }
+    }
+
+    /**
+     * Recursively collect all descendant PIDs of `parentPid`,
+     * returned in leaf-first (deepest-first) order.
+     */
+    private getDescendantPids(parentPid: number): number[] {
+        const result: number[] = [];
+        try {
+            // `pgrep -P <pid>` lists direct children.
+            const raw = cp.execSync(`pgrep -P ${parentPid} 2>/dev/null`, { encoding: 'utf8' }).trim();
+            if (!raw) {
+                return result;
+            }
+            const children = raw.split('\n').map(s => parseInt(s, 10)).filter(n => n > 0);
+            // Recurse into each child first (depth-first) …
+            for (const child of children) {
+                result.push(...this.getDescendantPids(child));
+            }
+            // … then add the direct children.
+            result.push(...children);
+        } catch { /* pgrep returns non-zero when there are no children */ }
+        return result;
     }
 
     /**
@@ -1006,6 +1152,98 @@ export class RosWorkspace {
     // ── Utilities ──────────────────────────────────────────────
     isRos2(): boolean {
         return (this._env?.version ?? 2) === 2;
+    }
+
+    private findRunnableNodes(packagePath: string): RosRunnableNodeInfo[] {
+        const nodeMap = new Map<string, RosRunnableNodeInfo>();
+
+        const addNode = (name: string, sourcePath?: string) => {
+            const normalizedName = name.trim();
+            if (!normalizedName) {
+                return;
+            }
+            const normalizedPath = sourcePath && fs.existsSync(sourcePath)
+                ? sourcePath
+                : undefined;
+            const existing = nodeMap.get(normalizedName);
+            if (!existing) {
+                nodeMap.set(normalizedName, { name: normalizedName, sourcePath: normalizedPath });
+                return;
+            }
+            if (!existing.sourcePath && normalizedPath) {
+                nodeMap.set(normalizedName, { ...existing, sourcePath: normalizedPath });
+            }
+        };
+
+        const parseConsoleScriptLine = (line: string): { execName: string; moduleName: string } | undefined => {
+            const match = line.match(/^\s*([A-Za-z0-9_-]+)\s*=\s*([A-Za-z0-9_.]+)\s*:/);
+            if (!match) {
+                return undefined;
+            }
+            return { execName: match[1], moduleName: match[2] };
+        };
+
+        const setupPyPath = path.join(packagePath, 'setup.py');
+        if (fs.existsSync(setupPyPath)) {
+            try {
+                const setupPy = fs.readFileSync(setupPyPath, 'utf8');
+                const consoleScriptsBlock = setupPy.match(/['"]console_scripts['"]\s*:\s*\[([\s\S]*?)\]/m);
+                if (consoleScriptsBlock?.[1]) {
+                    const entryRegex = /['"]\s*([A-Za-z0-9_-]+)\s*=\s*([A-Za-z0-9_.]+)\s*:[^'"]+['"]/g;
+                    let match: RegExpExecArray | null;
+                    while ((match = entryRegex.exec(consoleScriptsBlock[1])) !== null) {
+                        const execName = match[1];
+                        const moduleName = match[2];
+                        const sourcePath = path.join(packagePath, ...moduleName.split('.')) + '.py';
+                        addNode(execName, sourcePath);
+                    }
+                }
+            } catch {
+                // ignore parse errors
+            }
+        }
+
+        const setupCfgPath = path.join(packagePath, 'setup.cfg');
+        if (fs.existsSync(setupCfgPath)) {
+            try {
+                const setupCfg = fs.readFileSync(setupCfgPath, 'utf8');
+                const sectionMatch = setupCfg.match(/\[options\.entry_points\][\s\S]*?console_scripts\s*=\s*([\s\S]*?)(?:\n\s*\[|$)/m);
+                if (sectionMatch?.[1]) {
+                    for (const line of sectionMatch[1].split('\n')) {
+                        const parsed = parseConsoleScriptLine(line);
+                        if (!parsed) {
+                            continue;
+                        }
+                        const sourcePath = path.join(packagePath, ...parsed.moduleName.split('.')) + '.py';
+                        addNode(parsed.execName, sourcePath);
+                    }
+                }
+            } catch {
+                // ignore parse errors
+            }
+        }
+
+        const cmakePath = path.join(packagePath, 'CMakeLists.txt');
+        if (fs.existsSync(cmakePath)) {
+            try {
+                const cmake = fs.readFileSync(cmakePath, 'utf8');
+                const addExecutableRegex = /add_executable\s*\(\s*([^\s\)]+)\s+([\s\S]*?)\)/gm;
+                let match: RegExpExecArray | null;
+                while ((match = addExecutableRegex.exec(cmake)) !== null) {
+                    const executableName = match[1].trim();
+                    const sourcesBlock = match[2];
+                    const sourceMatch = sourcesBlock.match(/["']?([^\s"'$)]+?\.(?:cxx|cpp|cc|c))["']?/i);
+                    const sourcePath = sourceMatch
+                        ? path.join(packagePath, sourceMatch[1])
+                        : undefined;
+                    addNode(executableName, sourcePath);
+                }
+            } catch {
+                // ignore parse errors
+            }
+        }
+
+        return Array.from(nodeMap.values()).sort((a, b) => a.name.localeCompare(b.name));
     }
 
     getWorkspacePath(): string {

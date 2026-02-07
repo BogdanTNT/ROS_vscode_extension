@@ -27,7 +27,7 @@ describe('RosWorkspace create and launch commands', () => {
         __resetMockState();
     });
 
-    it('builds the ROS 2 create package command and sends it to the terminal', async () => {
+    it('adds default Python dependencies and merges custom dependencies', async () => {
         workspaceRoot = createTempWorkspace({
             'src/.keep': '',
         });
@@ -36,12 +36,30 @@ describe('RosWorkspace create and launch commands', () => {
         const ros = new RosWorkspace();
         const runSpy = vi.spyOn(ros, 'runInTerminal').mockImplementation(() => {});
 
-        const result = await ros.createPackage('demo_pkg', 'ament_python', ['rclcpp', 'std_msgs']);
+        const result = await ros.createPackage('demo_pkg', 'ament_python', ['geometry_msgs', 'std_msgs']);
 
         expect(result).toBe(true);
         expect(runSpy).toHaveBeenCalledTimes(1);
         expect(runSpy).toHaveBeenCalledWith(
-            `cd "${path.join(workspaceRoot, 'src')}" && ros2 pkg create demo_pkg --build-type ament_python --dependencies rclcpp std_msgs`
+            `cd "${path.join(workspaceRoot, 'src')}" && ros2 pkg create demo_pkg --build-type ament_python --dependencies rclpy std_msgs geometry_msgs`
+        );
+    });
+
+    it('adds default C++ dependencies when none are provided', async () => {
+        workspaceRoot = createTempWorkspace({
+            'src/.keep': '',
+        });
+        __setWorkspaceFolder(workspaceRoot);
+
+        const ros = new RosWorkspace();
+        const runSpy = vi.spyOn(ros, 'runInTerminal').mockImplementation(() => {});
+
+        const result = await ros.createPackage('demo_cpp_pkg', 'ament_cmake', []);
+
+        expect(result).toBe(true);
+        expect(runSpy).toHaveBeenCalledTimes(1);
+        expect(runSpy).toHaveBeenCalledWith(
+            `cd "${path.join(workspaceRoot, 'src')}" && ros2 pkg create demo_cpp_pkg --build-type ament_cmake --dependencies rclcpp std_msgs`
         );
     });
 
@@ -199,18 +217,18 @@ describe('RosWorkspace create and launch commands', () => {
             upToDate: [],
             details: new Map([['demo_pkg', { reason: 'source-changed' as const }]]),
         });
-        const buildThenLaunchSpy = vi.spyOn(ros, 'buildThenLaunch').mockImplementation(() => {});
+        const buildThenRunSpy = vi.spyOn(ros, 'buildThenRun').mockImplementation(() => {});
         const externalSpy = vi.spyOn(ros, 'runInExternalTerminal').mockImplementation(() => {});
 
         await ros.launchFile('demo_pkg', 'robot.launch.py', 'use_sim_time:=true');
 
-        expect(buildThenLaunchSpy).toHaveBeenCalledWith(
+        expect(buildThenRunSpy).toHaveBeenCalledWith(
             ['demo_pkg'],
             'ros2 launch demo_pkg robot.launch.py use_sim_time:=true',
             'demo_pkg / robot.launch.py',
             undefined,
         );
-        // Direct launch must NOT be called — buildThenLaunch handles both
+        // Direct launch must NOT be called — buildThenRun handles both
         expect(externalSpy).not.toHaveBeenCalled();
     });
 
@@ -230,5 +248,138 @@ describe('RosWorkspace create and launch commands', () => {
 
         expect(buildThenLaunchSpy).not.toHaveBeenCalled();
         expect(externalSpy).toHaveBeenCalledTimes(1);
+    });
+
+    // ── Pre-run build check (nodes) ────────────────────────────
+    it('skips pre-run build check for nodes when toggle is off', async () => {
+        __setConfiguration('rosDevToolkit', 'preLaunchBuildCheck', false);
+        __setConfiguration('rosDevToolkit', 'launchInExternalTerminal', true);
+
+        const ros = new RosWorkspace();
+        vi.spyOn(ros, 'evaluateBuildNeeds').mockReturnValue({
+            packagesNeedingBuild: ['demo_pkg'],
+            upToDate: [],
+            details: new Map([['demo_pkg', { reason: 'source-changed' as const }]]),
+        });
+        const buildThenRunNodeSpy = vi.spyOn(ros, 'buildThenRunNode').mockImplementation(() => {});
+        const externalSpy = vi.spyOn(ros, 'runInExternalTerminal').mockImplementation(() => {});
+        const integratedSpy = vi.spyOn(ros, 'runInLaunchTerminal').mockImplementation(() => {});
+
+        await ros.runNode('demo_pkg', 'talker');
+
+        // Toggle off → no build, run directly
+        expect(buildThenRunNodeSpy).not.toHaveBeenCalled();
+        expect(externalSpy).toHaveBeenCalledTimes(1);
+        expect(externalSpy).toHaveBeenCalledWith(
+            'ros2 run demo_pkg talker',
+            'demo_pkg / talker',
+            undefined,
+        );
+        expect(integratedSpy).not.toHaveBeenCalled();
+    });
+
+    it('auto builds then runs node when toggle is on and packages are stale', async () => {
+        const ros = new RosWorkspace();
+        vi.spyOn(ros, 'evaluateBuildNeeds').mockReturnValue({
+            packagesNeedingBuild: ['demo_pkg'],
+            upToDate: [],
+            details: new Map([['demo_pkg', { reason: 'source-changed' as const }]]),
+        });
+        const buildThenRunSpy = vi.spyOn(ros, 'buildThenRun').mockImplementation(() => {});
+        const externalSpy = vi.spyOn(ros, 'runInExternalTerminal').mockImplementation(() => {});
+        const integratedSpy = vi.spyOn(ros, 'runInLaunchTerminal').mockImplementation(() => {});
+
+        await ros.runNode('demo_pkg', 'talker', 'some_arg:=true');
+
+        expect(buildThenRunSpy).toHaveBeenCalledWith(
+            ['demo_pkg'],
+            'ros2 run demo_pkg talker some_arg:=true',
+            'demo_pkg / talker',
+            undefined,
+        );
+        // Direct run must NOT be called — buildThenRun handles both
+        expect(externalSpy).not.toHaveBeenCalled();
+        expect(integratedSpy).not.toHaveBeenCalled();
+    });
+
+    it('runs node directly when all packages are up to date', async () => {
+        __setConfiguration('rosDevToolkit', 'launchInExternalTerminal', true);
+
+        const ros = new RosWorkspace();
+        vi.spyOn(ros, 'evaluateBuildNeeds').mockReturnValue({
+            packagesNeedingBuild: [],
+            upToDate: ['demo_pkg'],
+            details: new Map([['demo_pkg', { reason: 'Up to date' as const }]]),
+        });
+        const buildThenRunNodeSpy = vi.spyOn(ros, 'buildThenRunNode').mockImplementation(() => {});
+        const externalSpy = vi.spyOn(ros, 'runInExternalTerminal').mockImplementation(() => {});
+        const integratedSpy = vi.spyOn(ros, 'runInLaunchTerminal').mockImplementation(() => {});
+
+        await ros.runNode('demo_pkg', 'talker');
+
+        expect(buildThenRunNodeSpy).not.toHaveBeenCalled();
+        expect(externalSpy).toHaveBeenCalledTimes(1);
+        expect(externalSpy).toHaveBeenCalledWith(
+            'ros2 run demo_pkg talker',
+            'demo_pkg / talker',
+            undefined,
+        );
+        expect(integratedSpy).not.toHaveBeenCalled();
+    });
+
+    it('runs node directly in integrated terminal when external launch terminal is disabled', async () => {
+        __setConfiguration('rosDevToolkit', 'launchInExternalTerminal', false);
+
+        const ros = new RosWorkspace();
+        vi.spyOn(ros, 'evaluateBuildNeeds').mockReturnValue({
+            packagesNeedingBuild: [],
+            upToDate: ['demo_pkg'],
+            details: new Map([['demo_pkg', { reason: 'Up to date' as const }]]),
+        });
+        const externalSpy = vi.spyOn(ros, 'runInExternalTerminal').mockImplementation(() => {});
+        const integratedSpy = vi.spyOn(ros, 'runInLaunchTerminal').mockImplementation(() => {});
+
+        await ros.runNode('demo_pkg', 'talker');
+
+        expect(integratedSpy).toHaveBeenCalledTimes(1);
+        expect(integratedSpy).toHaveBeenCalledWith(
+            'ros2 run demo_pkg talker',
+            'demo_pkg / talker',
+            undefined,
+        );
+        expect(externalSpy).not.toHaveBeenCalled();
+    });
+
+    it('buildThenRunNode constructs a combined build+run command', () => {
+        workspaceRoot = createTempWorkspace({ 'src/.keep': '' });
+        __setWorkspaceFolder(workspaceRoot);
+        __setConfiguration('rosDevToolkit', 'launchInExternalTerminal', true);
+
+        const ros = new RosWorkspace();
+        const externalSpy = vi.spyOn(ros, 'runInExternalTerminal').mockImplementation(() => {});
+        const integratedSpy = vi.spyOn(ros, 'runInLaunchTerminal').mockImplementation(() => {});
+
+        ros.buildThenRunNode(
+            ['demo_pkg'],
+            'ros2 run demo_pkg talker',
+        );
+
+        expect(externalSpy).toHaveBeenCalledTimes(1);
+        const cmd = externalSpy.mock.calls[0][0] as string;
+        // Build section present
+        expect(cmd).toContain('colcon build');
+        expect(cmd).toContain('--packages-select demo_pkg');
+        expect(cmd).toContain('--symlink-install');
+        // Cleanup before build
+        expect(cmd).toContain(`"${workspaceRoot}/build/demo_pkg"`);
+        expect(cmd).toContain(`"${workspaceRoot}/install/demo_pkg"`);
+        // Overlay sourced after build, before run
+        expect(cmd).toContain('install/setup.bash');
+        // Run command appended at the end
+        expect(cmd).toContain('ros2 run demo_pkg talker');
+        // Build comes before run (chained with &&)
+        expect(cmd.indexOf('colcon build')).toBeLessThan(cmd.indexOf('ros2 run'));
+        expect(externalSpy).toHaveBeenCalledWith(cmd, undefined, undefined, true);
+        expect(integratedSpy).not.toHaveBeenCalled();
     });
 });

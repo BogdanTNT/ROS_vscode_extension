@@ -36,7 +36,8 @@
                 break;
             }
             case toWebview.LAUNCH_ARGS_OPTIONS: {
-                if (msg.path !== state.currentArgsPath) {
+                const argsKey = msg.argsKey || msg.path;
+                if (argsKey !== state.currentArgsKey) {
                     break;
                 }
                 state.argsOptions = msg.options || [];

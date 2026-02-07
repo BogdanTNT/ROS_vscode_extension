@@ -4,10 +4,27 @@
 
     const { dom, state, actions, render } = window.PM;
 
+    const defaultDepsByBuildType = {
+        ament_cmake: 'rclcpp std_msgs',
+        ament_python: 'rclpy std_msgs',
+    };
+
+    const getDefaultDeps = (buildType) => defaultDepsByBuildType[buildType] || '';
+
+    const applyDefaultDepsForBuildType = (force = false) => {
+        if (!dom.buildTypeInput || !dom.depsInput) {
+            return;
+        }
+        if (force || !dom.depsInput.value.trim()) {
+            dom.depsInput.value = getDefaultDeps(dom.buildTypeInput.value);
+        }
+    };
+
     const openCreate = () => {
         dom.createModal.classList.remove('hidden');
         dom.statusEl.className = 'mt hidden';
         dom.statusEl.textContent = '';
+        applyDefaultDepsForBuildType(true);
         document.getElementById('pkgName').focus();
     };
 
@@ -15,12 +32,15 @@
         dom.createModal.classList.add('hidden');
     };
 
-    const openArgsModal = (path) => {
-        state.currentArgsPath = path;
-        const cfg = state.launchArgConfigs[path] || {
+    const openArgsModal = (argsKey, sourcePath) => {
+        if (!argsKey) {
+            return;
+        }
+        state.currentArgsKey = argsKey;
+        const cfg = state.launchArgConfigs[argsKey] || {
             configs: [{ id: 'default', name: 'default', args: '' }],
         };
-        state.launchArgConfigs[path] = cfg;
+        state.launchArgConfigs[argsKey] = cfg;
         state.currentConfigId = cfg.configs[0]?.id || 'default';
         const currentCfg = cfg.configs.find((c) => c.id === state.currentConfigId) || cfg.configs[0];
         dom.argsInput.value = currentCfg?.args || '';
@@ -30,8 +50,8 @@
         render.renderConfigTabs();
         dom.argsModal.classList.remove('hidden');
         dom.argsInput.focus();
-        if (state.currentArgsPath) {
-            actions.requestLaunchArgs(state.currentArgsPath);
+        if (state.currentArgsKey) {
+            actions.requestLaunchArgs(state.currentArgsKey, sourcePath || '');
         }
     };
 
@@ -41,8 +61,8 @@
 
     dom.btnCreate.addEventListener('click', () => {
         const name = document.getElementById('pkgName').value.trim();
-        const buildType = document.getElementById('buildType').value;
-        const deps = document.getElementById('deps').value.trim();
+        const buildType = dom.buildTypeInput ? dom.buildTypeInput.value : 'ament_cmake';
+        const deps = dom.depsInput ? dom.depsInput.value.trim() : '';
         if (!name) {
             return;
         }
@@ -56,6 +76,9 @@
     dom.btnCloseCreate.addEventListener('click', closeCreate);
     dom.btnCancelCreate.addEventListener('click', closeCreate);
     dom.createBackdrop.addEventListener('click', closeCreate);
+    if (dom.buildTypeInput) {
+        dom.buildTypeInput.addEventListener('change', () => applyDefaultDepsForBuildType(true));
+    }
 
     dom.btnRefresh.addEventListener('click', () => {
         actions.refreshPackages();
@@ -79,7 +102,7 @@
     });
 
     dom.btnSaveArgs.addEventListener('click', () => {
-        const cfg = state.launchArgConfigs[state.currentArgsPath] || { configs: [] };
+        const cfg = state.launchArgConfigs[state.currentArgsKey] || { configs: [] };
         const list = cfg.configs.length ? cfg.configs : [{ id: 'default', name: 'default', args: '' }];
         const idx = list.findIndex((c) => c.id === state.currentConfigId);
         if (idx >= 0) {
@@ -87,17 +110,17 @@
             list[idx].name = dom.configName.value || list[idx].name || 'config';
         }
         cfg.configs = list;
-        state.launchArgConfigs[state.currentArgsPath] = cfg;
-        actions.setLaunchArgConfigs(state.currentArgsPath, cfg.configs);
+        state.launchArgConfigs[state.currentArgsKey] = cfg;
+        actions.setLaunchArgConfigs(state.currentArgsKey, cfg.configs);
         closeArgsModal();
     });
 
     dom.btnAddConfig.addEventListener('click', () => {
-        const cfg = state.launchArgConfigs[state.currentArgsPath] || { configs: [] };
+        const cfg = state.launchArgConfigs[state.currentArgsKey] || { configs: [] };
         const id = 'cfg-' + Date.now();
         const name = 'config ' + (cfg.configs.length + 1);
         cfg.configs.push({ id, name, args: '' });
-        state.launchArgConfigs[state.currentArgsPath] = cfg;
+        state.launchArgConfigs[state.currentArgsKey] = cfg;
         state.currentConfigId = id;
         dom.configName.value = name;
         dom.argsInput.value = '';
@@ -105,7 +128,7 @@
     });
 
     dom.btnRemoveConfig.addEventListener('click', () => {
-        const cfg = state.launchArgConfigs[state.currentArgsPath];
+        const cfg = state.launchArgConfigs[state.currentArgsKey];
         if (!cfg || cfg.configs.length <= 1) {
             return;
         }
@@ -114,7 +137,7 @@
         const currentCfg = cfg.configs[0];
         dom.configName.value = currentCfg?.name || '';
         dom.argsInput.value = currentCfg?.args || '';
-        state.launchArgConfigs[state.currentArgsPath] = cfg;
+        state.launchArgConfigs[state.currentArgsKey] = cfg;
         render.renderConfigTabs();
     });
 

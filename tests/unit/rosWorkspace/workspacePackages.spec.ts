@@ -24,7 +24,26 @@ describe('RosWorkspace package discovery', () => {
     it('loads all workspace packages and launch files while skipping ignored folders', async () => {
         workspaceRoot = createTempWorkspace({
             'src/pkg_b/package.xml': '<package><name>pkg_b</name></package>',
+            'src/pkg_b/CMakeLists.txt': `
+cmake_minimum_required(VERSION 3.8)
+project(pkg_b)
+add_executable(cpp_node src/cpp_node.cpp)
+`,
+            'src/pkg_b/src/cpp_node.cpp': 'int main() { return 0; }',
             'src/pkg_a/package.xml': '<package><name>pkg_a</name></package>',
+            'src/pkg_a/setup.py': `
+from setuptools import setup
+
+setup(
+    name='pkg_a',
+    entry_points={
+        'console_scripts': [
+            'talker = pkg_a.talker:main',
+        ],
+    },
+)
+`,
+            'src/pkg_a/pkg_a/talker.py': 'def main(): pass',
             'src/pkg_a/launch/main.launch.py': '# launch file',
             'src/pkg_a/launch/nested/extra.xml': '<launch/>',
             'src/pkg_a/launch/notes.txt': 'ignored by extension filter',
@@ -47,8 +66,20 @@ describe('RosWorkspace package discovery', () => {
             path.join(workspaceRoot, 'src/pkg_a/launch/main.launch.py'),
             path.join(workspaceRoot, 'src/pkg_a/launch/nested/extra.xml'),
         ]);
+        expect(pkgA?.nodes).toEqual([
+            {
+                name: 'talker',
+                sourcePath: path.join(workspaceRoot, 'src/pkg_a/pkg_a/talker.py'),
+            },
+        ]);
 
         const pkgB = details.find((pkg) => pkg.name === 'pkg_b');
         expect(pkgB?.launchFiles).toEqual([]);
+        expect(pkgB?.nodes).toEqual([
+            {
+                name: 'cpp_node',
+                sourcePath: path.join(workspaceRoot, 'src/pkg_b/src/cpp_node.cpp'),
+            },
+        ]);
     });
 });

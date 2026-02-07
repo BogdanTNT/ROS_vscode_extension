@@ -8,7 +8,7 @@
         expandedPackages: {},
         launchArgConfigs: {},
         argsOptions: [],
-        currentArgsPath: '',
+        currentArgsKey: '',
         terminals: [],
         preferredTerminalId: '',
         currentConfigId: '',

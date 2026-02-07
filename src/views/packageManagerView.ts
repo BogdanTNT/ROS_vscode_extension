@@ -52,8 +52,14 @@ export class PackageManagerViewProvider implements vscode.WebviewViewProvider {
                 case PMToHostCommand.OPEN_LAUNCH:
                     await this._openLaunchFile(msg.path);
                     break;
+                case PMToHostCommand.OPEN_NODE:
+                    await this._openNodeFile(msg.path);
+                    break;
                 case PMToHostCommand.LAUNCH_FILE:
                     await this._launchFile(msg.pkg, msg.file, msg.path, msg.args, msg.argsName);
+                    break;
+                case PMToHostCommand.RUN_NODE:
+                    await this._runNode(msg.pkg, msg.executable, msg.args, msg.argsName, msg.path);
                     break;
                 case PMToHostCommand.TOGGLE_PIN:
                     await this._togglePin(msg.path);
@@ -62,7 +68,7 @@ export class PackageManagerViewProvider implements vscode.WebviewViewProvider {
                     await this._setLaunchArgConfigs(msg.path, msg.configs);
                     break;
                 case PMToHostCommand.REQUEST_LAUNCH_ARGS:
-                    await this._sendLaunchArgOptions(msg.path);
+                    await this._sendLaunchArgOptions(msg.argsKey ?? msg.path, msg.sourcePath ?? msg.path);
                     break;
                 case PMToHostCommand.KILL_TERMINAL:
                     await this._killTerminal(msg.id);
@@ -162,6 +168,18 @@ export class PackageManagerViewProvider implements vscode.WebviewViewProvider {
     }
 
     private async _openLaunchFile(filePath: string) {
+        await this._openWorkspaceFile(filePath, 'Launch file');
+    }
+
+    private async _openNodeFile(filePath?: string) {
+        if (!filePath) {
+            vscode.window.showWarningMessage('No source file detected for this node.');
+            return;
+        }
+        await this._openWorkspaceFile(filePath, 'Node source');
+    }
+
+    private async _openWorkspaceFile(filePath: string, label: string) {
         if (!filePath) {
             return;
         }
@@ -170,7 +188,7 @@ export class PackageManagerViewProvider implements vscode.WebviewViewProvider {
         const normalized = filePath.replace(/\\/g, '/');
         const normalizedWs = wsPath.replace(/\\/g, '/');
         if (!normalized.startsWith(normalizedWs)) {
-            vscode.window.showErrorMessage('Launch file is outside the workspace.');
+            vscode.window.showErrorMessage(`${label} is outside the workspace.`);
             return;
         }
 
@@ -195,6 +213,24 @@ export class PackageManagerViewProvider implements vscode.WebviewViewProvider {
         const argsLabel = argsNameOverride ?? undefined;
 
         this._ros.launchFile(pkg, file, args, path, argsLabel);
+    }
+
+    private async _runNode(
+        pkg: string,
+        executable: string,
+        argsOverride?: string,
+        argsNameOverride?: string,
+        sourcePath?: string,
+    ) {
+        if (!pkg || !executable) {
+            return;
+        }
+        const args = argsOverride !== undefined
+            ? argsOverride
+            : '';
+        const argsLabel = argsNameOverride?.trim() ? argsNameOverride : undefined;
+        const nodePath = sourcePath?.trim() ? sourcePath : undefined;
+        this._ros.runNode(pkg, executable, args, nodePath, argsLabel);
     }
 
     private async _killTerminal(id: string) {
@@ -251,15 +287,17 @@ export class PackageManagerViewProvider implements vscode.WebviewViewProvider {
     }
 
 
-    private async _sendLaunchArgOptions(path: string) {
-        if (!path) {
+    private async _sendLaunchArgOptions(argsKey: string, sourcePath?: string) {
+        if (!argsKey) {
             return;
         }
 
-        const options = this._ros.getLaunchArgOptions(path);
+        const options = sourcePath
+            ? this._ros.getLaunchArgOptions(sourcePath)
+            : [];
         this._view?.webview.postMessage({
             command: PMToWebviewCommand.LAUNCH_ARGS_OPTIONS,
-            path,
+            argsKey,
             options,
         });
     }
@@ -283,7 +321,7 @@ export class PackageManagerViewProvider implements vscode.WebviewViewProvider {
     </div>
 
     <div class="search-row">
-        <input type="text" id="pkgFilter" placeholder="Filter packages or launch files…" />
+        <input type="text" id="pkgFilter" placeholder="Filter packages, launch files, or nodes…" />
         <span id="pkgCount" class="badge info">0</span>
     </div>
 
@@ -297,9 +335,9 @@ export class PackageManagerViewProvider implements vscode.WebviewViewProvider {
     </div>
 
     <div class="subsection">
-        <h3>Pinned Launch Files</h3>
+        <h3>Pinned Items</h3>
         <ul class="item-list" id="pinnedList">
-            <li class="text-muted">No pinned launch files</li>
+            <li class="text-muted">No pinned items</li>
         </ul>
     </div>
 
@@ -329,7 +367,7 @@ export class PackageManagerViewProvider implements vscode.WebviewViewProvider {
             </select>
 
             <label for="deps">Dependencies <span class="text-muted text-sm">(space / comma separated)</span></label>
-            <input type="text" id="deps" placeholder="rclpy std_msgs geometry_msgs" />
+            <input type="text" id="deps" placeholder="auto: rclcpp std_msgs / rclpy std_msgs" />
         </div>
         <div class="modal-footer">
             <button class="secondary" id="btnCancelCreate">Cancel</button>

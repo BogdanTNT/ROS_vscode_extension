@@ -10,18 +10,31 @@
     const KILL_FEEDBACK_MS = 1200;
 
     const getPkgList = () => document.getElementById('pkgList');
-    const isPackageExpanded = (packageName) => Boolean(state.expandedPackages?.[packageName]);
-    const setPackageExpanded = (packageName, expanded) => {
-        if (!packageName) {
+    const getSectionStateKey = (packageName, sectionKey) => {
+        if (!packageName || !sectionKey) {
+            return '';
+        }
+        return packageName + '::' + sectionKey;
+    };
+    const isPackageSectionExpanded = (packageName, sectionKey) => {
+        const key = getSectionStateKey(packageName, sectionKey);
+        if (!key) {
+            return false;
+        }
+        return Boolean(state.expandedPackages?.[key]);
+    };
+    const setPackageSectionExpanded = (packageName, sectionKey, expanded) => {
+        const key = getSectionStateKey(packageName, sectionKey);
+        if (!key) {
             return;
         }
         if (!state.expandedPackages || typeof state.expandedPackages !== 'object') {
             state.expandedPackages = {};
         }
-        state.expandedPackages[packageName] = expanded;
+        state.expandedPackages[key] = expanded;
     };
-    const togglePackageExpanded = (packageName) => {
-        setPackageExpanded(packageName, !isPackageExpanded(packageName));
+    const togglePackageSectionExpanded = (packageName, sectionKey) => {
+        setPackageSectionExpanded(packageName, sectionKey, !isPackageSectionExpanded(packageName, sectionKey));
         renderPackages();
     };
     const escapeHtml = (value) => String(value ?? '').replace(/[&<>"']/g, (ch) => {
@@ -47,19 +60,37 @@
             if (t.launchPath) {
                 running.add(t.launchPath);
             }
+            if (t.launchLabel) {
+                running.add(t.launchLabel);
+            }
         });
         return running;
     };
 
     const getLaunchItemData = (launchItem) => {
         if (!launchItem) {
-            return { pkg: '', file: '', path: '' };
+            return { pkg: '', file: '', path: '', argsKey: '', pinKey: '' };
         }
 
         return {
             pkg: launchItem.dataset.pkg || '',
             file: launchItem.dataset.file || '',
             path: launchItem.dataset.path || '',
+            argsKey: launchItem.dataset.argsKey || launchItem.dataset.path || '',
+            pinKey: launchItem.dataset.pinKey || launchItem.dataset.path || '',
+        };
+    };
+
+    const getNodeItemData = (nodeItem) => {
+        if (!nodeItem) {
+            return { pkg: '', executable: '', path: '', argsKey: '', pinKey: '' };
+        }
+        return {
+            pkg: nodeItem.dataset.pkg || '',
+            executable: nodeItem.dataset.node || '',
+            path: nodeItem.dataset.path || '',
+            argsKey: nodeItem.dataset.argsKey || '',
+            pinKey: nodeItem.dataset.pinKey || nodeItem.dataset.argsKey || '',
         };
     };
 
@@ -71,6 +102,14 @@
         actions.launchFile(pkg, file, path, args || '', argsName || '');
     };
 
+    const runNodeFromItem = (nodeItem, args, argsName) => {
+        const { pkg, executable, path } = getNodeItemData(nodeItem);
+        if (!pkg || !executable) {
+            return;
+        }
+        actions.runNode(pkg, executable, args || '', argsName || '', path || '');
+    };
+
     const openFromItem = (launchItem) => {
         const { path } = getLaunchItemData(launchItem);
         if (!path) {
@@ -79,35 +118,61 @@
         actions.openLaunch(path);
     };
 
-    const togglePinFromItem = (launchItem) => {
-        const { path } = getLaunchItemData(launchItem);
+    const openNodeFromItem = (nodeItem) => {
+        const { path } = getNodeItemData(nodeItem);
         if (!path) {
             return;
         }
-        actions.togglePin(path);
+        actions.openNode(path);
     };
 
-    const openArgsFromItem = (launchItem) => {
-        const { path } = getLaunchItemData(launchItem);
-        if (!path) {
+    const togglePinFromItem = (launchItem) => {
+        const { pinKey } = getLaunchItemData(launchItem);
+        if (!pinKey) {
+            return;
+        }
+        actions.togglePin(pinKey);
+    };
+
+    const togglePinFromNodeItem = (nodeItem) => {
+        const { pinKey } = getNodeItemData(nodeItem);
+        if (!pinKey) {
+            return;
+        }
+        actions.togglePin(pinKey);
+    };
+
+    const openArgsFromItem = (argsKey, sourcePath) => {
+        if (!argsKey) {
             return;
         }
         if (window.PM.handlers?.openArgsModal) {
-            window.PM.handlers.openArgsModal(path);
+            window.PM.handlers.openArgsModal(argsKey, sourcePath || '');
         }
     };
 
     const launchFromConfigButton = (configBtn, launchItem) => {
         const id = configBtn?.dataset?.id;
-        const path = configBtn?.dataset?.path;
+        const argsKey = configBtn?.dataset?.argsKey;
 
-        if (!id || !path) {
+        if (!id || !argsKey) {
             return;
         }
 
-        const cfg = state.launchArgConfigs[path];
+        const cfg = state.launchArgConfigs[argsKey];
         const match = cfg?.configs?.find((c) => c.id === id);
         launchFromItem(launchItem, match?.args || '', match?.name || '');
+    };
+
+    const runNodeFromConfigButton = (configBtn, nodeItem) => {
+        const id = configBtn?.dataset?.id;
+        const argsKey = configBtn?.dataset?.argsKey;
+        if (!id || !argsKey) {
+            return;
+        }
+        const cfg = state.launchArgConfigs[argsKey];
+        const match = cfg?.configs?.find((c) => c.id === id);
+        runNodeFromItem(nodeItem, match?.args || '', match?.name || '');
     };
 
     const handleLaunchListClick = (event) => {
@@ -118,7 +183,7 @@
 
         const pkgToggleEl = target.closest('.pkg-toggle');
         if (pkgToggleEl) {
-            togglePackageExpanded(pkgToggleEl.dataset.pkgName || '');
+            togglePackageSectionExpanded(pkgToggleEl.dataset.pkgName || '', pkgToggleEl.dataset.sectionKey || '');
             return;
         }
 
@@ -128,35 +193,63 @@
             return;
         }
 
-        const launchItem = target.closest('.launch-item');
-        if (!launchItem) {
-            return;
-        }
-
         const configBtn = target.closest('.config-pill');
-        if (configBtn) {
+        const launchItem = target.closest('.launch-item');
+        const nodeItem = target.closest('.node-item');
+        if (configBtn && launchItem) {
             event.stopPropagation();
             launchFromConfigButton(configBtn, launchItem);
             return;
         }
-
-        if (target.closest('.launch-run')) {
-            launchFromItem(launchItem, '', '');
+        if (configBtn && nodeItem) {
+            event.stopPropagation();
+            runNodeFromConfigButton(configBtn, nodeItem);
             return;
         }
 
-        if (target.closest('.launch-open')) {
-            openFromItem(launchItem);
+        if (launchItem) {
+            if (target.closest('.launch-run')) {
+                launchFromItem(launchItem, '', '');
+                return;
+            }
+
+            if (target.closest('.launch-open')) {
+                openFromItem(launchItem);
+                return;
+            }
+
+            if (target.closest('.args-btn')) {
+                const { argsKey, path } = getLaunchItemData(launchItem);
+                openArgsFromItem(argsKey, path);
+                return;
+            }
+
+            if (target.closest('.pin-btn')) {
+                togglePinFromItem(launchItem);
+            }
             return;
         }
 
-        if (target.closest('.args-btn')) {
-            openArgsFromItem(launchItem);
-            return;
-        }
+        if (nodeItem) {
+            if (target.closest('.node-run')) {
+                runNodeFromItem(nodeItem, '', '');
+                return;
+            }
 
-        if (target.closest('.pin-btn')) {
-            togglePinFromItem(launchItem);
+            if (target.closest('.node-open') && !target.closest('.node-open.disabled')) {
+                openNodeFromItem(nodeItem);
+                return;
+            }
+
+            if (target.closest('.pin-btn')) {
+                togglePinFromNodeItem(nodeItem);
+                return;
+            }
+
+            if (target.closest('.args-btn')) {
+                const { argsKey, path } = getNodeItemData(nodeItem);
+                openArgsFromItem(argsKey, path || '');
+            }
         }
     };
 
@@ -178,19 +271,31 @@
         }
 
         const launchItem = target.closest('.launch-item');
-        if (!launchItem) {
+        if (launchItem) {
+            if (target.closest('.launch-run')) {
+                event.preventDefault();
+                launchFromItem(launchItem, '', '');
+                return;
+            }
+
+            if (target.closest('.launch-open')) {
+                event.preventDefault();
+                openFromItem(launchItem);
+            }
             return;
         }
 
-        if (target.closest('.launch-run')) {
-            event.preventDefault();
-            launchFromItem(launchItem, '', '');
-            return;
-        }
-
-        if (target.closest('.launch-open')) {
-            event.preventDefault();
-            openFromItem(launchItem);
+        const nodeItem = target.closest('.node-item');
+        if (nodeItem) {
+            if (target.closest('.node-run')) {
+                event.preventDefault();
+                runNodeFromItem(nodeItem, '', '');
+                return;
+            }
+            if (target.closest('.node-open') && !target.closest('.node-open.disabled')) {
+                event.preventDefault();
+                openNodeFromItem(nodeItem);
+            }
         }
     };
 
@@ -259,15 +364,15 @@
 
     const getFileName = (path) => path.split('/').pop() || path;
 
-    const buildConfigButtonsHtml = (path, cfg) => {
+    const buildConfigButtonsHtml = (argsKey, cfg) => {
         if (!cfg || !cfg.configs || !cfg.configs.length) {
             return '';
         }
 
         return cfg.configs
             .map((c) => (
-                '<button class="config-pill small" data-path="' +
-                escapeAttr(path) +
+                '<button class="config-pill small" data-args-key="' +
+                escapeAttr(argsKey) +
                 '" data-id="' +
                 escapeAttr(c.id) +
                 '">' +
@@ -285,8 +390,9 @@
         isRunning,
     }) => {
         const fileName = getFileName(filePath);
-        const cfg = state.launchArgConfigs[filePath];
-        const configButtons = buildConfigButtonsHtml(filePath, cfg);
+        const argsKey = filePath;
+        const cfg = state.launchArgConfigs[argsKey];
+        const configButtons = buildConfigButtonsHtml(argsKey, cfg);
         const runningBadge = isRunning ? '<span class="badge success">running</span>' : '';
         const runningClass = isRunning ? ' running' : '';
         const pinTitle = isPinned ? 'Unpin' : 'Pin';
@@ -300,6 +406,10 @@
             escapeAttr(packageName) +
             '" data-file="' +
             escapeAttr(fileName) +
+            '" data-args-key="' +
+            escapeAttr(argsKey) +
+            '" data-pin-key="' +
+            escapeAttr(filePath) +
             '">' +
             '<span class="launch-action launch-run" tabindex="0">Run</span>' +
             '<span class="launch-action launch-open" tabindex="0">' +
@@ -317,6 +427,148 @@
             '">★</button>' +
             '</li>'
         );
+    };
+
+    const buildNodeItemHtml = ({ packageName, nodeName, sourcePath, openLabel, isPinned, isRunning }) => {
+        const argsKey = 'node::' + packageName + '::' + nodeName;
+        const pinKey = argsKey;
+        const cfg = state.launchArgConfigs[argsKey];
+        const configButtons = buildConfigButtonsHtml(argsKey, cfg);
+        const hasSourcePath = Boolean(sourcePath);
+        const openClasses = hasSourcePath ? 'node-action node-open' : 'node-action node-open disabled';
+        const openTitle = hasSourcePath ? 'Open node source' : 'No source path detected';
+        const pinTitle = isPinned ? 'Unpin' : 'Pin';
+        const runningBadge = isRunning ? '<span class="badge success">running</span>' : '';
+        const runningClass = isRunning ? ' running' : '';
+
+        return (
+            '<li class="node-item' +
+            runningClass +
+            '" data-pkg="' +
+            escapeAttr(packageName) +
+            '" data-node="' +
+            escapeAttr(nodeName) +
+            '" data-path="' +
+            escapeAttr(sourcePath || '') +
+            '" data-args-key="' +
+            escapeAttr(argsKey) +
+            '" data-pin-key="' +
+            escapeAttr(pinKey) +
+            '">' +
+            '<span class="node-action node-run" tabindex="0">Run</span>' +
+            '<span class="' +
+            openClasses +
+            '" tabindex="0" title="' +
+            escapeAttr(openTitle) +
+            '">' +
+            escapeHtml(openLabel || nodeName) +
+            '</span>' +
+            '<button class="args-btn" title="Edit args">⚙</button>' +
+            '<span class="config-pill-group">' +
+            configButtons +
+            '</span>' +
+            runningBadge +
+            '<button class="pin-btn ' +
+            (isPinned ? 'pinned' : '') +
+            '" title="' +
+            escapeAttr(pinTitle) +
+            '">★</button>' +
+            '</li>'
+        );
+    };
+
+    const buildPackageDropdownHtml = ({
+        packageName,
+        sectionKey,
+        label,
+        count,
+        countLabel,
+        bodyHtml,
+        emptyText,
+        expanded,
+    }) => {
+        const toggleTitle = expanded ? 'Collapse ' + label : 'Expand ' + label;
+        const badgeText = count + ' ' + countLabel;
+        const body = bodyHtml || ('<div class="text-muted text-sm">' + escapeHtml(emptyText) + '</div>');
+
+        return (
+            '<div class="pkg-dropdown">' +
+            '<div class="pkg-dropdown-header">' +
+            '<button class="pkg-toggle" data-pkg-name="' +
+            escapeAttr(packageName) +
+            '" data-section-key="' +
+            escapeAttr(sectionKey) +
+            '" aria-expanded="' +
+            (expanded ? 'true' : 'false') +
+            '" title="' +
+            escapeAttr(toggleTitle) +
+            '">' +
+            (expanded ? '▾' : '▸') +
+            '</button>' +
+            '<span class="pkg-dropdown-title">' +
+            escapeHtml(label) +
+            '</span>' +
+            '<span class="text-muted text-sm">' +
+            escapeHtml(badgeText) +
+            '</span>' +
+            '</div>' +
+            '<div class="pkg-dropdown-body' + (expanded ? '' : ' hidden') + '">' +
+            body +
+            '</div>' +
+            '</div>'
+        );
+    };
+
+    const buildLaunchDropdownModel = (pkg, runningLaunchPaths, filter) => {
+        const launchFiles = pkg.launchFiles || [];
+        const launchItemsHtml = launchFiles
+            .map((filePath) => {
+                const fileName = getFileName(filePath);
+                return buildLaunchItemHtml({
+                    packageName: pkg.name,
+                    filePath,
+                    openLabel: fileName,
+                    isPinned: state.pinnedPaths.includes(filePath),
+                    isRunning: runningLaunchPaths.has(filePath),
+                });
+            })
+            .join('');
+
+        return {
+            sectionKey: 'launchFiles',
+            label: 'Launch Files',
+            count: launchFiles.length,
+            countLabel: launchFiles.length === 1 ? 'file' : 'files',
+            matchesFilter: !filter || launchFiles.some((filePath) => filePath.toLowerCase().includes(filter)),
+            bodyHtml: launchItemsHtml ? '<ul class="launch-list">' + launchItemsHtml + '</ul>' : '',
+            emptyText: 'No launch files detected',
+        };
+    };
+
+    const buildNodesDropdownModel = (pkg, runningLaunchPaths, filter) => {
+        const nodes = pkg.nodes || [];
+        const nodeItemsHtml = nodes
+            .map((node) => {
+                const nodeLabel = pkg.name + ' / ' + node.name;
+                return buildNodeItemHtml({
+                    packageName: pkg.name,
+                    nodeName: node.name,
+                    sourcePath: node.sourcePath,
+                    isPinned: state.pinnedPaths.includes('node::' + pkg.name + '::' + node.name),
+                    isRunning: runningLaunchPaths.has(nodeLabel) || (node.sourcePath && runningLaunchPaths.has(node.sourcePath)),
+                });
+            })
+            .join('');
+
+        return {
+            sectionKey: 'nodes',
+            label: 'Nodes',
+            count: nodes.length,
+            countLabel: nodes.length === 1 ? 'node' : 'nodes',
+            matchesFilter: !filter || nodes.some((node) => node.name.toLowerCase().includes(filter)),
+            bodyHtml: nodeItemsHtml ? '<ul class="node-list">' + nodeItemsHtml + '</ul>' : '',
+            emptyText: 'No runnable nodes detected',
+        };
     };
 
     const renderArgsOptions = () => {
@@ -355,7 +607,7 @@
         if (!dom.configList) {
             return;
         }
-        const cfg = state.launchArgConfigs[state.currentArgsPath];
+        const cfg = state.launchArgConfigs[state.currentArgsKey];
         if (!cfg || !cfg.configs?.length) {
             dom.configList.innerHTML = '<span class="text-muted text-sm">No configs</span>';
             return;
@@ -476,7 +728,8 @@
             }
             const nameMatch = p.name.toLowerCase().includes(filter);
             const launchMatch = (p.launchFiles || []).some((f) => f.toLowerCase().includes(filter));
-            return nameMatch || launchMatch;
+            const nodeMatch = (p.nodes || []).some((n) => (n.name || '').toLowerCase().includes(filter));
+            return nameMatch || launchMatch || nodeMatch;
         });
         dom.pkgCount.textContent = String(filtered.length);
 
@@ -488,43 +741,35 @@
         list.innerHTML = filtered
             .map((pkg) => {
                 const launchCount = pkg.launchFiles?.length || 0;
-                const hasLaunchFiles = launchCount > 0;
-                const isExpanded = (filter.length > 0) || !hasLaunchFiles || isPackageExpanded(pkg.name);
-                const launchItemsHtml = (pkg.launchFiles || [])
-                    .map((filePath) => {
-                        const fileName = getFileName(filePath);
-                        return buildLaunchItemHtml({
+                const nodeCount = pkg.nodes?.length || 0;
+                const launchLabel = launchCount === 1 ? 'launch' : 'launches';
+                const nodeLabel = nodeCount === 1 ? 'node' : 'nodes';
+                const packageNameMatches = filter.length > 0 && pkg.name.toLowerCase().includes(filter);
+                const dropdownModels = [
+                    buildLaunchDropdownModel(pkg, running, filter),
+                    buildNodesDropdownModel(pkg, running, filter),
+                ];
+                const dropdownHtml = dropdownModels
+                    .map((section) => {
+                        const expanded = (filter.length > 0 && (packageNameMatches || section.matchesFilter))
+                            || isPackageSectionExpanded(pkg.name, section.sectionKey);
+                        return buildPackageDropdownHtml({
                             packageName: pkg.name,
-                            filePath,
-                            openLabel: fileName,
-                            isPinned: state.pinnedPaths.includes(filePath),
-                            isRunning: running.has(filePath),
+                            sectionKey: section.sectionKey,
+                            label: section.label,
+                            count: section.count,
+                            countLabel: section.countLabel,
+                            bodyHtml: section.bodyHtml,
+                            emptyText: section.emptyText,
+                            expanded,
                         });
                     })
                     .join('');
-
-                const launchSection = launchItemsHtml
-                    ? '<ul class="launch-list">' + launchItemsHtml + '</ul>'
-                    : '<div class="text-muted text-sm">No launch files</div>';
-                const toggleControl = hasLaunchFiles
-                    ? (
-                        '<button class="pkg-toggle" data-pkg-name="' +
-                        escapeAttr(pkg.name) +
-                        '" aria-expanded="' +
-                        (isExpanded ? 'true' : 'false') +
-                        '" title="' +
-                        escapeAttr(isExpanded ? 'Collapse package' : 'Expand package') +
-                        '">' +
-                        (isExpanded ? '▾' : '▸') +
-                        '</button>'
-                    )
-                    : '<span class="pkg-toggle-placeholder"></span>';
 
                 return (
                     '<li class="pkg-row">' +
                     '<div class="pkg-header">' +
                     '<div class="pkg-main">' +
-                    toggleControl +
                     '<span class="pkg-name" tabindex="0" data-name="' +
                     escapeAttr(pkg.name) +
                     '">' +
@@ -533,10 +778,16 @@
                     '</div>' +
                     '<span class="text-muted text-sm">' +
                     launchCount +
-                    ' launch</span>' +
+                    ' ' +
+                    launchLabel +
+                    ' / ' +
+                    nodeCount +
+                    ' ' +
+                    nodeLabel +
+                    '</span>' +
                     '</div>' +
-                    '<div class="pkg-launches' + (isExpanded ? '' : ' hidden') + '">' +
-                    launchSection +
+                    '<div class="pkg-dropdowns">' +
+                    dropdownHtml +
                     '</div>' +
                     '</li>'
                 );
@@ -548,31 +799,51 @@
         bindDelegatedEvents();
 
         if (!state.pinnedPaths.length) {
-            dom.pinnedList.innerHTML = '<li class="text-muted">No pinned launch files</li>';
+            dom.pinnedList.innerHTML = '<li class="text-muted">No pinned items</li>';
             return;
         }
 
         const running = getRunningLaunchPaths();
         const pinnedItems = [];
 
-        for (const pkg of state.allPackages) {
-            for (const filePath of pkg.launchFiles || []) {
-                if (!state.pinnedPaths.includes(filePath)) {
+        for (const pinKey of state.pinnedPaths) {
+            if (pinKey.startsWith('node::')) {
+                const nodeMatch = state.allPackages
+                    .flatMap((pkg) => (pkg.nodes || []).map((node) => ({ pkg, node })))
+                    .find(({ pkg, node }) => ('node::' + pkg.name + '::' + node.name) === pinKey);
+                if (!nodeMatch) {
                     continue;
                 }
-                pinnedItems.push(buildLaunchItemHtml({
-                    packageName: pkg.name,
-                    filePath,
-                    openLabel: pkg.name + ' / ' + getFileName(filePath),
+                const nodeLabel = nodeMatch.pkg.name + ' / ' + nodeMatch.node.name;
+                pinnedItems.push(buildNodeItemHtml({
+                    packageName: nodeMatch.pkg.name,
+                    nodeName: nodeMatch.node.name,
+                    sourcePath: nodeMatch.node.sourcePath,
+                    openLabel: nodeLabel,
                     isPinned: true,
-                    isRunning: running.has(filePath),
+                    isRunning: running.has(nodeLabel) || (nodeMatch.node.sourcePath && running.has(nodeMatch.node.sourcePath)),
                 }));
+                continue;
             }
+
+            const launchMatch = state.allPackages
+                .flatMap((pkg) => (pkg.launchFiles || []).map((filePath) => ({ pkg, filePath })))
+                .find(({ filePath }) => filePath === pinKey);
+            if (!launchMatch) {
+                continue;
+            }
+            pinnedItems.push(buildLaunchItemHtml({
+                packageName: launchMatch.pkg.name,
+                filePath: launchMatch.filePath,
+                openLabel: launchMatch.pkg.name + ' / ' + getFileName(launchMatch.filePath),
+                isPinned: true,
+                isRunning: running.has(launchMatch.filePath),
+            }));
         }
 
         dom.pinnedList.innerHTML = pinnedItems.length
             ? pinnedItems.join('')
-            : '<li class="text-muted">No pinned launch files</li>';
+            : '<li class="text-muted">No pinned items</li>';
     };
 
     const copyPackage = async (name) => {
