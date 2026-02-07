@@ -4,6 +4,17 @@
 
     const { state, render, actions } = window.PM;
     const { toWebview } = window.PM.messages;
+    let lastAutoRefreshAt = 0;
+    const AUTO_REFRESH_COOLDOWN_MS = 500;
+
+    const requestAutoRefresh = () => {
+        const now = Date.now();
+        if (now - lastAutoRefreshAt < AUTO_REFRESH_COOLDOWN_MS) {
+            return;
+        }
+        lastAutoRefreshAt = now;
+        actions.refreshPackages();
+    };
 
     window.addEventListener('message', (event) => {
         const msg = event.data;
@@ -70,6 +81,19 @@
                 }
                 break;
             }
+        }
+    });
+
+    // Recover from missed initial messages and stale data after tab/window switches.
+    requestAutoRefresh();
+
+    window.addEventListener('focus', () => {
+        requestAutoRefresh();
+    });
+
+    document.addEventListener('visibilitychange', () => {
+        if (document.visibilityState === 'visible') {
+            requestAutoRefresh();
         }
     });
 })();

@@ -35,6 +35,8 @@ class MockTerminal {
     readonly name: string;
     readonly sentTexts: string[] = [];
     exitStatus: { code: number } | undefined;
+    processId: Promise<number | undefined> = Promise.resolve(undefined);
+    disposed = false;
 
     constructor(name: string) {
         this.name = name;
@@ -44,6 +46,11 @@ class MockTerminal {
 
     sendText(text: string): void {
         this.sentTexts.push(text);
+    }
+
+    dispose(): void {
+        this.disposed = true;
+        closeTerminalEmitter.fire(this);
     }
 }
 
@@ -72,6 +79,7 @@ export enum ConfigurationTarget {
 type ConfigurationStore = Record<string, Record<string, unknown>>;
 
 const closeTerminalEmitter = new EventEmitter<MockTerminal>();
+const shellExecutionEndEmitter = new EventEmitter<{ terminal: MockTerminal }>();
 const createdTerminals: MockTerminal[] = [];
 const configuration: ConfigurationStore = {
     rosDevToolkit: {
@@ -91,6 +99,7 @@ let warningMessageResponse: string | undefined = undefined;
 
 export const window = {
     onDidCloseTerminal: closeTerminalEmitter.event,
+    onDidEndTerminalShellExecution: shellExecutionEndEmitter.event,
     createTerminal(options?: string | MockTerminalOptions): MockTerminal {
         const name = typeof options === 'string'
             ? options
@@ -175,6 +184,10 @@ export function __getMessages(): { info: string[]; warn: string[]; error: string
 
 export function __closeTerminal(terminal: MockTerminal): void {
     closeTerminalEmitter.fire(terminal);
+}
+
+export function __fireShellExecutionEnd(terminal: MockTerminal): void {
+    shellExecutionEndEmitter.fire({ terminal });
 }
 
 export function __getCreatedTerminals(): MockTerminal[] {

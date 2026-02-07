@@ -590,37 +590,158 @@ button.term-kill.is-pending {
 
 /* ── Graph / Visualizer ────────────────────────────────────── */
 
-.graph-canvas {
-    width: 100%;
-    min-height: 300px;
+.nv-toolbar {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    justify-content: space-between;
+    flex-wrap: wrap;
+}
+
+.nv-summary {
+    display: flex;
+    gap: 6px;
+    flex-wrap: wrap;
+}
+
+.nv-pill {
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    padding: 2px 8px;
+    font-size: 0.75em;
+    background: var(--input-bg);
+}
+
+.nv-tabs {
+    display: flex;
+    gap: 6px;
+    flex-wrap: wrap;
+}
+
+.nv-tab {
+    padding: 4px 10px;
+}
+
+.nv-tab.active {
+    border: 1px solid var(--accent);
+    color: var(--accent);
+}
+
+.nv-layer-row {
+    display: flex;
+    gap: 10px;
+    align-items: center;
+    flex-wrap: wrap;
+}
+
+.nv-layer {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 0.85em;
+    color: var(--text);
+    cursor: pointer;
+}
+
+.nv-layer input {
+    margin: 0;
+}
+
+.nv-entity-list {
     border: 1px solid var(--border);
     border-radius: 4px;
     background: var(--input-bg);
-    position: relative;
-    overflow: auto;
+    max-height: 280px;
+    overflow-y: auto;
 }
 
-.graph-node {
-    position: absolute;
-    padding: 6px 12px;
-    border-radius: 6px;
-    font-size: 0.8em;
-    font-weight: 600;
+.nv-entity-item {
+    list-style: none;
+    border-bottom: 1px solid var(--border);
+}
+
+.nv-entity-item:last-child {
+    border-bottom: none;
+}
+
+.nv-entity-btn {
+    width: 100%;
+    border-radius: 0;
+    background: transparent;
+    color: var(--text);
+    justify-content: space-between;
+    padding: 6px 8px;
+}
+
+.nv-entity-item.active .nv-entity-btn {
+    outline: 1px solid var(--accent);
+    background: rgba(127, 127, 127, 0.1);
+}
+
+.nv-entity-name {
+    max-width: 72%;
+    overflow: hidden;
+    text-overflow: ellipsis;
     white-space: nowrap;
-    cursor: default;
-    box-shadow: 0 1px 4px rgba(0,0,0,0.3);
-    z-index: 2;
+    text-align: left;
 }
 
-.graph-node.node-type {
-    background: #2980b9;
-    color: #fff;
+.nv-entity-meta {
+    font-size: 0.75em;
+    color: var(--text-muted);
+    text-align: right;
 }
 
-.graph-node.topic-type {
-    background: #8e44ad;
-    color: #fff;
-    border-radius: 16px;
+.nv-overview-sections {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+}
+
+.nv-overview-section {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+
+.nv-overview-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+}
+
+.nv-overview-header h3 {
+    margin: 0;
+}
+
+.nv-overview-list {
+    max-height: none;
+}
+
+.nv-details-card {
+    position: sticky;
+    top: 6px;
+    z-index: 5;
+    background: var(--panel-bg);
+}
+
+.nv-topic-msg-row {
+    margin-top: 6px;
+}
+
+.nv-topic-msg {
+    margin-top: 4px;
+    padding: 8px;
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    background: var(--input-bg);
+    max-height: 180px;
+    overflow: auto;
+    white-space: pre-wrap;
+    word-break: break-word;
+    font-size: 0.8em;
+    font-family: var(--vscode-editor-font-family, monospace);
 }
 
 /* ── Scrollbar ─────────────────────────────────────────────── */

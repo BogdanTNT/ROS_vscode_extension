@@ -48,6 +48,7 @@ export class PackageManagerViewProvider implements vscode.WebviewViewProvider {
                     break;
                 case PMToHostCommand.REFRESH_PACKAGES:
                     await this._sendPackageList();
+                    this._sendBuildCheckState();
                     break;
                 case PMToHostCommand.OPEN_LAUNCH:
                     await this._openLaunchFile(msg.path);
@@ -259,7 +260,7 @@ export class PackageManagerViewProvider implements vscode.WebviewViewProvider {
         if (!id) {
             return;
         }
-        this._ros.killTrackedTerminal(id);
+        await this._ros.killTrackedTerminal(id);
     }
 
     private async _focusTerminal(id: string) {

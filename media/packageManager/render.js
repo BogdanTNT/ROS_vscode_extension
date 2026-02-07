@@ -679,6 +679,7 @@
                         ? '<span class="badge success">running</span>'
                         : '<span class="badge error">closed</span>';
                 const launchLabel = t.launchLabel ? t.launchLabel : 'Idle';
+                const terminalName = t.name ? t.name : 'Unknown terminal';
                 const preferred = t.isPreferred ? '<span class="badge info">active</span>' : '';
                 const useBtn =
                     t.kind === 'integrated'
@@ -689,9 +690,10 @@
                         ? '<button class="secondary small term-focus">Focus</button>'
                         : '';
                 const isKillFeedbackActive = (killFeedbackUntil.get(t.id) || 0) > now;
+                const isClosed = t.status !== 'running';
                 const killBtnClass = 'danger small term-kill' + (isKillFeedbackActive ? ' is-pending' : '');
                 const killBtnDisabled = isKillFeedbackActive ? ' disabled' : '';
-                const killBtnLabel = isKillFeedbackActive ? 'Sent' : 'Kill';
+                const killBtnLabel = isKillFeedbackActive ? 'Sent' : (isClosed ? 'Close' : 'Kill');
 
                 return (
                     '<li class="terminal-item" data-id="' +
@@ -700,14 +702,14 @@
                     '<div class="terminal-main">' +
                     '<div class="terminal-title">' +
                     '<span class="terminal-name">' +
-                    escapeHtml(t.name) +
+                    escapeHtml(launchLabel) +
                     '</span>' +
                     kindBadge +
                     statusBadge +
                     preferred +
                     '</div>' +
                     '<div class="terminal-sub text-muted text-sm">' +
-                    escapeHtml(launchLabel) +
+                    escapeHtml(terminalName) +
                     '</div>' +
                     '</div>' +
                     '<div class="terminal-actions">' +

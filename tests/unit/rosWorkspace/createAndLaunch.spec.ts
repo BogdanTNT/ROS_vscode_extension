@@ -6,6 +6,8 @@ import {
     __setWorkspaceFolder,
     __getMessages,
     __setWarningMessageResponse,
+    __getCreatedTerminals,
+    __fireShellExecutionEnd,
 } from '../../helpers/mocks/vscode';
 import { RosWorkspace } from '../../../src/ros/rosWorkspace';
 import { createTempWorkspace, removeTempWorkspace } from '../../helpers/workspaceFactory/tempWorkspace';
@@ -381,5 +383,80 @@ describe('RosWorkspace create and launch commands', () => {
         expect(cmd.indexOf('colcon build')).toBeLessThan(cmd.indexOf('ros2 run'));
         expect(externalSpy).toHaveBeenCalledWith(cmd, undefined, undefined, true);
         expect(integratedSpy).not.toHaveBeenCalled();
+    });
+
+    it('onDidEndTerminalShellExecution marks terminal status as closed', () => {
+        const ros = new RosWorkspace();
+        ros.runInLaunchTerminal('ros2 run demo_pkg talker', 'demo_pkg / talker');
+
+        const tracked = ros.getTrackedTerminals();
+        expect(tracked).toHaveLength(1);
+        expect(tracked[0].status).toBe('running');
+
+        const terminal = __getCreatedTerminals()[0];
+        __fireShellExecutionEnd(terminal as unknown as Parameters<typeof __fireShellExecutionEnd>[0]);
+
+        const updated = ros.getTrackedTerminals();
+        expect(updated[0].status).toBe('closed');
+    });
+
+    it('kill sends Ctrl+C when process is still running', async () => {
+        const ros = new RosWorkspace();
+        ros.runInLaunchTerminal('ros2 run demo_pkg talker', 'demo_pkg / talker');
+
+        const tracked = ros.getTrackedTerminals();
+        expect(tracked).toHaveLength(1);
+        expect(tracked[0].status).toBe('running');
+
+        const terminal = __getCreatedTerminals()[0] as unknown as {
+            sentTexts: string[];
+            disposed: boolean;
+        };
+
+        await ros.killTrackedTerminal(tracked[0].id);
+
+        expect(terminal.disposed).toBe(false);
+        expect(terminal.sentTexts[terminal.sentTexts.length - 1]).toBe('\x03');
+        expect(ros.getTrackedTerminals()).toHaveLength(1);
+    });
+
+    it('kill disposes terminal after process has finished (status closed)', async () => {
+        const ros = new RosWorkspace();
+        ros.runInLaunchTerminal('ros2 run demo_pkg talker', 'demo_pkg / talker');
+
+        const terminal = __getCreatedTerminals()[0];
+        // Simulate the shell execution ending (ROS process finished)
+        __fireShellExecutionEnd(terminal as unknown as Parameters<typeof __fireShellExecutionEnd>[0]);
+
+        const tracked = ros.getTrackedTerminals();
+        expect(tracked[0].status).toBe('closed');
+
+        const mockTerminal = terminal as unknown as { disposed: boolean; sentTexts: string[] };
+        await ros.killTrackedTerminal(tracked[0].id);
+
+        expect(mockTerminal.disposed).toBe(true);
+        expect(mockTerminal.sentTexts).not.toContain('\x03');
+        expect(ros.getTrackedTerminals()).toHaveLength(0);
+    });
+
+    it('second kill force-closes terminal after Ctrl+C was already sent', async () => {
+        const ros = new RosWorkspace();
+        ros.runInLaunchTerminal('ros2 run demo_pkg talker', 'demo_pkg / talker');
+
+        const tracked = ros.getTrackedTerminals();
+        const terminal = __getCreatedTerminals()[0] as unknown as {
+            sentTexts: string[];
+            disposed: boolean;
+        };
+
+        // First kill while running: sends Ctrl+C
+        await ros.killTrackedTerminal(tracked[0].id);
+        expect(terminal.disposed).toBe(false);
+        expect(terminal.sentTexts[terminal.sentTexts.length - 1]).toBe('\x03');
+
+        // Second kill: ctrlCSent flag causes force-dispose
+        await ros.killTrackedTerminal(tracked[0].id);
+        expect(terminal.disposed).toBe(true);
+        expect(ros.getTrackedTerminals()).toHaveLength(0);
     });
 });

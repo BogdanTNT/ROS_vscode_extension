@@ -40,6 +40,20 @@ export interface LaunchArgOption {
     defaultValue?: string;
 }
 
+export interface RosGraphEntityInfo {
+    name: string;
+    type: string;
+}
+
+export interface RosNodeGraphInfo {
+    publishers: string[];
+    subscribers: string[];
+    serviceServers: string[];
+    serviceClients: string[];
+    actionServers: string[];
+    actionClients: string[];
+}
+
 /** Result from preLaunchBuildCheck. */
 export interface PreLaunchBuildResult {
     /** What the launch flow should do next. */
@@ -67,6 +81,8 @@ interface TrackedTerminal extends TrackedTerminalInfo {
     childProcess?: cp.ChildProcess;
     pidFile?: string;
     innerPid?: number;
+    /** Set after a Ctrl+C has been sent so the next kill force-closes. */
+    ctrlCSent?: boolean;
 }
 
 /**
@@ -97,6 +113,18 @@ export class RosWorkspace {
             for (const [id, tracked] of this._trackedTerminals.entries()) {
                 if (tracked.kind === 'integrated' && tracked.terminal === terminal) {
                     this._trackedTerminals.delete(id);
+                    this._emitTerminalsChanged();
+                    break;
+                }
+            }
+        });
+
+        // Shell integration: detect when a command finishes in one of
+        // our tracked terminals and flip its status to 'closed'.
+        vscode.window.onDidEndTerminalShellExecution?.((event) => {
+            for (const [, tracked] of this._trackedTerminals.entries()) {
+                if (tracked.kind === 'integrated' && tracked.terminal === event.terminal && tracked.status === 'running') {
+                    tracked.status = 'closed';
                     this._emitTerminalsChanged();
                     break;
                 }
@@ -808,6 +836,8 @@ if __name__ == '__main__':
         tracked.lastUsed = Date.now();
         tracked.launchLabel = launchLabel;
         tracked.launchPath = launchPath;
+        tracked.ctrlCSent = false;
+        tracked.status = 'running';
 
         if (!tracked.terminal) {
             return;
@@ -854,7 +884,7 @@ if __name__ == '__main__':
         }
     }
 
-    killTrackedTerminal(id: string): void {
+    async killTrackedTerminal(id: string): Promise<void> {
         const tracked = this._trackedTerminals.get(id);
         if (!tracked) {
             return;
@@ -862,9 +892,26 @@ if __name__ == '__main__':
 
         if (tracked.kind === 'integrated') {
             if (tracked.terminal) {
-                // Send Ctrl+C without an appended newline so it behaves
-                // exactly like a manual keypress in the terminal.
-                tracked.terminal.sendText('\x03', false);
+                if (
+                    tracked.terminal.exitStatus !== undefined ||
+                    tracked.status === 'closed' ||
+                    tracked.ctrlCSent
+                ) {
+                    // The process already finished, or we previously sent
+                    // Ctrl+C — force-close the terminal.
+                    tracked.terminal.dispose();
+                    this._trackedTerminals.delete(id);
+                    if (this._preferredTerminalId === id) {
+                        this._preferredTerminalId = undefined;
+                    }
+                } else {
+                    // Process still running — send Ctrl+C.  The appended
+                    // "; exit" in the original command will make the shell
+                    // exit once the process terminates.
+                    tracked.terminal.sendText('\x03', false);
+                    tracked.ctrlCSent = true;
+                    tracked.lastUsed = Date.now();
+                }
             }
         } else {
             // Prefer the real inner bash PID so SIGINT behaves like Ctrl+C.
@@ -875,10 +922,121 @@ if __name__ == '__main__':
                 // PID file may not be ready yet right after spawn; retry briefly.
                 this.scheduleDeferredInterrupt(id);
             }
+            tracked.lastUsed = Date.now();
         }
 
-        tracked.lastUsed = Date.now();
         this._emitTerminalsChanged();
+    }
+
+    private async isIntegratedShellIdle(terminal: vscode.Terminal): Promise<boolean> {
+        try {
+            const shellPid = await terminal.processId;
+            if (!shellPid || shellPid <= 0) {
+                // If VS Code cannot provide a PID, prefer close semantics for Kill.
+                return true;
+            }
+
+            const hasActiveChildren = (): boolean => {
+                const descendants = this.getDescendantPids(shellPid);
+                if (!descendants.length) {
+                    return false;
+                }
+
+                for (const pid of descendants) {
+                    const processName = this.getProcessName(pid);
+                    if (!processName) {
+                        // Process disappeared between pgrep and ps
+                        // (e.g. zombie reaped); treat as gone.
+                        continue;
+                    }
+                    if (!this.isShellLikeProcess(processName)) {
+                        return true;
+                    }
+                }
+                return false;
+            };
+
+            if (!hasActiveChildren()) {
+                return true;
+            }
+
+            // Prompt helpers (git/starship/etc.) can be brief; re-check once.
+            await this.delay(140);
+            return !hasActiveChildren();
+        } catch {
+            return false;
+        }
+    }
+
+    private scheduleIntegratedCloseWhenIdle(id: string, killTimestamp: number, attempt: number = 0): void {
+        if (attempt >= 8) {
+            return;
+        }
+
+        setTimeout(async () => {
+            const tracked = this._trackedTerminals.get(id);
+            if (!tracked || tracked.kind !== 'integrated' || !tracked.terminal) {
+                return;
+            }
+
+            // Terminal process already exited — close immediately.
+            if (tracked.terminal.exitStatus !== undefined) {
+                tracked.terminal.dispose();
+                this._trackedTerminals.delete(id);
+                if (this._preferredTerminalId === id) {
+                    this._preferredTerminalId = undefined;
+                }
+                this._emitTerminalsChanged();
+                return;
+            }
+
+            // Terminal was reused for a newer command; don't auto-close it.
+            if (tracked.lastUsed !== killTimestamp) {
+                return;
+            }
+
+            const shellIdle = await this.isIntegratedShellIdle(tracked.terminal);
+            if (shellIdle) {
+                tracked.terminal.dispose();
+                this._trackedTerminals.delete(id);
+                if (this._preferredTerminalId === id) {
+                    this._preferredTerminalId = undefined;
+                }
+                this._emitTerminalsChanged();
+                return;
+            }
+
+            this.scheduleIntegratedCloseWhenIdle(id, killTimestamp, attempt + 1);
+        }, 180);
+    }
+
+    private getProcessName(pid: number): string | undefined {
+        try {
+            const out = cp
+                .execSync(`ps -p ${pid} -o comm= 2>/dev/null`, { encoding: 'utf8' })
+                .trim()
+                .toLowerCase();
+            return out || undefined;
+        } catch {
+            return undefined;
+        }
+    }
+
+    private isShellLikeProcess(name: string): boolean {
+        const shellNames = new Set([
+            'bash',
+            'sh',
+            'zsh',
+            'fish',
+            'dash',
+            'ksh',
+            'tmux',
+        ]);
+        return shellNames.has(name);
+    }
+
+    private delay(ms: number): Promise<void> {
+        return new Promise((resolve) => setTimeout(resolve, ms));
     }
 
     private pickLaunchTerminal(): TrackedTerminal | undefined {
@@ -1210,7 +1368,7 @@ if __name__ == '__main__':
         return ['-e', bashPath, '-ic', wrappedCmd];
     }
 
-    // ── Graph data (nodes / topics) ────────────────────────────
+    // ── Graph data (nodes / topics / services / actions) ──────
     async getNodeList(): Promise<string[]> {
         try {
             const raw = this.isRos2()
@@ -1222,52 +1380,249 @@ if __name__ == '__main__':
         }
     }
 
-    async getTopicList(): Promise<{ name: string; type: string }[]> {
+    async getTopicList(): Promise<RosGraphEntityInfo[]> {
         try {
             const raw = this.isRos2()
                 ? await this.exec('ros2 topic list -t')
-                : await this.exec('rostopic list -v');
-            const lines = raw.trim().split('\n').filter(Boolean);
-            return lines.map((line) => {
-                // ROS 2 format: "/topic [type]"
-                const match = line.match(/^(\S+)\s+\[(.+)\]$/);
-                if (match) {
-                    return { name: match[1], type: match[2] };
-                }
-                return { name: line.trim(), type: 'unknown' };
-            });
+                : await this.exec('rostopic list');
+            return this.parseEntityList(raw);
         } catch {
             return [];
         }
     }
 
-    async getNodeInfo(nodeName: string): Promise<{ publishers: string[]; subscribers: string[] }> {
+    async getServiceList(): Promise<RosGraphEntityInfo[]> {
+        try {
+            const raw = this.isRos2()
+                ? await this.exec('ros2 service list -t')
+                : await this.exec('rosservice list');
+            return this.parseEntityList(raw);
+        } catch {
+            return [];
+        }
+    }
+
+    async getActionList(): Promise<RosGraphEntityInfo[]> {
+        if (!this.isRos2()) {
+            return [];
+        }
+        try {
+            const raw = await this.exec('ros2 action list -t');
+            return this.parseEntityList(raw);
+        } catch {
+            return [];
+        }
+    }
+
+    async getLatestTopicMessage(topicName: string): Promise<string | undefined> {
+        if (!this.isValidRosResourceName(topicName)) {
+            return undefined;
+        }
+
+        try {
+            const command = this.isRos2()
+                ? `timeout 2s ros2 topic echo --once ${topicName} 2>/dev/null || true`
+                : `timeout 2s rostopic echo -n 1 ${topicName} 2>/dev/null || true`;
+            const raw = await this.exec(command);
+            const trimmed = raw.trim();
+            if (!trimmed) {
+                return undefined;
+            }
+            const maxChars = 6000;
+            if (trimmed.length > maxChars) {
+                return `${trimmed.slice(0, maxChars)}\n... (truncated)`;
+            }
+            return trimmed;
+        } catch {
+            return undefined;
+        }
+    }
+
+    async getNodeGraphInfo(nodeName: string): Promise<RosNodeGraphInfo> {
         try {
             const raw = this.isRos2()
                 ? await this.exec(`ros2 node info ${nodeName}`)
                 : await this.exec(`rosnode info ${nodeName}`);
-
-            const publishers: string[] = [];
-            const subscribers: string[] = [];
-            let section: 'pub' | 'sub' | null = null;
-
-            for (const line of raw.split('\n')) {
-                if (line.includes('Publishers:') || line.includes('Publish')) {
-                    section = 'pub';
-                } else if (line.includes('Subscribers:') || line.includes('Subscribe')) {
-                    section = 'sub';
-                } else if (line.includes('Service')) {
-                    section = null;
-                } else if (section && line.trim().startsWith('/')) {
-                    const topic = line.trim().split(':')[0].trim();
-                    if (section === 'pub') { publishers.push(topic); }
-                    else { subscribers.push(topic); }
-                }
-            }
-            return { publishers, subscribers };
+            return this.parseNodeGraphInfo(raw);
         } catch {
-            return { publishers: [], subscribers: [] };
+            return {
+                publishers: [],
+                subscribers: [],
+                serviceServers: [],
+                serviceClients: [],
+                actionServers: [],
+                actionClients: [],
+            };
         }
+    }
+
+    async getNodeInfo(nodeName: string): Promise<{ publishers: string[]; subscribers: string[] }> {
+        const info = await this.getNodeGraphInfo(nodeName);
+        return { publishers: info.publishers, subscribers: info.subscribers };
+    }
+
+    private parseEntityList(raw: string): RosGraphEntityInfo[] {
+        // ROS 2 uses "<name> [<type>]" while ROS 1 usually returns just "<name>".
+        // This parser accepts both formats and normalizes duplicates by name.
+        const lines = raw.split('\n').map((line) => line.trim()).filter(Boolean);
+        const entities: RosGraphEntityInfo[] = [];
+        const seen = new Set<string>();
+
+        for (const line of lines) {
+            const typedMatch = line.match(/^(\S+)\s+\[(.+)\]$/);
+            const name = typedMatch?.[1] ?? line;
+            const type = typedMatch?.[2] ?? 'unknown';
+
+            if (!name.startsWith('/')) {
+                continue;
+            }
+            if (seen.has(name)) {
+                continue;
+            }
+            seen.add(name);
+            entities.push({ name, type });
+        }
+
+        return entities;
+    }
+
+    private parseNodeGraphInfo(raw: string): RosNodeGraphInfo {
+        // `ros2 node info` and `rosnode info` are section-based text outputs.
+        // We track the active section while scanning and route each discovered
+        // endpoint to its matching relation bucket.
+        const publishers: string[] = [];
+        const subscribers: string[] = [];
+        const serviceServers: string[] = [];
+        const serviceClients: string[] = [];
+        const actionServers: string[] = [];
+        const actionClients: string[] = [];
+
+        let section:
+            | 'pub'
+            | 'sub'
+            | 'srvServer'
+            | 'srvClient'
+            | 'actionServer'
+            | 'actionClient'
+            | null = null;
+
+        for (const line of raw.split('\n')) {
+            const trimmed = line.trim();
+            if (!trimmed) {
+                continue;
+            }
+
+            const lower = trimmed.toLowerCase();
+            if (
+                lower === 'publishers:' ||
+                lower === 'publications:' ||
+                lower.startsWith('publishers:')
+            ) {
+                section = 'pub';
+                continue;
+            }
+            if (
+                lower === 'subscribers:' ||
+                lower === 'subscriptions:' ||
+                lower.startsWith('subscribers:')
+            ) {
+                section = 'sub';
+                continue;
+            }
+            if (lower === 'service servers:' || lower.startsWith('service servers:')) {
+                section = 'srvServer';
+                continue;
+            }
+            if (lower === 'service clients:' || lower.startsWith('service clients:')) {
+                section = 'srvClient';
+                continue;
+            }
+            if (lower === 'services:' || lower.startsWith('services:')) {
+                section = 'srvServer';
+                continue;
+            }
+            if (lower === 'action servers:' || lower.startsWith('action servers:')) {
+                section = 'actionServer';
+                continue;
+            }
+            if (lower === 'action clients:' || lower.startsWith('action clients:')) {
+                section = 'actionClient';
+                continue;
+            }
+
+            const endpoint = this.parseNodeInfoEndpoint(trimmed);
+            if (!endpoint || !section) {
+                continue;
+            }
+
+            const normalizedEndpoint = this.normalizeGraphEndpoint(section, endpoint);
+
+            if (section === 'pub') {
+                publishers.push(normalizedEndpoint);
+                continue;
+            }
+            if (section === 'sub') {
+                subscribers.push(normalizedEndpoint);
+                continue;
+            }
+            if (section === 'srvServer') {
+                serviceServers.push(normalizedEndpoint);
+                continue;
+            }
+            if (section === 'srvClient') {
+                serviceClients.push(normalizedEndpoint);
+                continue;
+            }
+            if (section === 'actionServer') {
+                actionServers.push(normalizedEndpoint);
+                continue;
+            }
+            actionClients.push(normalizedEndpoint);
+        }
+
+        return {
+            publishers: Array.from(new Set(publishers)),
+            subscribers: Array.from(new Set(subscribers)),
+            serviceServers: Array.from(new Set(serviceServers)),
+            serviceClients: Array.from(new Set(serviceClients)),
+            actionServers: Array.from(new Set(actionServers)),
+            actionClients: Array.from(new Set(actionClients)),
+        };
+    }
+
+    private parseNodeInfoEndpoint(trimmedLine: string): string | undefined {
+        // Node info lines typically include one absolute ROS name first
+        // (topic/service/action path). We extract that first path token.
+        const pathMatch = trimmedLine.match(/(\/[^\s:\[]+)/);
+        if (!pathMatch?.[1]) {
+            return undefined;
+        }
+        return pathMatch[1];
+    }
+
+    private isValidRosResourceName(name: string): boolean {
+        // Reject whitespace and shell metacharacters because names are used
+        // in CLI commands. ROS names we care about are absolute paths.
+        return /^\/[A-Za-z0-9_./~-]+$/.test(name);
+    }
+
+    private normalizeGraphEndpoint(
+        section: 'pub' | 'sub' | 'srvServer' | 'srvClient' | 'actionServer' | 'actionClient',
+        endpoint: string,
+    ): string {
+        if (section !== 'actionServer' && section !== 'actionClient') {
+            return endpoint;
+        }
+
+        // Some ROS 2 node-info outputs expose internal action transport topics
+        // (e.g. /fibonacci/_action/feedback). Normalize those back to /fibonacci
+        // so they match `ros2 action list -t` entries used by the UI.
+        const actionMatch = endpoint.match(/^(\/.+?)\/_action(?:\/.*)?$/);
+        if (actionMatch?.[1]) {
+            return actionMatch[1];
+        }
+
+        return endpoint;
     }
 
     // ── Utilities ──────────────────────────────────────────────
