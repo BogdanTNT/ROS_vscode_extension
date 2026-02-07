@@ -58,6 +58,18 @@
                 }
                 break;
             }
+            case toWebview.ADD_NODE_DONE: {
+                const { dom: d2 } = window.PM;
+                d2.btnAddNode.disabled = false;
+                d2.addNodeStatus.innerHTML = msg.success
+                    ? '<span class="badge success">✓ Node added</span>'
+                    : '<span class="badge error">✗ Failed</span>';
+                if (msg.success) {
+                    actions.refreshPackages();
+                    window.PM.handlers.closeAddNodeModal();
+                }
+                break;
+            }
         }
     });
 })();

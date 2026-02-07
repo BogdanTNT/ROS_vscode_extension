@@ -31,5 +31,13 @@
         btnCancelArgs: document.getElementById('btnCancelArgs'),
         btnCloseArgs: document.getElementById('btnCloseArgs'),
         toggleBuildCheck: document.getElementById('toggleBuildCheck'),
+        addNodeModal: document.getElementById('addNodeModal'),
+        addNodeBackdrop: document.getElementById('addNodeBackdrop'),
+        addNodePkg: document.getElementById('addNodePkg'),
+        addNodeName: document.getElementById('addNodeName'),
+        btnAddNode: document.getElementById('btnAddNode'),
+        btnCancelAddNode: document.getElementById('btnCancelAddNode'),
+        btnCloseAddNode: document.getElementById('btnCloseAddNode'),
+        addNodeStatus: document.getElementById('addNodeStatus'),
     };
 })();

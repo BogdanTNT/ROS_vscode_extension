@@ -27,6 +27,7 @@ export interface RosWorkspacePackageDetails {
     packagePath: string;
     launchFiles: string[];
     nodes: RosRunnableNodeInfo[];
+    isPython: boolean;
 }
 
 export interface RosRunnableNodeInfo {
@@ -311,11 +312,13 @@ export class RosWorkspace {
                 const launchFiles = this.findLaunchFiles(packagePath, 3);
                 const nodes = this.findRunnableNodes(packagePath);
 
+                const isPython = fs.existsSync(path.join(packagePath, 'setup.py'));
                 packages.push({
                     name,
                     packagePath,
                     launchFiles,
                     nodes,
+                    isPython,
                 });
                 seen.add(name);
             } catch {
@@ -371,6 +374,124 @@ export class RosWorkspace {
 
         this.runInTerminal(cmd);
         return true;
+    }
+
+    /**
+     * Add a new Python node to an existing ament_python package.
+     * Creates the .py source file and registers it in setup.py console_scripts.
+     */
+    async addNodeToPackage(packageName: string, nodeName: string): Promise<boolean> {
+        const srcDir = this.getSrcDir();
+        if (!srcDir) {
+            vscode.window.showErrorMessage('Could not determine workspace src directory.');
+            return false;
+        }
+
+        const pkgDir = path.join(srcDir, packageName);
+        const pyDir = path.join(pkgDir, packageName);
+        const setupPyPath = path.join(pkgDir, 'setup.py');
+        const nodeFilePath = path.join(pyDir, `${nodeName}.py`);
+
+        if (!fs.existsSync(pyDir)) {
+            vscode.window.showErrorMessage(`Package folder not found: ${pyDir}`);
+            return false;
+        }
+
+        if (!fs.existsSync(setupPyPath)) {
+            vscode.window.showErrorMessage(`setup.py not found for package "${packageName}".`);
+            return false;
+        }
+
+        // 1. Create the node .py file if it doesn't exist
+        if (!fs.existsSync(nodeFilePath)) {
+            const template =
+`#!/usr/bin/env python3
+import rclpy
+from rclpy.node import Node
+
+
+class ${this.toPascalCase(nodeName)}Node(Node):
+    def __init__(self):
+        super().__init__('${nodeName}')
+        self.get_logger().info('${nodeName} node started')
+
+
+def main(args=None):
+    rclpy.init(args=args)
+    node = ${this.toPascalCase(nodeName)}Node()
+    try:
+        rclpy.spin(node)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        node.destroy_node()
+        rclpy.shutdown()
+
+
+if __name__ == '__main__':
+    main()
+`;
+            try {
+                fs.writeFileSync(nodeFilePath, template, { mode: 0o755 });
+            } catch (err) {
+                vscode.window.showErrorMessage(`Failed to create node file: ${err}`);
+                return false;
+            }
+        }
+
+        // 2. Register the entry point in setup.py console_scripts
+        try {
+            let setupPy = fs.readFileSync(setupPyPath, 'utf8');
+            const entry = `'${nodeName} = ${packageName}.${nodeName}:main'`;
+
+            if (setupPy.includes(entry)) {
+                // Already registered, just open the file
+                const uri = vscode.Uri.file(nodeFilePath);
+                await vscode.window.showTextDocument(uri, { preview: false });
+                return true;
+            }
+
+            // Insert after 'console_scripts': [
+            const consoleScriptsPattern = /(['"]console_scripts['"]\s*:\s*\[)/;
+            if (consoleScriptsPattern.test(setupPy)) {
+                setupPy = setupPy.replace(
+                    consoleScriptsPattern,
+                    `$1\n            ${entry},`,
+                );
+            } else {
+                // If there's no console_scripts block, try to add one in entry_points
+                const entryPointsPattern = /(entry_points\s*=\s*\{)/;
+                if (entryPointsPattern.test(setupPy)) {
+                    setupPy = setupPy.replace(
+                        entryPointsPattern,
+                        `$1\n        'console_scripts': [\n            ${entry},\n        ],`,
+                    );
+                } else {
+                    vscode.window.showWarningMessage(
+                        'Could not find console_scripts or entry_points in setup.py. ' +
+                        'Node file was created but you need to register it manually.',
+                    );
+                }
+            }
+
+            fs.writeFileSync(setupPyPath, setupPy);
+        } catch (err) {
+            vscode.window.showErrorMessage(`Failed to update setup.py: ${err}`);
+            return false;
+        }
+
+        // Open the new node file in the editor
+        const uri = vscode.Uri.file(nodeFilePath);
+        await vscode.window.showTextDocument(uri, { preview: false });
+
+        return true;
+    }
+
+    private toPascalCase(name: string): string {
+        return name
+            .split(/[_-]/)
+            .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+            .join('');
     }
 
     private getDefaultCreatePackageDependencies(buildType: string): string[] {

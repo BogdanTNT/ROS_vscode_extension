@@ -82,6 +82,9 @@ export class PackageManagerViewProvider implements vscode.WebviewViewProvider {
                 case PMToHostCommand.TOGGLE_BUILD_CHECK:
                     await this._toggleBuildCheck(msg.enabled);
                     break;
+                case PMToHostCommand.ADD_NODE:
+                    await this._handleAddNode(msg.pkg, msg.nodeName);
+                    break;
             }
         });
 
@@ -112,6 +115,25 @@ export class PackageManagerViewProvider implements vscode.WebviewViewProvider {
             command: PMToWebviewCommand.BUILD_CHECK_STATE,
             enabled,
         });
+    }
+
+    private async _handleAddNode(pkg: string, nodeName: string) {
+        if (!pkg || !nodeName) {
+            return;
+        }
+        const ok = await this._ros.addNodeToPackage(pkg, nodeName);
+        if (ok) {
+            vscode.window.showInformationMessage(
+                `Node "${nodeName}" added to package "${pkg}".`,
+            );
+        }
+        this._view?.webview.postMessage({
+            command: PMToWebviewCommand.ADD_NODE_DONE,
+            success: ok,
+        });
+        if (ok) {
+            await this._sendPackageList();
+        }
     }
 
     private async _toggleBuildCheck(enabled: boolean) {
@@ -412,6 +434,28 @@ export class PackageManagerViewProvider implements vscode.WebviewViewProvider {
             <button class="secondary" id="btnCancelArgs">Cancel</button>
             <button id="btnSaveArgs">Save</button>
         </div>
+    </div>
+</div>
+
+<div class="modal hidden" id="addNodeModal" role="dialog" aria-modal="true">
+    <div class="modal-backdrop" id="addNodeBackdrop"></div>
+    <div class="modal-card">
+        <div class="modal-header">
+            <h3>Add Node to Package</h3>
+            <button class="secondary small" id="btnCloseAddNode">✕</button>
+        </div>
+        <div class="modal-body">
+            <label for="addNodePkg">Package</label>
+            <input type="text" id="addNodePkg" readonly />
+
+            <label for="addNodeName">Node name</label>
+            <input type="text" id="addNodeName" placeholder="my_node" />
+        </div>
+        <div class="modal-footer">
+            <button class="secondary" id="btnCancelAddNode">Cancel</button>
+            <button id="btnAddNode">Add Node</button>
+        </div>
+        <div id="addNodeStatus" class="mt hidden"></div>
     </div>
 </div>
 `;

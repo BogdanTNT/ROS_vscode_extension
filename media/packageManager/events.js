@@ -145,10 +145,45 @@
     dom.btnCloseArgs.addEventListener('click', closeArgsModal);
     dom.argsBackdrop.addEventListener('click', closeArgsModal);
 
+    // ── Add Node modal ─────────────────────────────────────────
+    const openAddNodeModal = (pkgName) => {
+        if (!pkgName) {
+            return;
+        }
+        dom.addNodePkg.value = pkgName;
+        dom.addNodeName.value = '';
+        dom.addNodeStatus.className = 'mt hidden';
+        dom.addNodeStatus.textContent = '';
+        dom.addNodeModal.classList.remove('hidden');
+        dom.addNodeName.focus();
+    };
+
+    const closeAddNodeModal = () => {
+        dom.addNodeModal.classList.add('hidden');
+    };
+
+    dom.btnAddNode.addEventListener('click', () => {
+        const pkg = dom.addNodePkg.value.trim();
+        const nodeName = dom.addNodeName.value.trim();
+        if (!pkg || !nodeName) {
+            return;
+        }
+        dom.btnAddNode.disabled = true;
+        dom.addNodeStatus.className = 'mt';
+        dom.addNodeStatus.innerHTML = '<span class="spinner"></span> Adding node…';
+        actions.addNode(pkg, nodeName);
+    });
+
+    dom.btnCancelAddNode.addEventListener('click', closeAddNodeModal);
+    dom.btnCloseAddNode.addEventListener('click', closeAddNodeModal);
+    dom.addNodeBackdrop.addEventListener('click', closeAddNodeModal);
+
     window.PM.handlers = {
         openArgsModal,
         closeArgsModal,
         openCreate,
         closeCreate,
+        openAddNodeModal,
+        closeAddNodeModal,
     };
 })();

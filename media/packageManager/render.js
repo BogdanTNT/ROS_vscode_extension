@@ -181,6 +181,15 @@
             return;
         }
 
+        const addNodeBtn = target.closest('.add-node-btn');
+        if (addNodeBtn) {
+            const pkgName = addNodeBtn.dataset.pkg;
+            if (pkgName && window.PM.handlers?.openAddNodeModal) {
+                window.PM.handlers.openAddNodeModal(pkgName);
+            }
+            return;
+        }
+
         const pkgToggleEl = target.closest('.pkg-toggle');
         if (pkgToggleEl) {
             togglePackageSectionExpanded(pkgToggleEl.dataset.pkgName || '', pkgToggleEl.dataset.sectionKey || '');
@@ -744,6 +753,9 @@
                 const nodeCount = pkg.nodes?.length || 0;
                 const launchLabel = launchCount === 1 ? 'launch' : 'launches';
                 const nodeLabel = nodeCount === 1 ? 'node' : 'nodes';
+                const addNodeBtn = pkg.isPython
+                    ? '<button class="secondary small add-node-btn" data-pkg="' + escapeAttr(pkg.name) + '">＋ Node</button>'
+                    : '';
                 const packageNameMatches = filter.length > 0 && pkg.name.toLowerCase().includes(filter);
                 const dropdownModels = [
                     buildLaunchDropdownModel(pkg, running, filter),
@@ -785,6 +797,7 @@
                     ' ' +
                     nodeLabel +
                     '</span>' +
+                    addNodeBtn +
                     '</div>' +
                     '<div class="pkg-dropdowns">' +
                     dropdownHtml +
