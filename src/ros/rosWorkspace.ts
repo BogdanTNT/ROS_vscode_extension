@@ -1447,15 +1447,22 @@ if __name__ == '__main__':
         }
     }
 
-    async getLatestTopicMessage(topicName: string): Promise<string | undefined> {
+    async getLatestTopicMessage(topicName: string, timeoutSeconds = 2): Promise<string | undefined> {
         if (!this.isValidRosResourceName(topicName)) {
             return undefined;
         }
 
         try {
+            const safeTimeoutSeconds = Number.isFinite(timeoutSeconds) && timeoutSeconds > 0
+                ? timeoutSeconds
+                : 2;
+            const timeoutToken = `${safeTimeoutSeconds}s`;
             const command = this.isRos2()
-                ? `timeout 2s ros2 topic echo --once ${topicName} 2>/dev/null || true`
-                : `timeout 2s rostopic echo -n 1 ${topicName} 2>/dev/null || true`;
+                // Read from the normal stream output and stop after the first
+                // message block separator ("---") so the UI receives a sample
+                // exactly as users see it in `ros2 topic echo`.
+                ? `timeout ${timeoutToken} ros2 topic echo ${topicName} 2>/dev/null | sed -n '/^---$/q;p'`
+                : `timeout ${timeoutToken} rostopic echo -n 1 ${topicName} 2>/dev/null || true`;
             const raw = await this.exec(command);
             const trimmed = raw.trim();
             if (!trimmed) {

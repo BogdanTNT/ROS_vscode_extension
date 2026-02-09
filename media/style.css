@@ -710,6 +710,40 @@ button.term-kill.is-pending {
     border-bottom: none;
 }
 
+.nv-topic-row-item {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 0 6px;
+}
+
+.nv-topic-row-pin {
+    display: inline-flex;
+    align-items: center;
+    align-self: center;
+    justify-content: center;
+    font-size: 12px;
+    min-width: 22px;
+    min-height: 22px;
+    width: 22px;
+    height: 22px;
+    padding: 0;
+    line-height: 1;
+    flex: 0 0 auto;
+    transition: border-color 120ms ease, color 120ms ease, background 120ms ease;
+}
+
+.nv-topic-row-pin:hover {
+    background: var(--accent);
+    border-color: var(--accent);
+    color: #fff;
+}
+
+.nv-topic-row-item .nv-entity-btn {
+    width: auto;
+    flex: 1 1 auto;
+}
+
 .nv-entity-btn {
     width: 100%;
     border-radius: 0;
@@ -732,6 +766,10 @@ button.term-kill.is-pending {
     text-align: left;
 }
 
+.nv-topic-name {
+    font-weight: 600;
+}
+
 .nv-entity-meta {
     font-size: 0.8em;
     color: var(--text-muted);
@@ -744,6 +782,12 @@ button.term-kill.is-pending {
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+    font-family: var(--vscode-editor-font-family, monospace);
+}
+
+.nv-topic-type-ref {
+    font-size: 0.8em;
+    color: var(--text-muted);
     font-family: var(--vscode-editor-font-family, monospace);
 }
 
@@ -785,6 +829,81 @@ button.term-kill.is-pending {
     margin-top: 6px;
 }
 
+.nv-topic-heading {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 4px;
+}
+
+.nv-topic-pin-icon {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    align-self: center;
+    font-size: 12px;
+    min-width: 24px;
+    min-height: 24px;
+    width: 24px;
+    height: 24px;
+    padding: 0;
+    line-height: 1;
+    transition: border-color 120ms ease, color 120ms ease, background 120ms ease;
+}
+
+.nv-topic-pin-icon:hover {
+    background: var(--accent);
+    border-color: var(--accent);
+    color: #fff;
+}
+
+.nv-pinned-pin {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    align-self: center;
+    font-size: 12px;
+    min-width: 22px;
+    min-height: 22px;
+    width: 22px;
+    height: 22px;
+    padding: 0;
+    line-height: 1;
+    transition: border-color 120ms ease, color 120ms ease, background 120ms ease;
+}
+
+.nv-pinned-pin:hover {
+    background: var(--accent);
+    border-color: var(--accent);
+    color: #fff;
+}
+
+.nv-topic-freeze-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    align-self: center;
+    font-size: 11px;
+    min-width: 22px;
+    min-height: 22px;
+    width: 22px;
+    height: 22px;
+    padding: 0;
+    line-height: 1;
+    flex: 0 0 auto;
+}
+
+.nv-topic-freeze-btn:hover {
+    background: var(--accent);
+    border-color: var(--accent);
+    color: #fff;
+}
+
+.nv-topic-freeze-btn.frozen {
+    color: var(--accent);
+    border-color: var(--accent);
+}
+
 .nv-topic-msg {
     margin-top: 4px;
     padding: 8px;
@@ -796,6 +915,72 @@ button.term-kill.is-pending {
     white-space: pre-wrap;
     word-break: break-word;
     font-size: 0.8em;
+    font-family: var(--vscode-editor-font-family, monospace);
+}
+
+.nv-topic-msg-row-compact {
+    margin-top: 8px;
+}
+
+.nv-topic-msg-compact {
+    margin-top: 4px;
+    max-height: 140px;
+    background: var(--panel-bg);
+}
+
+.nv-pinned-card-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    margin-bottom: 8px;
+}
+
+.nv-pinned-card h3 {
+    margin: 0;
+}
+
+#btnToggleAllPinnedPause:disabled {
+    opacity: 0.45;
+    cursor: default;
+}
+
+.nv-pinned-list {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.nv-pinned-item {
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    background: var(--input-bg);
+    padding: 8px;
+}
+
+.nv-pinned-head {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.nv-pinned-topic-name {
+    font-weight: 600;
+    flex: 1 1 auto;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.nv-pinned-topic-type-inline {
+    flex: 0 0 auto;
+    max-width: 38%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-size: 0.8em;
+    color: var(--text-muted);
     font-family: var(--vscode-editor-font-family, monospace);
 }
 

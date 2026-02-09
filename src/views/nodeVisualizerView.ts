@@ -8,6 +8,8 @@ import {
 import { getWebviewHtml } from './webviewHelper';
 
 const AUTO_REFRESH_INTERVAL_MS = 3000;
+const TRACKED_TOPIC_MESSAGE_REFRESH_CONCURRENCY = 3;
+const TRACKED_TOPIC_ECHO_TIMEOUT_SECONDS = 3;
 const NODE_VISUALIZER_PREFS_KEY = 'rosDevToolkit.nodeVisualizerPrefs';
 
 interface NodeVisualizerPrefs {
@@ -38,6 +40,9 @@ export class NodeVisualizerViewProvider implements vscode.WebviewViewProvider {
     private _refreshInFlight = false;
     private _refreshQueued = false;
     private _queuedShowLoading = false;
+    private _topicLatestMessages: Record<string, string> = {};
+    private _trackedTopicMessageRefreshInFlight = false;
+    private _queuedTrackedTopicNames = new Set<string>();
     private _prefs: NodeVisualizerPrefs;
 
     constructor(
@@ -82,8 +87,8 @@ export class NodeVisualizerViewProvider implements vscode.WebviewViewProvider {
                     this._prefs.showParameters = msg.showParameters !== false;
                     await this._savePrefs();
                     break;
-                case 'getTopicLatestMessage':
-                    await this._sendTopicLatestMessage(msg.topicName);
+                case 'refreshTrackedTopicMessages':
+                    await this._refreshTrackedTopicMessages(msg.topicNames, webviewView);
                     break;
                 case 'getTopicPublishTemplate':
                     await this._sendTopicPublishTemplate(msg.topicName, msg.topicTypeHint);
@@ -171,6 +176,8 @@ export class NodeVisualizerViewProvider implements vscode.WebviewViewProvider {
                 this._ros.getActionList(),
                 this._ros.getParameterList(),
             ]);
+            const topicNames = topics.map((topic) => topic.name);
+            this._pruneTopicMessageCache(topicNames);
 
             const nodeEntries = await Promise.all(
                 nodes.map(async (node) => {
@@ -189,6 +196,7 @@ export class NodeVisualizerViewProvider implements vscode.WebviewViewProvider {
                     actions,
                     parameters,
                     connections,
+                    topicLatestMessages: this._buildTopicMessageSnapshot(topicNames),
                     rosVersion: this._ros.isRos2() ? 2 : 1,
                     prefs: this._prefs,
                 });
@@ -204,19 +212,84 @@ export class NodeVisualizerViewProvider implements vscode.WebviewViewProvider {
         }
     }
 
-    private async _sendTopicLatestMessage(topicName: string) {
-        const view = this._view;
-        if (!view || typeof topicName !== 'string' || !topicName) {
+    private _pruneTopicMessageCache(topicNames: string[]) {
+        const validTopics = new Set(topicNames);
+        for (const topicName of Object.keys(this._topicLatestMessages)) {
+            if (!validTopics.has(topicName)) {
+                delete this._topicLatestMessages[topicName];
+            }
+        }
+    }
+
+    private _buildTopicMessageSnapshot(topicNames: string[]): Record<string, string> {
+        const snapshot: Record<string, string> = {};
+        for (const topicName of topicNames) {
+            const cached = this._topicLatestMessages[topicName];
+            if (cached) {
+                snapshot[topicName] = cached;
+            }
+        }
+        return snapshot;
+    }
+
+    private async _refreshTrackedTopicMessages(topicNamesRaw: unknown, view: vscode.WebviewView) {
+        if (this._view !== view) {
             return;
         }
 
-        const message = await this._ros.getLatestTopicMessage(topicName);
-        if (this._view === view) {
-            view.webview.postMessage({
-                command: 'topicLatestMessage',
-                topicName,
-                message: message ?? '',
-            });
+        const topicNames = Array.isArray(topicNamesRaw)
+            ? Array.from(new Set(topicNamesRaw.map((value) => String(value || '').trim()).filter(Boolean)))
+            : [];
+        if (!topicNames.length) {
+            return;
+        }
+
+        topicNames.forEach((topicName) => this._queuedTrackedTopicNames.add(topicName));
+        if (this._trackedTopicMessageRefreshInFlight) {
+            return;
+        }
+
+        this._trackedTopicMessageRefreshInFlight = true;
+        try {
+            while (this._queuedTrackedTopicNames.size && this._view === view) {
+                const batch = Array.from(this._queuedTrackedTopicNames);
+                this._queuedTrackedTopicNames.clear();
+
+                let cursor = 0;
+                const worker = async () => {
+                    while (cursor < batch.length) {
+                        const topicName = batch[cursor++];
+                        const message = await this._ros.getLatestTopicMessage(
+                            topicName,
+                            TRACKED_TOPIC_ECHO_TIMEOUT_SECONDS,
+                        );
+                        if (this._view !== view) {
+                            return;
+                        }
+
+                        const normalized = String(message ?? '').trim();
+                        if (!normalized) {
+                            continue;
+                        }
+
+                        if (this._topicLatestMessages[topicName] === normalized) {
+                            continue;
+                        }
+
+                        this._topicLatestMessages[topicName] = normalized;
+                        view.webview.postMessage({
+                            command: 'topicLatestMessage',
+                            topicName,
+                            message: normalized,
+                        });
+                    }
+                };
+
+                const workerCount = Math.min(TRACKED_TOPIC_MESSAGE_REFRESH_CONCURRENCY, batch.length);
+                await Promise.all(Array.from({ length: workerCount }, () => worker()));
+            }
+        } finally {
+            this._trackedTopicMessageRefreshInFlight = false;
         }
     }
 
@@ -305,6 +378,29 @@ export class NodeVisualizerViewProvider implements vscode.WebviewViewProvider {
     </button>
 </div>
 
+<div id="overviewToggleBar" class="nv-layer-row mb">
+    <label class="nv-layer">
+        <input type="checkbox" id="toggleNodes" checked />
+        <span>Nodes</span>
+    </label>
+    <label class="nv-layer">
+        <input type="checkbox" id="toggleTopics" checked />
+        <span>Topics</span>
+    </label>
+    <label class="nv-layer">
+        <input type="checkbox" id="toggleServices" checked />
+        <span>Services</span>
+    </label>
+    <label class="nv-layer">
+        <input type="checkbox" id="toggleActions" checked />
+        <span>Actions</span>
+    </label>
+    <label class="nv-layer">
+        <input type="checkbox" id="toggleParameters" checked />
+        <span>Parameters</span>
+    </label>
+</div>
+
 <div class="nv-details-header mb">
     <h3>Details</h3>
     <div class="nv-toolbar">
@@ -323,30 +419,25 @@ export class NodeVisualizerViewProvider implements vscode.WebviewViewProvider {
     <span class="text-muted">Select an item to see details.</span>
 </div>
 
-<div id="overviewView" class="nv-view">
-    <div class="nv-layer-row mb">
-        <label class="nv-layer">
-            <input type="checkbox" id="toggleNodes" checked />
-            <span>Nodes</span>
-        </label>
-        <label class="nv-layer">
-            <input type="checkbox" id="toggleTopics" checked />
-            <span>Topics</span>
-        </label>
-        <label class="nv-layer">
-            <input type="checkbox" id="toggleServices" checked />
-            <span>Services</span>
-        </label>
-        <label class="nv-layer">
-            <input type="checkbox" id="toggleActions" checked />
-            <span>Actions</span>
-        </label>
-        <label class="nv-layer">
-            <input type="checkbox" id="toggleParameters" checked />
-            <span>Parameters</span>
-        </label>
+<div class="card nv-pinned-card mb">
+    <div class="nv-pinned-card-head">
+        <h3>Pinned Topics</h3>
+        <button
+            class="pin-btn nv-topic-freeze-btn"
+            id="btnToggleAllPinnedPause"
+            type="button"
+            title="Pause all pinned topic reading"
+            aria-label="Pause all pinned topic reading"
+        >
+            ⏸
+        </button>
     </div>
+    <div id="pinnedTopicList" class="nv-pinned-list">
+        <div class="text-muted">No pinned topics yet.</div>
+    </div>
+</div>
 
+<div id="overviewView" class="nv-view">
     <div id="overviewSections" class="nv-overview-sections"></div>
 </div>
 
