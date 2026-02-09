@@ -3,6 +3,7 @@
     window.PM = window.PM || {};
 
     const { dom, state, actions } = window.PM;
+    const uiInteractions = window.RosUi?.interactions;
 
     let launchListEventsBound = false;
     let terminalEventsBound = false;
@@ -10,6 +11,7 @@
     const KILL_FEEDBACK_MS = 1200;
 
     const getPkgList = () => document.getElementById('pkgList');
+    const getOtherPkgList = () => document.getElementById('otherPkgList');
     const getSectionStateKey = (packageName, sectionKey) => {
         if (!packageName || !sectionKey) {
             return '';
@@ -33,8 +35,71 @@
         }
         state.expandedPackages[key] = expanded;
     };
-    const togglePackageSectionExpanded = (packageName, sectionKey) => {
-        setPackageSectionExpanded(packageName, sectionKey, !isPackageSectionExpanded(packageName, sectionKey));
+    const togglePackageSectionExpanded = (packageName, sectionKey, recursive = false) => {
+        const nextExpanded = !isPackageSectionExpanded(packageName, sectionKey);
+        if (recursive) {
+            (state.allPackages || []).forEach((pkg) => {
+                setPackageSectionExpanded(pkg.name, sectionKey, nextExpanded);
+                if (nextExpanded) {
+                    // Expanding a child foldout should also surface its parent row.
+                    setPackageRowExpanded(pkg.name, true);
+                }
+            });
+        } else {
+            setPackageSectionExpanded(packageName, sectionKey, nextExpanded);
+        }
+        renderPackages();
+    };
+    const isPackageRowExpanded = (packageName) => Boolean(state.expandedPackageRows?.[packageName]);
+    const setPackageRowExpanded = (packageName, expanded) => {
+        if (!packageName) {
+            return;
+        }
+        if (!state.expandedPackageRows || typeof state.expandedPackageRows !== 'object') {
+            state.expandedPackageRows = {};
+        }
+        state.expandedPackageRows[packageName] = expanded;
+    };
+    const isRecursiveToggleEvent = (event) => {
+        if (uiInteractions?.isRecursiveToggleEvent) {
+            return uiInteractions.isRecursiveToggleEvent(event);
+        }
+        return Boolean(event?.altKey);
+    };
+    const togglePackageRowExpanded = (packageName, recursive = false) => {
+        const nextExpanded = !isPackageRowExpanded(packageName);
+        setPackageRowExpanded(packageName, nextExpanded);
+        if (recursive) {
+            // Keep child foldouts aligned with the parent when Alt+click is used.
+            setPackageSectionExpanded(packageName, 'launchFiles', nextExpanded);
+            setPackageSectionExpanded(packageName, 'nodes', nextExpanded);
+        }
+        renderPackages();
+    };
+    const setAllWorkspacePackagesExpanded = (expanded, shouldRender = true) => {
+        (state.allPackages || []).forEach((pkg) => {
+            setPackageRowExpanded(pkg.name, expanded);
+            setPackageSectionExpanded(pkg.name, 'launchFiles', expanded);
+            setPackageSectionExpanded(pkg.name, 'nodes', expanded);
+        });
+        if (shouldRender) {
+            renderPackages();
+        }
+    };
+    const setWorkspacePackagesVisible = (visible, shouldRender = true) => {
+        state.workspacePackagesVisible = visible;
+        if (shouldRender) {
+            renderPackages();
+        }
+    };
+    const isWorkspacePackagesVisible = () => state.workspacePackagesVisible !== false;
+    const toggleWorkspacePackages = (recursive = false) => {
+        const nextVisible = !isWorkspacePackagesVisible();
+        setWorkspacePackagesVisible(nextVisible, false);
+        if (recursive) {
+            // Alt+click mirrors Unity hierarchy behavior by toggling descendants too.
+            setAllWorkspacePackagesExpanded(nextVisible, false);
+        }
         renderPackages();
     };
     const escapeHtml = (value) => String(value ?? '').replace(/[&<>"']/g, (ch) => {
@@ -190,9 +255,22 @@
             return;
         }
 
+        const pkgRowToggleEl = target.closest('.pkg-row-toggle');
+        if (pkgRowToggleEl) {
+            togglePackageRowExpanded(
+                pkgRowToggleEl.dataset.pkgName || '',
+                isRecursiveToggleEvent(event),
+            );
+            return;
+        }
+
         const pkgToggleEl = target.closest('.pkg-toggle');
         if (pkgToggleEl) {
-            togglePackageSectionExpanded(pkgToggleEl.dataset.pkgName || '', pkgToggleEl.dataset.sectionKey || '');
+            togglePackageSectionExpanded(
+                pkgToggleEl.dataset.pkgName || '',
+                pkgToggleEl.dataset.sectionKey || '',
+                isRecursiveToggleEvent(event),
+            );
             return;
         }
 
@@ -496,7 +574,9 @@
         emptyText,
         expanded,
     }) => {
-        const toggleTitle = expanded ? 'Collapse ' + label : 'Expand ' + label;
+        const toggleTitle = expanded
+            ? 'Collapse ' + label + ' (Alt+click: collapse this section for all packages)'
+            : 'Expand ' + label + ' (Alt+click: expand this section for all packages)';
         const badgeText = count + ' ' + countLabel;
         const body = bodyHtml || ('<div class="text-muted text-sm">' + escapeHtml(emptyText) + '</div>');
 
@@ -744,6 +824,15 @@
         });
         dom.pkgCount.textContent = String(filtered.length);
 
+        if (dom.btnToggleWorkspacePackages) {
+            dom.btnToggleWorkspacePackages.textContent = isWorkspacePackagesVisible() ? '▾' : '▸';
+        }
+
+        if (!isWorkspacePackagesVisible()) {
+            list.innerHTML = '<li class="text-muted">Workspace packages are hidden</li>';
+            return;
+        }
+
         if (filtered.length === 0) {
             list.innerHTML = '<li class="text-muted">No packages found</li>';
             return;
@@ -763,9 +852,15 @@
                     buildLaunchDropdownModel(pkg, running, filter),
                     buildNodesDropdownModel(pkg, running, filter),
                 ];
+                const forceExpandByFilter = filter.length > 0
+                    && (packageNameMatches || dropdownModels.some((section) => section.matchesFilter));
+                const rowExpanded = forceExpandByFilter || isPackageRowExpanded(pkg.name);
+                const rowToggleTitle = rowExpanded
+                    ? 'Collapse package (Alt+click: collapse nested sections)'
+                    : 'Expand package (Alt+click: expand nested sections)';
                 const dropdownHtml = dropdownModels
                     .map((section) => {
-                        const expanded = (filter.length > 0 && (packageNameMatches || section.matchesFilter))
+                        const expanded = forceExpandByFilter
                             || isPackageSectionExpanded(pkg.name, section.sectionKey);
                         return buildPackageDropdownHtml({
                             packageName: pkg.name,
@@ -784,6 +879,15 @@
                     '<li class="pkg-row">' +
                     '<div class="pkg-header">' +
                     '<div class="pkg-main">' +
+                    '<button class="pkg-toggle pkg-row-toggle" data-pkg-name="' +
+                    escapeAttr(pkg.name) +
+                    '" aria-expanded="' +
+                    (rowExpanded ? 'true' : 'false') +
+                    '" title="' +
+                    escapeAttr(rowToggleTitle) +
+                    '">' +
+                    (rowExpanded ? '▾' : '▸') +
+                    '</button>' +
                     '<span class="pkg-name" tabindex="0" data-name="' +
                     escapeAttr(pkg.name) +
                     '">' +
@@ -801,12 +905,50 @@
                     '</span>' +
                     addNodeBtn +
                     '</div>' +
-                    '<div class="pkg-dropdowns">' +
+                    '<div class="pkg-dropdowns' + (rowExpanded ? '' : ' hidden') + '">' +
                     dropdownHtml +
                     '</div>' +
                     '</li>'
                 );
             })
+            .join('');
+    };
+
+    const renderOtherPackages = () => {
+        const list = getOtherPkgList();
+        if (!list) {
+            return;
+        }
+
+        const filter = (dom.filterInput?.value || '').trim().toLowerCase();
+        const packages = state.otherPackages || [];
+
+        if (!state.otherPackagesLoaded) {
+            list.innerHTML = state.otherPackagesLoading
+                ? '<li class="text-muted"><span class="spinner"></span> Loading packages…</li>'
+                : '<li class="text-muted">Not loaded. Click "Load" or search to load automatically.</li>';
+            return;
+        }
+
+        const filtered = filter
+            ? packages.filter((name) => name.toLowerCase().includes(filter))
+            : packages;
+
+        if (!filtered.length) {
+            list.innerHTML = '<li class="text-muted">No matching packages</li>';
+            return;
+        }
+
+        list.innerHTML = filtered
+            .map((name) => (
+                '<li class="other-pkg-item" title="' +
+                escapeAttr(name) +
+                '">' +
+                '<span class="other-pkg-name">' +
+                escapeHtml(name) +
+                '</span>' +
+                '</li>'
+            ))
             .join('');
     };
 
@@ -877,8 +1019,13 @@
         renderArgsOptions,
         renderConfigTabs,
         renderPackages,
+        renderOtherPackages,
         renderPinned,
         renderTerminals,
         copyPackage,
+        toggleWorkspacePackages,
+        setAllWorkspacePackagesExpanded,
+        setWorkspacePackagesVisible,
+        isWorkspacePackagesVisible,
     };
 })();

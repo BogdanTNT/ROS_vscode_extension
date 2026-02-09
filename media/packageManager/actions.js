@@ -34,6 +34,10 @@
             sourcePath,
         }),
         refreshPackages: () => vscode.postMessage({ command: toHost.REFRESH_PACKAGES }),
+        loadOtherPackages: (force) => vscode.postMessage({
+            command: toHost.LOAD_OTHER_PACKAGES,
+            force: Boolean(force),
+        }),
         toggleBuildCheck: (enabled) => vscode.postMessage({ command: toHost.TOGGLE_BUILD_CHECK, enabled }),
         createPackage: (name, buildType, deps) => vscode.postMessage({ command: toHost.CREATE_PACKAGE, name, buildType, deps }),
         addNode: (pkg, nodeName) => vscode.postMessage({ command: toHost.ADD_NODE, pkg, nodeName }),

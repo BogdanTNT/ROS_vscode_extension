@@ -3,6 +3,7 @@
     window.PM = window.PM || {};
 
     const { dom, state, actions, render } = window.PM;
+    const uiInteractions = window.RosUi?.interactions;
 
     const defaultDepsByBuildType = {
         ament_cmake: 'rclcpp std_msgs',
@@ -84,7 +85,59 @@
         actions.refreshPackages();
     });
 
-    dom.filterInput.addEventListener('input', render.renderPackages);
+    const requestOtherPackagesLoad = (force = false) => {
+        if (!force && (state.otherPackagesLoaded || state.otherPackagesLoading)) {
+            return;
+        }
+        state.otherPackagesLoading = true;
+        if (dom.btnLoadOtherPackages) {
+            dom.btnLoadOtherPackages.disabled = true;
+            dom.btnLoadOtherPackages.textContent = 'Loading...';
+        }
+        render.renderOtherPackages();
+        actions.loadOtherPackages(force);
+    };
+
+    dom.filterInput.addEventListener('input', () => {
+        render.renderPackages();
+        render.renderOtherPackages();
+        if (dom.filterInput.value.trim()) {
+            requestOtherPackagesLoad();
+        }
+    });
+
+    if (dom.btnLoadOtherPackages) {
+        dom.btnLoadOtherPackages.addEventListener('click', () => {
+            requestOtherPackagesLoad(true);
+        });
+    }
+
+    if (dom.btnToggleWorkspacePackages) {
+        const onToggleWorkspace = () => {
+            render.toggleWorkspacePackages(false);
+        };
+        const onRecursiveToggleWorkspace = () => {
+            // Unity-style behavior: Alt+click toggles all nested package sections.
+            render.toggleWorkspacePackages(true);
+        };
+
+        if (uiInteractions?.bindRecursiveToggleClick) {
+            uiInteractions.bindRecursiveToggleClick(
+                dom.btnToggleWorkspacePackages,
+                onToggleWorkspace,
+                onRecursiveToggleWorkspace,
+            );
+        } else {
+            dom.btnToggleWorkspacePackages.addEventListener('click', (event) => {
+                event.preventDefault();
+                if (event?.altKey) {
+                    onRecursiveToggleWorkspace();
+                    return;
+                }
+                onToggleWorkspace();
+            });
+        }
+    }
 
     dom.toggleBuildCheck.addEventListener('change', () => {
         actions.toggleBuildCheck(dom.toggleBuildCheck.checked);

@@ -18,6 +18,7 @@ export class PackageManagerViewProvider implements vscode.WebviewViewProvider {
     private _view?: vscode.WebviewView;
     private _pinnedLaunchFiles: string[] = [];
     private _launchArgConfigs: LaunchArgConfigMap = {};
+    private _cachedOtherPackages?: string[];
 
     constructor(
         private readonly _extensionUri: vscode.Uri,
@@ -49,6 +50,9 @@ export class PackageManagerViewProvider implements vscode.WebviewViewProvider {
                 case PMToHostCommand.REFRESH_PACKAGES:
                     await this._sendPackageList();
                     this._sendBuildCheckState();
+                    break;
+                case PMToHostCommand.LOAD_OTHER_PACKAGES:
+                    await this._sendOtherPackageList(Boolean(msg.force));
                     break;
                 case PMToHostCommand.OPEN_LAUNCH:
                     await this._openLaunchFile(msg.path);
@@ -166,6 +170,31 @@ export class PackageManagerViewProvider implements vscode.WebviewViewProvider {
             launchArgConfigs: this._launchArgConfigs,
             terminals: this._ros.getTrackedTerminals(),
             preferredTerminalId: this._ros.getPreferredTerminalId(),
+        });
+    }
+
+    private async _sendOtherPackageList(forceRefresh: boolean = false) {
+        if (!forceRefresh && this._cachedOtherPackages) {
+            this._view?.webview.postMessage({
+                command: PMToWebviewCommand.OTHER_PACKAGE_LIST,
+                packages: this._cachedOtherPackages,
+            });
+            return;
+        }
+
+        const [workspacePackages, allPackages] = await Promise.all([
+            this._ros.listWorkspacePackages(),
+            this._ros.listPackages(),
+        ]);
+        const workspaceSet = new Set(workspacePackages);
+        const otherPackages = allPackages
+            .filter((name) => !workspaceSet.has(name))
+            .sort((a, b) => a.localeCompare(b));
+
+        this._cachedOtherPackages = otherPackages;
+        this._view?.webview.postMessage({
+            command: PMToWebviewCommand.OTHER_PACKAGE_LIST,
+            packages: otherPackages,
         });
     }
 
@@ -327,8 +356,6 @@ export class PackageManagerViewProvider implements vscode.WebviewViewProvider {
 
     private _getHtml(webview: vscode.Webview): string {
         const body = /* html */ `
-<h2>📦 Package Manager</h2>
-
 <div class="section">
     <div class="toolbar">
         <button id="btnOpenCreate">＋ New Package</button>
@@ -365,9 +392,26 @@ export class PackageManagerViewProvider implements vscode.WebviewViewProvider {
     </div>
 
     <div class="subsection">
-        <h3>Workspace Packages</h3>
+        <div class="section-header">
+            <div class="section-header-main">
+                <button class="secondary small" id="btnToggleWorkspacePackages" title="Collapse/expand workspace package list (Alt+click: expand/collapse all nested items)">▾</button>
+                <h3>Workspace Packages</h3>
+            </div>
+        </div>
         <ul class="item-list" id="pkgList">
             <li class="text-muted">Loading…</li>
+        </ul>
+    </div>
+
+    <div class="subsection">
+        <div class="section-header">
+            <h3>Other ROS Packages</h3>
+            <div class="section-header-actions">
+                <button class="secondary small" id="btnLoadOtherPackages">Load</button>
+            </div>
+        </div>
+        <ul class="item-list" id="otherPkgList">
+            <li class="text-muted">Not loaded</li>
         </ul>
     </div>
 </div>
@@ -461,6 +505,7 @@ export class PackageManagerViewProvider implements vscode.WebviewViewProvider {
 </div>
 `;
         const scriptUris = [
+            vscode.Uri.joinPath(this._extensionUri, 'media', 'shared', 'interactions.js'),
             vscode.Uri.joinPath(this._extensionUri, 'media', 'packageManager', 'state.js'),
             vscode.Uri.joinPath(this._extensionUri, 'media', 'packageManager', 'dom.js'),
             vscode.Uri.joinPath(this._extensionUri, 'media', 'packageManager', 'messages.js'),

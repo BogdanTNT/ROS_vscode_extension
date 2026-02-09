@@ -26,8 +26,20 @@
                 state.terminals = msg.terminals || [];
                 state.preferredTerminalId = msg.preferredTerminalId || '';
                 render.renderPackages();
+                render.renderOtherPackages();
                 render.renderPinned();
                 render.renderTerminals();
+                break;
+            }
+            case toWebview.OTHER_PACKAGE_LIST: {
+                state.otherPackages = (msg.packages || []).slice().sort((a, b) => a.localeCompare(b));
+                state.otherPackagesLoaded = true;
+                state.otherPackagesLoading = false;
+                if (window.PM.dom?.btnLoadOtherPackages) {
+                    window.PM.dom.btnLoadOtherPackages.disabled = false;
+                    window.PM.dom.btnLoadOtherPackages.textContent = 'Reload';
+                }
+                render.renderOtherPackages();
                 break;
             }
             case toWebview.CREATE_DONE: {
@@ -58,6 +70,7 @@
             case toWebview.TERMINAL_LIST: {
                 state.terminals = msg.terminals || [];
                 render.renderPackages();
+                render.renderOtherPackages();
                 render.renderPinned();
                 render.renderTerminals();
                 break;

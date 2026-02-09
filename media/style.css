@@ -226,6 +226,31 @@ button.small {
     margin-bottom: 14px;
 }
 
+.section-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+}
+
+.section-header h3 {
+    margin: 0;
+}
+
+.section-header-main {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    min-width: 0;
+}
+
+.section-header-actions {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    flex-wrap: wrap;
+}
+
 /* ── Status badges ─────────────────────────────────────────── */
 
 .badge {
@@ -548,6 +573,19 @@ button.small {
     border-bottom: none;
 }
 
+.other-pkg-item {
+    display: block !important;
+    justify-content: flex-start !important;
+    align-items: stretch !important;
+}
+
+.other-pkg-name {
+    display: block;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
 /* ── Terminals ─────────────────────────────────────────────── */
 
 .terminal-item {
@@ -594,22 +632,19 @@ button.term-kill.is-pending {
     display: flex;
     align-items: center;
     gap: 8px;
-    justify-content: space-between;
+    justify-content: flex-end;
     flex-wrap: wrap;
 }
 
-.nv-summary {
+.nv-details-header {
     display: flex;
-    gap: 6px;
-    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
 }
 
-.nv-pill {
-    border: 1px solid var(--border);
-    border-radius: 999px;
-    padding: 2px 8px;
-    font-size: 0.75em;
-    background: var(--input-bg);
+.nv-details-header h3 {
+    margin: 0;
 }
 
 .nv-tabs {
@@ -620,6 +655,17 @@ button.term-kill.is-pending {
 
 .nv-tab {
     padding: 4px 10px;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+}
+
+.nv-tab-count {
+    min-width: 18px;
+    text-align: center;
+    line-height: 1;
+    font-size: 0.68em;
+    padding: 2px 6px;
 }
 
 .nv-tab.active {
@@ -679,7 +725,7 @@ button.term-kill.is-pending {
 }
 
 .nv-entity-name {
-    max-width: 72%;
+    max-width: 68%;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
@@ -687,9 +733,18 @@ button.term-kill.is-pending {
 }
 
 .nv-entity-meta {
-    font-size: 0.75em;
+    font-size: 0.8em;
     color: var(--text-muted);
     text-align: right;
+}
+
+.nv-entity-meta-path {
+    font-size: 0.84em;
+    max-width: 36%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-family: var(--vscode-editor-font-family, monospace);
 }
 
 .nv-overview-sections {
@@ -742,6 +797,19 @@ button.term-kill.is-pending {
     word-break: break-word;
     font-size: 0.8em;
     font-family: var(--vscode-editor-font-family, monospace);
+}
+
+.nv-publish-modal-card {
+    width: min(700px, 96vw);
+}
+
+.nv-publish-payload {
+    min-height: 220px;
+    max-height: 46vh;
+    resize: vertical;
+    margin-bottom: 8px;
+    font-family: var(--vscode-editor-font-family, monospace);
+    font-size: 0.83em;
 }
 
 /* ── Scrollbar ─────────────────────────────────────────────── */

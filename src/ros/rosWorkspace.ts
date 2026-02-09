@@ -45,6 +45,26 @@ export interface RosGraphEntityInfo {
     type: string;
 }
 
+export interface RosParameterInfo {
+    name: string;
+    node?: string;
+}
+
+export interface RosTopicPublishTemplateResult {
+    success: boolean;
+    topicName: string;
+    topicType?: string;
+    template?: string;
+    error?: string;
+}
+
+export interface RosTopicPublishResult {
+    success: boolean;
+    topicName: string;
+    topicType?: string;
+    error?: string;
+}
+
 export interface RosNodeGraphInfo {
     publishers: string[];
     subscribers: string[];
@@ -1368,7 +1388,7 @@ if __name__ == '__main__':
         return ['-e', bashPath, '-ic', wrappedCmd];
     }
 
-    // ── Graph data (nodes / topics / services / actions) ──────
+    // ── Graph data (nodes / topics / services / actions / parameters) ──────
     async getNodeList(): Promise<string[]> {
         try {
             const raw = this.isRos2()
@@ -1414,6 +1434,19 @@ if __name__ == '__main__':
         }
     }
 
+    async getParameterList(): Promise<RosParameterInfo[]> {
+        try {
+            const raw = this.isRos2()
+                ? await this.exec('ros2 param list')
+                : await this.exec('rosparam list');
+            return this.isRos2()
+                ? this.parseRos2ParameterList(raw)
+                : this.parseRos1ParameterList(raw);
+        } catch {
+            return [];
+        }
+    }
+
     async getLatestTopicMessage(topicName: string): Promise<string | undefined> {
         if (!this.isValidRosResourceName(topicName)) {
             return undefined;
@@ -1435,6 +1468,103 @@ if __name__ == '__main__':
             return trimmed;
         } catch {
             return undefined;
+        }
+    }
+
+    async getTopicPublishTemplate(
+        topicName: string,
+        topicTypeHint?: string,
+    ): Promise<RosTopicPublishTemplateResult> {
+        if (!this.isValidRosResourceName(topicName)) {
+            return {
+                success: false,
+                topicName,
+                error: 'Invalid topic name.',
+            };
+        }
+
+        const topicType = await this.resolveTopicType(topicName, topicTypeHint);
+        if (!topicType) {
+            return {
+                success: false,
+                topicName,
+                error: 'Could not resolve topic type for this topic.',
+            };
+        }
+
+        try {
+            const command = this.isRos2()
+                ? `ros2 interface show ${topicType}`
+                : `rosmsg show ${topicType}`;
+            const rawDefinition = await this.exec(command);
+            const defaults = this.buildMessageDefaultsFromInterface(rawDefinition);
+            const template = JSON.stringify(defaults, null, 2);
+            return {
+                success: true,
+                topicName,
+                topicType,
+                template,
+            };
+        } catch (err) {
+            return {
+                success: false,
+                topicName,
+                topicType,
+                error: this.normalizeCliError(err, 'Failed to fetch topic interface.'),
+            };
+        }
+    }
+
+    async publishTopicMessage(
+        topicName: string,
+        payload: string,
+        topicTypeHint?: string,
+    ): Promise<RosTopicPublishResult> {
+        if (!this.isValidRosResourceName(topicName)) {
+            return {
+                success: false,
+                topicName,
+                error: 'Invalid topic name.',
+            };
+        }
+
+        const payloadText = String(payload ?? '').trim();
+        if (!payloadText) {
+            return {
+                success: false,
+                topicName,
+                error: 'Message payload is empty.',
+            };
+        }
+
+        const topicType = await this.resolveTopicType(topicName, topicTypeHint);
+        if (!topicType) {
+            return {
+                success: false,
+                topicName,
+                error: 'Could not resolve topic type for this topic.',
+            };
+        }
+
+        try {
+            // Keep payload exactly as authored by the user. JSON is accepted as
+            // YAML input by ROS CLIs, and users may also provide hand-written YAML.
+            const command = this.isRos2()
+                ? `timeout 6s ros2 topic pub --once ${topicName} ${topicType} '${payloadText}'`
+                : `timeout 6s rostopic pub -1 ${topicName} ${topicType} '${payloadText}'`;
+            await this.exec(command);
+            return {
+                success: true,
+                topicName,
+                topicType,
+            };
+        } catch (err) {
+            return {
+                success: false,
+                topicName,
+                topicType,
+                error: this.normalizeCliError(err, 'Failed to publish message.'),
+            };
         }
     }
 
@@ -1484,6 +1614,61 @@ if __name__ == '__main__':
         }
 
         return entities;
+    }
+
+    private parseRos2ParameterList(raw: string): RosParameterInfo[] {
+        const params: RosParameterInfo[] = [];
+        const seen = new Set<string>();
+        let currentNode = '';
+
+        for (const line of raw.split('\n')) {
+            const trimmed = line.trim();
+            if (!trimmed) {
+                continue;
+            }
+
+            if (trimmed.startsWith('/') && trimmed.endsWith(':')) {
+                const nodeName = trimmed.slice(0, -1).trim();
+                currentNode = this.isValidRosResourceName(nodeName) ? nodeName : '';
+                continue;
+            }
+
+            if (!currentNode) {
+                continue;
+            }
+
+            const paramName = trimmed.replace(/^-+\s*/, '').trim();
+            if (!this.isValidRosParameterName(paramName)) {
+                continue;
+            }
+
+            const key = `${currentNode}:${paramName}`;
+            if (seen.has(key)) {
+                continue;
+            }
+            seen.add(key);
+            params.push({ name: paramName, node: currentNode });
+        }
+
+        return params.sort(
+            (a, b) => (a.node ?? '').localeCompare(b.node ?? '') || a.name.localeCompare(b.name),
+        );
+    }
+
+    private parseRos1ParameterList(raw: string): RosParameterInfo[] {
+        const params: RosParameterInfo[] = [];
+        const seen = new Set<string>();
+
+        for (const line of raw.split('\n')) {
+            const trimmed = line.trim();
+            if (!trimmed || !this.isValidRosResourceName(trimmed) || seen.has(trimmed)) {
+                continue;
+            }
+            seen.add(trimmed);
+            params.push({ name: trimmed });
+        }
+
+        return params.sort((a, b) => a.name.localeCompare(b.name));
     }
 
     private parseNodeGraphInfo(raw: string): RosNodeGraphInfo {
@@ -1604,6 +1789,180 @@ if __name__ == '__main__':
         // Reject whitespace and shell metacharacters because names are used
         // in CLI commands. ROS names we care about are absolute paths.
         return /^\/[A-Za-z0-9_./~-]+$/.test(name);
+    }
+
+    private isValidRosParameterName(name: string): boolean {
+        // ROS parameter names are identifiers with namespace separators, used
+        // in CLI calls and therefore must not contain shell metacharacters.
+        return /^[A-Za-z0-9_./~-]+$/.test(name);
+    }
+
+    private isValidRosTypeName(typeName: string): boolean {
+        // ROS type names are slash-delimited package/type tokens.
+        return /^[A-Za-z][A-Za-z0-9_]*(?:\/[A-Za-z][A-Za-z0-9_]*)+$/.test(typeName);
+    }
+
+    private async resolveTopicType(topicName: string, topicTypeHint?: string): Promise<string | undefined> {
+        const hinted = String(topicTypeHint ?? '').trim();
+        if (hinted && hinted !== 'unknown' && this.isValidRosTypeName(hinted)) {
+            return hinted;
+        }
+
+        try {
+            const command = this.isRos2()
+                ? `ros2 topic type ${topicName}`
+                : `rostopic type ${topicName}`;
+            const raw = await this.exec(command);
+            const resolved = raw
+                .split('\n')
+                .map((line) => line.trim())
+                .find(Boolean);
+
+            if (!resolved || !this.isValidRosTypeName(resolved)) {
+                return undefined;
+            }
+            return resolved;
+        } catch {
+            return undefined;
+        }
+    }
+
+    private normalizeCliError(err: unknown, fallback: string): string {
+        const text = String(err ?? '').trim();
+        if (!text) {
+            return fallback;
+        }
+        const maxChars = 400;
+        return text.length > maxChars
+            ? `${text.slice(0, maxChars)}...`
+            : text;
+    }
+
+    private buildMessageDefaultsFromInterface(rawInterface: string): Record<string, unknown> {
+        type ParseContext = {
+            indent: number;
+            target: Record<string, unknown>;
+        };
+
+        const root: Record<string, unknown> = {};
+        const stack: ParseContext[] = [{ indent: -1, target: root }];
+
+        // `ros2 interface show` and `rosmsg show` present nested message fields
+        // as indentation-based trees. We reconstruct that tree and assign simple
+        // scalar defaults so users get an editable publish-ready payload.
+        for (const line of rawInterface.split('\n')) {
+            const withoutComment = line.split('#')[0].trimEnd();
+            if (!withoutComment.trim()) {
+                continue;
+            }
+            if (withoutComment.trim() === '---') {
+                // Service request/response separator (not expected for topics),
+                // but ignored defensively.
+                continue;
+            }
+
+            const indent = withoutComment.length - withoutComment.trimStart().length;
+            const trimmed = withoutComment.trim();
+            const parts = trimmed.split(/\s+/);
+            if (parts.length < 2) {
+                continue;
+            }
+
+            const typeToken = parts[0];
+            const fieldToken = parts[1];
+            if (!fieldToken || fieldToken.includes('=')) {
+                // Constant line (e.g. uint8 FOO=1), not a message field.
+                continue;
+            }
+            if (!/^[A-Za-z][A-Za-z0-9_]*$/.test(fieldToken)) {
+                continue;
+            }
+
+            while (stack.length > 1 && indent <= stack[stack.length - 1].indent) {
+                stack.pop();
+            }
+            const parent = stack[stack.length - 1].target;
+
+            const descriptor = this.parseInterfaceTypeDescriptor(typeToken);
+            const primitiveDefault = this.getPrimitiveDefaultValue(descriptor.baseType);
+
+            if (!descriptor.isArray && primitiveDefault !== undefined) {
+                parent[fieldToken] = primitiveDefault;
+                continue;
+            }
+
+            if (descriptor.isArray && primitiveDefault !== undefined) {
+                if (descriptor.fixedLength && descriptor.fixedLength > 0) {
+                    parent[fieldToken] = Array.from({ length: descriptor.fixedLength }, () => primitiveDefault);
+                } else {
+                    parent[fieldToken] = [];
+                }
+                continue;
+            }
+
+            // Complex message field. For arrays we pre-populate one sample item
+            // so nested structure is visible/editable in the modal by default.
+            const nestedTemplate: Record<string, unknown> = {};
+            if (descriptor.isArray) {
+                if (descriptor.fixedLength && descriptor.fixedLength > 0) {
+                    parent[fieldToken] = Array.from({ length: descriptor.fixedLength }, () => nestedTemplate);
+                } else {
+                    parent[fieldToken] = [nestedTemplate];
+                }
+            } else {
+                parent[fieldToken] = nestedTemplate;
+            }
+
+            stack.push({ indent, target: nestedTemplate });
+        }
+
+        return root;
+    }
+
+    private parseInterfaceTypeDescriptor(typeToken: string): {
+        baseType: string;
+        isArray: boolean;
+        fixedLength?: number;
+    } {
+        const arrayMatch = typeToken.match(/^(.+)\[([^\]]*)\]$/);
+        if (!arrayMatch) {
+            return { baseType: typeToken, isArray: false };
+        }
+
+        const baseType = arrayMatch[1].trim();
+        const lengthToken = arrayMatch[2].trim();
+        const fixedLength = /^[0-9]+$/.test(lengthToken)
+            ? parseInt(lengthToken, 10)
+            : undefined;
+
+        return { baseType, isArray: true, fixedLength };
+    }
+
+    private getPrimitiveDefaultValue(baseType: string): string | number | boolean | undefined {
+        const normalized = baseType.trim().toLowerCase();
+
+        if (
+            normalized === 'string'
+            || normalized === 'wstring'
+            || normalized.startsWith('string<=')
+            || normalized.startsWith('wstring<=')
+        ) {
+            return '';
+        }
+        if (normalized === 'bool') {
+            return false;
+        }
+        if (
+            normalized === 'byte'
+            || normalized === 'char'
+            || normalized === 'float'
+            || normalized === 'double'
+            || /^u?int(8|16|32|64)$/.test(normalized)
+            || /^float(32|64)$/.test(normalized)
+        ) {
+            return 0;
+        }
+        return undefined;
     }
 
     private normalizeGraphEndpoint(

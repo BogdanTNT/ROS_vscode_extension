@@ -4,8 +4,13 @@
 
     window.PM.state = {
         allPackages: [],
+        otherPackages: [],
+        otherPackagesLoaded: false,
+        otherPackagesLoading: false,
         pinnedPaths: [],
         expandedPackages: {},
+        expandedPackageRows: {},
+        workspacePackagesVisible: true,
         launchArgConfigs: {},
         argsOptions: [],
         currentArgsKey: '',

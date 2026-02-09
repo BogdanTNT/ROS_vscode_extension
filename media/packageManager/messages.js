@@ -6,6 +6,7 @@
         toHost: Object.freeze({
             CREATE_PACKAGE: 'createPackage',
             REFRESH_PACKAGES: 'refreshPackages',
+            LOAD_OTHER_PACKAGES: 'loadOtherPackages',
             OPEN_LAUNCH: 'openLaunch',
             OPEN_NODE: 'openNode',
             LAUNCH_FILE: 'launchFile',
@@ -21,6 +22,7 @@
         }),
         toWebview: Object.freeze({
             PACKAGE_LIST: 'packageList',
+            OTHER_PACKAGE_LIST: 'otherPackageList',
             CREATE_DONE: 'createDone',
             FOCUS_CREATE: 'focusCreate',
             LAUNCH_ARGS_OPTIONS: 'launchArgsOptions',

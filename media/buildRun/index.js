@@ -1,6 +1,7 @@
 /* Build & Run Webview Script */
 (function () {
     const vscode = acquireVsCodeApi();
+    const uiInteractions = window.RosUi?.interactions;
 
     const commands = Object.freeze({
         toHost: Object.freeze({
@@ -39,6 +40,13 @@
         dropdownOpen: false,
         /** @type {Record<string, {needsBuild: boolean, reason: string, reasonCode: string}>} */
         buildStatusMap: {},
+    };
+
+    const isRecursiveToggleEvent = (event) => {
+        if (uiInteractions?.isRecursiveToggleEvent) {
+            return uiInteractions.isRecursiveToggleEvent(event);
+        }
+        return Boolean(event?.altKey);
     };
 
     const normalizePackages = (rawList) => {
@@ -193,10 +201,46 @@
         renderSummary();
     };
 
-    dom.dropdownBtn.addEventListener('click', (event) => {
-        event.preventDefault();
+    const toggleAllWorkspaceSelections = () => {
+        const shouldSelectAll = uiInteractions?.shouldEnableAllFromSelection
+            ? uiInteractions.shouldEnableAllFromSelection(
+                state.workspacePackages.length,
+                state.selectedPackages.size,
+            )
+            : state.selectedPackages.size < state.workspacePackages.length;
+        state.selectedPackages = shouldSelectAll
+            ? new Set(state.workspacePackages)
+            : new Set();
+        renderPackageOptions();
+        renderSummary();
+    };
+
+    const onDropdownToggle = () => {
         setDropdownOpen(!state.dropdownOpen);
-    });
+    };
+
+    const onDropdownRecursiveToggle = () => {
+        // Alt+click applies this dropdown action to all package children.
+        toggleAllWorkspaceSelections();
+        setDropdownOpen(true);
+    };
+
+    if (uiInteractions?.bindRecursiveToggleClick) {
+        uiInteractions.bindRecursiveToggleClick(
+            dom.dropdownBtn,
+            onDropdownToggle,
+            onDropdownRecursiveToggle,
+        );
+    } else {
+        dom.dropdownBtn.addEventListener('click', (event) => {
+            event.preventDefault();
+            if (isRecursiveToggleEvent(event)) {
+                onDropdownRecursiveToggle();
+                return;
+            }
+            onDropdownToggle();
+        });
+    }
 
     dom.btnSelectAll.addEventListener('click', (event) => {
         event.preventDefault();

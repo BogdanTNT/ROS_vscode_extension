@@ -20,7 +20,7 @@ export function activate(context: vscode.ExtensionContext) {
     // ── Sidebar Webview Providers ──────────────────────────────
     const packageManagerProvider = new PackageManagerViewProvider(context.extensionUri, rosWorkspace, context);
     const buildRunProvider = new BuildRunViewProvider(context.extensionUri, rosWorkspace);
-    const nodeVisualizerProvider = new NodeVisualizerViewProvider(context.extensionUri, rosWorkspace);
+    const nodeVisualizerProvider = new NodeVisualizerViewProvider(context.extensionUri, rosWorkspace, context);
 
     context.subscriptions.push(
         vscode.window.registerWebviewViewProvider('rosPackageManager', packageManagerProvider),

@@ -149,7 +149,7 @@ export class BuildRunViewProvider implements vscode.WebviewViewProvider {
 
         <label for="btnPackageDropdown">Workspace packages</label>
         <div class="build-dropdown" id="buildDropdown">
-            <button class="secondary" id="btnPackageDropdown" aria-expanded="false">
+            <button class="secondary" id="btnPackageDropdown" aria-expanded="false" title="Open package selector (Alt+click: select/clear all packages)">
                 Select packages
             </button>
             <div class="build-dropdown-menu hidden" id="packageDropdownMenu">
@@ -178,6 +178,7 @@ export class BuildRunViewProvider implements vscode.WebviewViewProvider {
 </div>
 `;
         const scriptUris = [
+            vscode.Uri.joinPath(this._extensionUri, 'media', 'shared', 'interactions.js'),
             vscode.Uri.joinPath(this._extensionUri, 'media', 'buildRun', 'index.js'),
         ];
         return getWebviewHtml(webview, this._extensionUri, body, '', undefined, scriptUris);
