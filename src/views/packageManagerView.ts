@@ -1,5 +1,5 @@
 import * as vscode from 'vscode';
-import { RosWorkspace } from '../ros/rosWorkspace';
+import { RosWorkspace, RosWorkspacePackageDetails } from '../ros/rosWorkspace';
 import { getWebviewHtml } from './webviewHelper';
 import { PMToHostCommand, PMToWebviewCommand } from './packageManagerMessages';
 
@@ -19,6 +19,7 @@ export class PackageManagerViewProvider implements vscode.WebviewViewProvider {
     private _pinnedLaunchFiles: string[] = [];
     private _launchArgConfigs: LaunchArgConfigMap = {};
     private _cachedOtherPackages?: string[];
+    private _cachedOtherPackageDetails = new Map<string, RosWorkspacePackageDetails>();
 
     constructor(
         private readonly _extensionUri: vscode.Uri,
@@ -53,6 +54,9 @@ export class PackageManagerViewProvider implements vscode.WebviewViewProvider {
                     break;
                 case PMToHostCommand.LOAD_OTHER_PACKAGES:
                     await this._sendOtherPackageList(Boolean(msg.force));
+                    break;
+                case PMToHostCommand.LOAD_OTHER_PACKAGE_DETAILS:
+                    await this._sendOtherPackageDetails(msg.name);
                     break;
                 case PMToHostCommand.OPEN_LAUNCH:
                     await this._openLaunchFile(msg.path);
@@ -147,14 +151,21 @@ export class PackageManagerViewProvider implements vscode.WebviewViewProvider {
             .update('preLaunchBuildCheck', enabled, vscode.ConfigurationTarget.Global);
     }
 
-    private async _handleCreate(msg: { name: string; buildType: string; deps: string }) {
+    private async _handleCreate(msg: { name: string; buildType: string; deps: string; license?: string }) {
+        const normalizedName = String(msg.name || '').trim().replace(/\s+/g, '_');
+        if (!normalizedName) {
+            this._view?.webview.postMessage({ command: PMToWebviewCommand.CREATE_DONE, success: false });
+            return;
+        }
+
         const deps = msg.deps
             .split(/[\s,]+/)
             .map((d: string) => d.trim())
             .filter(Boolean);
-        const ok = await this._ros.createPackage(msg.name, msg.buildType, deps);
+        const license = String(msg.license || '').trim() || 'GPL-3.0';
+        const ok = await this._ros.createPackage(normalizedName, msg.buildType, deps, license);
         if (ok) {
-            vscode.window.showInformationMessage(`Package "${msg.name}" created.`);
+            vscode.window.showInformationMessage(`Package "${normalizedName}" created.`);
         }
         this._view?.webview.postMessage({ command: PMToWebviewCommand.CREATE_DONE, success: ok });
     }
@@ -187,14 +198,45 @@ export class PackageManagerViewProvider implements vscode.WebviewViewProvider {
             this._ros.listPackages(),
         ]);
         const workspaceSet = new Set(workspacePackages);
-        const otherPackages = allPackages
+        const otherPackageNames = allPackages
             .filter((name) => !workspaceSet.has(name))
             .sort((a, b) => a.localeCompare(b));
+        const otherPackageSet = new Set(otherPackageNames);
+        for (const name of this._cachedOtherPackageDetails.keys()) {
+            if (!otherPackageSet.has(name)) {
+                this._cachedOtherPackageDetails.delete(name);
+            }
+        }
 
-        this._cachedOtherPackages = otherPackages;
+        this._cachedOtherPackages = otherPackageNames;
         this._view?.webview.postMessage({
             command: PMToWebviewCommand.OTHER_PACKAGE_LIST,
-            packages: otherPackages,
+            packages: otherPackageNames,
+        });
+    }
+
+    private async _sendOtherPackageDetails(name: string) {
+        const packageName = String(name || '').trim();
+        if (!packageName) {
+            return;
+        }
+
+        let detail = this._cachedOtherPackageDetails.get(packageName);
+        if (!detail) {
+            const details = await this._ros.listPackageDetails([packageName]);
+            detail = details[0] || {
+                name: packageName,
+                packagePath: '',
+                launchFiles: [],
+                nodes: [],
+                isPython: false,
+            };
+            this._cachedOtherPackageDetails.set(packageName, detail);
+        }
+
+        this._view?.webview.postMessage({
+            command: PMToWebviewCommand.OTHER_PACKAGE_DETAILS,
+            package: detail,
         });
     }
 
@@ -236,15 +278,14 @@ export class PackageManagerViewProvider implements vscode.WebviewViewProvider {
             return;
         }
 
-        const wsPath = this._ros.getWorkspacePath();
-        const normalized = filePath.replace(/\\/g, '/');
-        const normalizedWs = wsPath.replace(/\\/g, '/');
-        if (!normalized.startsWith(normalizedWs)) {
-            vscode.window.showErrorMessage(`${label} is outside the workspace.`);
+        const uri = vscode.Uri.file(filePath);
+        try {
+            await vscode.workspace.fs.stat(uri);
+        } catch {
+            vscode.window.showErrorMessage(`${label} not found.`);
             return;
         }
 
-        const uri = vscode.Uri.file(filePath);
         await vscode.window.showTextDocument(uri, { preview: false });
     }
 
@@ -405,7 +446,10 @@ export class PackageManagerViewProvider implements vscode.WebviewViewProvider {
 
     <div class="subsection">
         <div class="section-header">
-            <h3>Other ROS Packages</h3>
+            <div class="section-header-main">
+                <button class="secondary small" id="btnToggleOtherPackages" title="Collapse/expand other ROS package list (Alt+click: expand/collapse all nested items)">▾</button>
+                <h3>Other ROS Packages</h3>
+            </div>
             <div class="section-header-actions">
                 <button class="secondary small" id="btnLoadOtherPackages">Load</button>
             </div>
@@ -426,11 +470,20 @@ export class PackageManagerViewProvider implements vscode.WebviewViewProvider {
         <div class="modal-body">
             <label for="pkgName">Package name</label>
             <input type="text" id="pkgName" placeholder="my_robot_pkg" />
+            <div id="pkgNameNormalizedHint" class="text-muted text-sm mt hidden"></div>
 
             <label for="buildType">Build type</label>
             <select id="buildType">
                 <option value="ament_cmake">ament_cmake (C++)</option>
                 <option value="ament_python">ament_python (Python)</option>
+            </select>
+
+            <label for="pkgLicense">License</label>
+            <select id="pkgLicense">
+                <option value="GPL-3.0" selected>GPL-3.0 (default)</option>
+                <option value="Apache-2.0">Apache-2.0</option>
+                <option value="MIT">MIT</option>
+                <option value="BSD-3-Clause">BSD-3-Clause</option>
             </select>
 
             <label for="deps">Dependencies <span class="text-muted text-sm">(space / comma separated)</span></label>

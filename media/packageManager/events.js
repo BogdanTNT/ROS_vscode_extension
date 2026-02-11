@@ -12,6 +12,33 @@
 
     const getDefaultDeps = (buildType) => defaultDepsByBuildType[buildType] || '';
 
+    const normalizePackageName = (rawName) => String(rawName || '').trim().replace(/\s+/g, '_');
+
+    const updatePackageNamePreview = () => {
+        if (!dom.pkgNameInput || !dom.pkgNameNormalizedHint) {
+            return;
+        }
+
+        const rawName = String(dom.pkgNameInput.value || '');
+        const normalizedName = normalizePackageName(rawName);
+
+        if (!normalizedName) {
+            dom.pkgNameNormalizedHint.textContent = 'Spaces are converted to "_" in package names.';
+            dom.pkgNameNormalizedHint.classList.remove('hidden');
+            return;
+        }
+
+        if (rawName.trim() !== normalizedName) {
+            dom.pkgNameNormalizedHint.textContent =
+                'Spaces are converted to "_". Package will be created as: ' + normalizedName;
+            dom.pkgNameNormalizedHint.classList.remove('hidden');
+            return;
+        }
+
+        dom.pkgNameNormalizedHint.textContent = 'Package will be created as: ' + normalizedName;
+        dom.pkgNameNormalizedHint.classList.remove('hidden');
+    };
+
     const applyDefaultDepsForBuildType = (force = false) => {
         if (!dom.buildTypeInput || !dom.depsInput) {
             return;
@@ -25,8 +52,14 @@
         dom.createModal.classList.remove('hidden');
         dom.statusEl.className = 'mt hidden';
         dom.statusEl.textContent = '';
+        if (dom.licenseInput) {
+            dom.licenseInput.value = 'GPL-3.0';
+        }
         applyDefaultDepsForBuildType(true);
-        document.getElementById('pkgName').focus();
+        updatePackageNamePreview();
+        if (dom.pkgNameInput) {
+            dom.pkgNameInput.focus();
+        }
     };
 
     const closeCreate = () => {
@@ -61,22 +94,31 @@
     };
 
     dom.btnCreate.addEventListener('click', () => {
-        const name = document.getElementById('pkgName').value.trim();
+        const rawName = dom.pkgNameInput ? dom.pkgNameInput.value : '';
+        const name = normalizePackageName(rawName);
         const buildType = dom.buildTypeInput ? dom.buildTypeInput.value : 'ament_cmake';
         const deps = dom.depsInput ? dom.depsInput.value.trim() : '';
+        const license = dom.licenseInput ? String(dom.licenseInput.value || '').trim() : 'GPL-3.0';
         if (!name) {
             return;
         }
+        if (dom.pkgNameInput) {
+            dom.pkgNameInput.value = name;
+        }
+        updatePackageNamePreview();
         dom.btnCreate.disabled = true;
         dom.statusEl.className = 'mt';
         dom.statusEl.innerHTML = '<span class="spinner"></span> Creating…';
-        actions.createPackage(name, buildType, deps);
+        actions.createPackage(name, buildType, deps, license || 'GPL-3.0');
     });
 
     dom.btnOpenCreate.addEventListener('click', openCreate);
     dom.btnCloseCreate.addEventListener('click', closeCreate);
     dom.btnCancelCreate.addEventListener('click', closeCreate);
     dom.createBackdrop.addEventListener('click', closeCreate);
+    if (dom.pkgNameInput) {
+        dom.pkgNameInput.addEventListener('input', updatePackageNamePreview);
+    }
     if (dom.buildTypeInput) {
         dom.buildTypeInput.addEventListener('change', () => applyDefaultDepsForBuildType(true));
     }
@@ -135,6 +177,32 @@
                     return;
                 }
                 onToggleWorkspace();
+            });
+        }
+    }
+
+    if (dom.btnToggleOtherPackages) {
+        const onToggleOther = () => {
+            render.toggleOtherPackages(false);
+        };
+        const onRecursiveToggleOther = () => {
+            render.toggleOtherPackages(true);
+        };
+
+        if (uiInteractions?.bindRecursiveToggleClick) {
+            uiInteractions.bindRecursiveToggleClick(
+                dom.btnToggleOtherPackages,
+                onToggleOther,
+                onRecursiveToggleOther,
+            );
+        } else {
+            dom.btnToggleOtherPackages.addEventListener('click', (event) => {
+                event.preventDefault();
+                if (event?.altKey) {
+                    onRecursiveToggleOther();
+                    return;
+                }
+                onToggleOther();
             });
         }
     }

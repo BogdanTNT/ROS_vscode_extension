@@ -4,6 +4,16 @@
     window.RosUi.interactions = window.RosUi.interactions || {};
 
     const interactions = window.RosUi.interactions;
+    const DEFAULT_CLICK_THROUGH_SELECTOR = [
+        'button',
+        'input[type="button"]',
+        'input[type="submit"]',
+        'input[type="reset"]',
+        'input[type="checkbox"]',
+        'input[type="radio"]',
+        '[role="button"]',
+        '[tabindex="0"]',
+    ].join(', ');
 
     /**
      * Alt is used as the "apply recursively / to all children" modifier
@@ -61,4 +71,140 @@
         }
         return selected < total;
     };
+
+    /**
+     * Some VS Code webview contexts can consume the first click only for focus,
+     * forcing users to click again to trigger a control.
+     *
+     * This helper mirrors a normal click on pointer down for actionable controls,
+     * preserving modifier keys (Alt/Ctrl/Shift/Meta), then suppresses the
+     * immediate native click to avoid double execution.
+     *
+     * It is intentionally generic so all extension webviews get consistent
+     * first-click behavior.
+     */
+    interactions.enableSingleClickActivation = (options) => {
+        const root = options?.root instanceof Document ? options.root : document;
+        const selector = String(options?.selector || DEFAULT_CLICK_THROUGH_SELECTOR);
+        const suppressWindowMs = Number(options?.suppressWindowMs) > 0
+            ? Number(options?.suppressWindowMs)
+            : 450;
+        const suppressNativeClickUntil = new WeakMap();
+
+        const isEligibleControl = (element) => {
+            if (!element) {
+                return false;
+            }
+            if (element.hasAttribute('disabled')) {
+                return false;
+            }
+            if (element.getAttribute('aria-disabled') === 'true') {
+                return false;
+            }
+            if (element instanceof HTMLInputElement && element.disabled) {
+                return false;
+            }
+            return true;
+        };
+
+        const resolveActivationTarget = (eventTarget) => {
+            if (!(eventTarget instanceof Element)) {
+                return undefined;
+            }
+            const target = eventTarget.closest(selector);
+            if (!(target instanceof Element)) {
+                return undefined;
+            }
+            if (!isEligibleControl(target)) {
+                return undefined;
+            }
+            return target;
+        };
+
+        const cloneModifierState = (event) => ({
+            altKey: Boolean(event?.altKey),
+            ctrlKey: Boolean(event?.ctrlKey),
+            metaKey: Boolean(event?.metaKey),
+            shiftKey: Boolean(event?.shiftKey),
+        });
+
+        const onPointerDownCapture = (event) => {
+            if (!(event instanceof MouseEvent)) {
+                return;
+            }
+            if (event.button !== 0) {
+                return;
+            }
+            if (event.defaultPrevented) {
+                return;
+            }
+
+            const target = resolveActivationTarget(event.target);
+            if (!target) {
+                return;
+            }
+
+            try {
+                if (typeof target.focus === 'function') {
+                    target.focus({ preventScroll: true });
+                }
+            } catch {
+                // Fallback focus failures should not block click dispatch.
+            }
+
+            suppressNativeClickUntil.set(target, Date.now() + suppressWindowMs);
+
+            const syntheticClick = new MouseEvent('click', {
+                bubbles: true,
+                cancelable: true,
+                composed: true,
+                button: 0,
+                buttons: 1,
+                clientX: event.clientX,
+                clientY: event.clientY,
+                ...cloneModifierState(event),
+            });
+            target.dispatchEvent(syntheticClick);
+
+            // Avoid text-selection side effects and reduce duplicate native events.
+            if (typeof event.preventDefault === 'function') {
+                event.preventDefault();
+            }
+        };
+
+        const onClickCapture = (event) => {
+            if (!(event instanceof MouseEvent) || !event.isTrusted) {
+                return;
+            }
+
+            const target = resolveActivationTarget(event.target);
+            if (!target) {
+                return;
+            }
+
+            const suppressUntil = suppressNativeClickUntil.get(target) || 0;
+            if (Date.now() > suppressUntil) {
+                return;
+            }
+
+            suppressNativeClickUntil.delete(target);
+            event.preventDefault();
+            event.stopImmediatePropagation();
+        };
+
+        // Capture phase ensures this runs before feature-specific click handlers.
+        root.addEventListener('pointerdown', onPointerDownCapture, true);
+        root.addEventListener('click', onClickCapture, true);
+
+        return () => {
+            root.removeEventListener('pointerdown', onPointerDownCapture, true);
+            root.removeEventListener('click', onClickCapture, true);
+        };
+    };
+
+    // Install globally once per webview document.
+    if (!window.__rosSingleClickActivationInstalled) {
+        window.__rosSingleClickActivationInstalled = true;
+        interactions.enableSingleClickActivation();
+    }
 })();

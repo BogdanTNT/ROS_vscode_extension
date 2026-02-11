@@ -38,8 +38,18 @@
             command: toHost.LOAD_OTHER_PACKAGES,
             force: Boolean(force),
         }),
+        loadOtherPackageDetails: (name) => vscode.postMessage({
+            command: toHost.LOAD_OTHER_PACKAGE_DETAILS,
+            name,
+        }),
         toggleBuildCheck: (enabled) => vscode.postMessage({ command: toHost.TOGGLE_BUILD_CHECK, enabled }),
-        createPackage: (name, buildType, deps) => vscode.postMessage({ command: toHost.CREATE_PACKAGE, name, buildType, deps }),
+        createPackage: (name, buildType, deps, license) => vscode.postMessage({
+            command: toHost.CREATE_PACKAGE,
+            name,
+            buildType,
+            deps,
+            license,
+        }),
         addNode: (pkg, nodeName) => vscode.postMessage({ command: toHost.ADD_NODE, pkg, nodeName }),
         setLaunchArgConfigs: (argsKey, configs) => vscode.postMessage({
             command: toHost.SET_LAUNCH_ARG_CONFIGS,

@@ -6,6 +6,84 @@
     const { toWebview } = window.PM.messages;
     let lastAutoRefreshAt = 0;
     const AUTO_REFRESH_COOLDOWN_MS = 500;
+    const normalizePackageName = (value) => {
+        if (typeof value !== 'string') {
+            return '';
+        }
+        return value.trim();
+    };
+    const normalizePackageDetails = (value) => {
+        if (typeof value === 'string') {
+            return {
+                name: value,
+                packagePath: '',
+                launchFiles: [],
+                nodes: [],
+                isPython: false,
+                detailsLoaded: false,
+                detailsLoading: false,
+            };
+        }
+        if (!value || typeof value !== 'object') {
+            return null;
+        }
+        const name = typeof value.name === 'string' ? value.name.trim() : '';
+        if (!name) {
+            return null;
+        }
+        const launchFiles = Array.isArray(value.launchFiles)
+            ? value.launchFiles.filter((item) => typeof item === 'string')
+            : [];
+        const nodes = Array.isArray(value.nodes)
+            ? value.nodes
+                .filter((node) => node && typeof node === 'object' && typeof node.name === 'string')
+                .map((node) => ({
+                    name: node.name,
+                    sourcePath: typeof node.sourcePath === 'string' ? node.sourcePath : '',
+                }))
+            : [];
+
+        return {
+            name,
+            packagePath: typeof value.packagePath === 'string' ? value.packagePath : '',
+            launchFiles,
+            nodes,
+            isPython: value.isPython === true,
+            detailsLoaded: true,
+            detailsLoading: false,
+        };
+    };
+    const normalizeOtherPackageNames = (packages) => {
+        if (!Array.isArray(packages)) {
+            return [];
+        }
+        const names = new Set();
+        packages.forEach((item) => {
+            if (typeof item === 'string') {
+                const name = normalizePackageName(item);
+                if (name) {
+                    names.add(name);
+                }
+                return;
+            }
+            if (item && typeof item === 'object') {
+                const name = normalizePackageName(item.name);
+                if (name) {
+                    names.add(name);
+                }
+            }
+        });
+        return Array.from(names);
+    };
+    const buildOtherPackageModel = (name, existing) => ({
+        name,
+        packagePath: existing?.packagePath || '',
+        launchFiles: Array.isArray(existing?.launchFiles) ? existing.launchFiles : [],
+        nodes: Array.isArray(existing?.nodes) ? existing.nodes : [],
+        isPython: existing?.isPython === true,
+        detailsLoaded: existing?.detailsLoaded === true,
+        detailsLoading: false,
+    });
 
     const requestAutoRefresh = () => {
         const now = Date.now();
@@ -32,7 +110,13 @@
                 break;
             }
             case toWebview.OTHER_PACKAGE_LIST: {
-                state.otherPackages = (msg.packages || []).slice().sort((a, b) => a.localeCompare(b));
+                const names = normalizeOtherPackageNames(msg.packages || []);
+                const existingByName = new Map(
+                    (state.otherPackages || []).map((pkg) => [pkg.name, pkg])
+                );
+                state.otherPackages = names
+                    .map((name) => buildOtherPackageModel(name, existingByName.get(name)))
+                    .sort((a, b) => a.name.localeCompare(b.name));
                 state.otherPackagesLoaded = true;
                 state.otherPackagesLoading = false;
                 if (window.PM.dom?.btnLoadOtherPackages) {
@@ -40,6 +124,34 @@
                     window.PM.dom.btnLoadOtherPackages.textContent = 'Reload';
                 }
                 render.renderOtherPackages();
+                render.renderPinned();
+                break;
+            }
+            case toWebview.OTHER_PACKAGE_DETAILS: {
+                const detail = normalizePackageDetails(msg.package || msg.details);
+                if (!detail?.name) {
+                    break;
+                }
+
+                const current = state.otherPackages || [];
+                const existingIdx = current.findIndex((pkg) => pkg.name === detail.name);
+                if (existingIdx >= 0) {
+                    current[existingIdx] = {
+                        ...current[existingIdx],
+                        ...detail,
+                        detailsLoaded: true,
+                        detailsLoading: false,
+                    };
+                } else {
+                    current.push({
+                        ...detail,
+                        detailsLoaded: true,
+                        detailsLoading: false,
+                    });
+                }
+                state.otherPackages = current.sort((a, b) => a.name.localeCompare(b.name));
+                render.renderOtherPackages();
+                render.renderPinned();
                 break;
             }
             case toWebview.CREATE_DONE: {

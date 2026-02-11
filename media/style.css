@@ -391,8 +391,10 @@ button.small {
     gap: 6px;
 }
 
-.launch-item.running {
+.launch-item.running,
+.node-item.running {
     border-color: var(--success);
+    outline: 1px solid var(--success);
 }
 
 .node-list {
@@ -632,8 +634,9 @@ button.term-kill.is-pending {
     display: flex;
     align-items: center;
     gap: 8px;
-    justify-content: flex-end;
+    justify-content: flex-start;
     flex-wrap: wrap;
+    margin-left: auto;
 }
 
 .nv-details-header {
@@ -641,6 +644,7 @@ button.term-kill.is-pending {
     align-items: center;
     justify-content: space-between;
     gap: 8px;
+    flex-wrap: wrap;
 }
 
 .nv-details-header h3 {
@@ -697,8 +701,8 @@ button.term-kill.is-pending {
     border: 1px solid var(--border);
     border-radius: 4px;
     background: var(--input-bg);
-    max-height: 280px;
-    overflow-y: auto;
+    max-height: none;
+    overflow: visible;
 }
 
 .nv-entity-item {

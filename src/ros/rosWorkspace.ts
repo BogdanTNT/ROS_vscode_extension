@@ -65,6 +65,10 @@ export interface RosTopicPublishResult {
     error?: string;
 }
 
+export interface RosTopicMessageSubscription extends vscode.Disposable {
+    topicName: string;
+}
+
 export interface RosNodeGraphInfo {
     publishers: string[];
     subscribers: string[];
@@ -104,6 +108,16 @@ interface TrackedTerminal extends TrackedTerminalInfo {
     /** Set after a Ctrl+C has been sent so the next kill force-closes. */
     ctrlCSent?: boolean;
 }
+
+const DEFAULT_ROS_GRAPH_LIST_TIMEOUT_SECONDS = 6;
+const DEFAULT_ROS_NODE_INFO_TIMEOUT_SECONDS = 3;
+const DEFAULT_ROS_TOPIC_INFO_TIMEOUT_SECONDS = 3;
+const ROS_GRAPH_LIST_TIMEOUT_SETTING = 'graphListTimeoutSeconds';
+const ROS_NODE_INFO_TIMEOUT_SETTING = 'nodeInfoTimeoutSeconds';
+const ROS_TOPIC_INFO_TIMEOUT_SETTING = 'topicInfoTimeoutSeconds';
+const DEFAULT_MAINTAINER_NAME_SETTING = 'defaultMaintainerName';
+const DEFAULT_MAINTAINER_EMAIL_SETTING = 'defaultMaintainerEmail';
+const DEFAULT_CREATE_PACKAGE_LICENSE = 'GPL-3.0';
 
 /**
  * Central helper that interacts with the ROS CLI tools installed on the host.
@@ -377,6 +391,47 @@ export class RosWorkspace {
         return packages.sort((a, b) => a.name.localeCompare(b.name));
     }
 
+    async listPackageDetails(packageNames: string[]): Promise<RosWorkspacePackageDetails[]> {
+        const normalizedNames = Array.from(new Set(
+            packageNames
+                .map((name) => this.sanitizeRosPackageName(name))
+                .filter((name): name is string => Boolean(name)),
+        )).sort((a, b) => a.localeCompare(b));
+
+        return Promise.all(normalizedNames.map(async (packageName) => {
+            const packagePath = await this.resolvePackagePath(packageName);
+            const launchFiles = packagePath ? this.findLaunchFiles(packagePath, 3) : [];
+            const localNodes = packagePath ? this.findRunnableNodes(packagePath) : [];
+            const rosCliNodes = await this.listRosCliRunnableNodes(packageName);
+            const mergedNodes = new Map<string, RosRunnableNodeInfo>();
+
+            for (const node of [...localNodes, ...rosCliNodes]) {
+                if (!node?.name) {
+                    continue;
+                }
+                const existing = mergedNodes.get(node.name);
+                if (!existing) {
+                    mergedNodes.set(node.name, node);
+                    continue;
+                }
+                if (!existing.sourcePath && node.sourcePath) {
+                    mergedNodes.set(node.name, { ...existing, sourcePath: node.sourcePath });
+                }
+            }
+
+            const nodes = Array.from(mergedNodes.values()).sort((a, b) => a.name.localeCompare(b.name));
+            const isPython = packagePath ? fs.existsSync(path.join(packagePath, 'setup.py')) : false;
+
+            return {
+                name: packageName,
+                packagePath: packagePath || '',
+                launchFiles,
+                nodes,
+                isPython,
+            };
+        }));
+    }
+
     getLaunchArgOptions(filePath: string): LaunchArgOption[] {
         if (!filePath || !fs.existsSync(filePath)) {
             return [];
@@ -398,10 +453,22 @@ export class RosWorkspace {
         return [];
     }
 
-    async createPackage(name: string, buildType: string, deps: string[]): Promise<boolean> {
+    async createPackage(name: string, buildType: string, deps: string[], license?: string): Promise<boolean> {
         const srcDir = this.getSrcDir();
         if (!srcDir) {
             vscode.window.showErrorMessage('Could not determine workspace src directory.');
+            return false;
+        }
+
+        // Keep package names ROS-friendly even if callers pass whitespace.
+        const normalizedName = String(name || '').trim().replace(/\s+/g, '_');
+        if (!normalizedName) {
+            vscode.window.showErrorMessage('Package name cannot be empty.');
+            return false;
+        }
+
+        const maintainer = await this.resolveCreatePackageMaintainerIdentity();
+        if (!maintainer) {
             return false;
         }
 
@@ -415,13 +482,102 @@ export class RosWorkspace {
 
         const mergedDeps = [...defaultDeps, ...normalizedDeps].filter((dep, idx, arr) => arr.indexOf(dep) === idx);
         const depString = mergedDeps.length > 0 ? ` --dependencies ${mergedDeps.join(' ')}` : '';
+        const maintainerNameArg = this.escapeShellArg(maintainer.name);
+        const maintainerEmailArg = this.escapeShellArg(maintainer.email);
+        const ros1MaintainerArg = this.escapeShellArg(`${maintainer.name} <${maintainer.email}>`);
+        const normalizedLicense = String(license || '').trim() || DEFAULT_CREATE_PACKAGE_LICENSE;
+        const licenseArg = this.escapeShellArg(normalizedLicense);
+        const ros1DepsArg = mergedDeps.join(' ');
 
         const cmd = this.isRos2()
-            ? `cd "${srcDir}" && ros2 pkg create ${name} --build-type ${buildType}${depString}`
-            : `cd "${srcDir}" && catkin_create_pkg ${name} ${mergedDeps.join(' ')}`;
+            ? `cd "${srcDir}" && ros2 pkg create ${normalizedName} --build-type ${buildType}${depString} --maintainer-name ${maintainerNameArg} --maintainer-email ${maintainerEmailArg} --license ${licenseArg}`
+            : `cd "${srcDir}" && catkin_create_pkg -m ${ros1MaintainerArg} --license ${licenseArg} ${normalizedName}${ros1DepsArg ? ` ${ros1DepsArg}` : ''}`;
 
         this.runInTerminal(cmd);
         return true;
+    }
+
+    private async resolveCreatePackageMaintainerIdentity(): Promise<{ name: string; email: string } | undefined> {
+        const config = vscode.workspace.getConfiguration('rosDevToolkit');
+        const configuredName = config.get<string>(DEFAULT_MAINTAINER_NAME_SETTING, '').trim();
+        const configuredEmail = config.get<string>(DEFAULT_MAINTAINER_EMAIL_SETTING, '').trim();
+
+        let maintainerName = configuredName || this.getGitConfigValue('user.name');
+        let maintainerEmail = configuredEmail || this.getGitConfigValue('user.email');
+        let prompted = false;
+
+        if (!maintainerName) {
+            const enteredName = await vscode.window.showInputBox({
+                title: 'Default ROS Maintainer',
+                prompt: 'Enter maintainer name for new packages',
+                placeHolder: 'Jane Doe',
+                ignoreFocusOut: true,
+                value: '',
+                validateInput: (value) => value.trim() ? undefined : 'Maintainer name is required.',
+            });
+            if (enteredName === undefined) {
+                return undefined;
+            }
+            maintainerName = enteredName.trim();
+            prompted = true;
+        }
+
+        if (!maintainerEmail) {
+            const enteredEmail = await vscode.window.showInputBox({
+                title: 'Default ROS Maintainer',
+                prompt: 'Enter maintainer email for new packages',
+                placeHolder: 'jane@example.com',
+                ignoreFocusOut: true,
+                value: '',
+                validateInput: (value) => {
+                    const trimmed = value.trim();
+                    if (!trimmed) {
+                        return 'Maintainer email is required.';
+                    }
+                    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(trimmed)) {
+                        return 'Enter a valid email address.';
+                    }
+                    return undefined;
+                },
+            });
+            if (enteredEmail === undefined) {
+                return undefined;
+            }
+            maintainerEmail = enteredEmail.trim();
+            prompted = true;
+        }
+
+        if (prompted) {
+            await Promise.all([
+                config.update(DEFAULT_MAINTAINER_NAME_SETTING, maintainerName, vscode.ConfigurationTarget.Global),
+                config.update(DEFAULT_MAINTAINER_EMAIL_SETTING, maintainerEmail, vscode.ConfigurationTarget.Global),
+            ]);
+        }
+
+        return { name: maintainerName, email: maintainerEmail };
+    }
+
+    private getGitConfigValue(key: string): string {
+        const workspacePath = this.getWorkspacePath();
+        const read = (args: string[]): string => {
+            try {
+                return cp.execFileSync('git', args, {
+                    encoding: 'utf8',
+                    stdio: ['ignore', 'pipe', 'ignore'],
+                }).trim();
+            } catch {
+                return '';
+            }
+        };
+
+        if (workspacePath) {
+            const localValue = read(['-C', workspacePath, 'config', '--get', key]);
+            if (localValue) {
+                return localValue;
+            }
+        }
+
+        return read(['config', '--global', '--get', key]);
     }
 
     /**
@@ -1391,9 +1547,10 @@ if __name__ == '__main__':
     // ── Graph data (nodes / topics / services / actions / parameters) ──────
     async getNodeList(): Promise<string[]> {
         try {
+            const timeoutSeconds = this.getGraphListTimeoutSeconds();
             const raw = this.isRos2()
-                ? await this.exec('ros2 node list')
-                : await this.exec('rosnode list');
+                ? await this.exec(`timeout ${timeoutSeconds}s ros2 node list`)
+                : await this.exec(`timeout ${timeoutSeconds}s rosnode list`);
             return raw.trim().split('\n').filter(Boolean);
         } catch {
             return [];
@@ -1402,9 +1559,10 @@ if __name__ == '__main__':
 
     async getTopicList(): Promise<RosGraphEntityInfo[]> {
         try {
+            const timeoutSeconds = this.getGraphListTimeoutSeconds();
             const raw = this.isRos2()
-                ? await this.exec('ros2 topic list -t')
-                : await this.exec('rostopic list');
+                ? await this.exec(`timeout ${timeoutSeconds}s ros2 topic list -t`)
+                : await this.exec(`timeout ${timeoutSeconds}s rostopic list`);
             return this.parseEntityList(raw);
         } catch {
             return [];
@@ -1413,9 +1571,10 @@ if __name__ == '__main__':
 
     async getServiceList(): Promise<RosGraphEntityInfo[]> {
         try {
+            const timeoutSeconds = this.getGraphListTimeoutSeconds();
             const raw = this.isRos2()
-                ? await this.exec('ros2 service list -t')
-                : await this.exec('rosservice list');
+                ? await this.exec(`timeout ${timeoutSeconds}s ros2 service list -t`)
+                : await this.exec(`timeout ${timeoutSeconds}s rosservice list`);
             return this.parseEntityList(raw);
         } catch {
             return [];
@@ -1427,7 +1586,8 @@ if __name__ == '__main__':
             return [];
         }
         try {
-            const raw = await this.exec('ros2 action list -t');
+            const timeoutSeconds = this.getGraphListTimeoutSeconds();
+            const raw = await this.exec(`timeout ${timeoutSeconds}s ros2 action list -t`);
             return this.parseEntityList(raw);
         } catch {
             return [];
@@ -1436,9 +1596,10 @@ if __name__ == '__main__':
 
     async getParameterList(): Promise<RosParameterInfo[]> {
         try {
+            const timeoutSeconds = this.getGraphListTimeoutSeconds();
             const raw = this.isRos2()
-                ? await this.exec('ros2 param list')
-                : await this.exec('rosparam list');
+                ? await this.exec(`timeout ${timeoutSeconds}s ros2 param list`)
+                : await this.exec(`timeout ${timeoutSeconds}s rosparam list`);
             return this.isRos2()
                 ? this.parseRos2ParameterList(raw)
                 : this.parseRos1ParameterList(raw);
@@ -1458,10 +1619,7 @@ if __name__ == '__main__':
                 : 2;
             const timeoutToken = `${safeTimeoutSeconds}s`;
             const command = this.isRos2()
-                // Read from the normal stream output and stop after the first
-                // message block separator ("---") so the UI receives a sample
-                // exactly as users see it in `ros2 topic echo`.
-                ? `timeout ${timeoutToken} ros2 topic echo ${topicName} 2>/dev/null | sed -n '/^---$/q;p'`
+                ? `timeout ${timeoutToken} ros2 topic echo --once ${topicName} 2>/dev/null || true`
                 : `timeout ${timeoutToken} rostopic echo -n 1 ${topicName} 2>/dev/null || true`;
             const raw = await this.exec(command);
             const trimmed = raw.trim();
@@ -1475,6 +1633,153 @@ if __name__ == '__main__':
             return trimmed;
         } catch {
             return undefined;
+        }
+    }
+
+    /**
+     * Start a long-running `topic echo` process and stream every full message.
+     * The caller owns the returned disposable and must dispose it to stop.
+     */
+    subscribeToTopicMessages(
+        topicName: string,
+        onMessage: (message: string) => void,
+        onClosed?: (info: { code: number | null; signal: NodeJS.Signals | null; errorOutput?: string }) => void,
+    ): RosTopicMessageSubscription | undefined {
+        if (!this.isValidRosResourceName(topicName)) {
+            return undefined;
+        }
+
+        const echoCmd = this.isRos2()
+            ? `PYTHONUNBUFFERED=1 ros2 topic echo ${topicName}`
+            : `PYTHONUNBUFFERED=1 rostopic echo ${topicName}`;
+        const sourcedCommand = this.buildSourcedCommand(echoCmd);
+        const child = cp.spawn('bash', ['-lc', sourcedCommand], {
+            env: process.env,
+            stdio: ['ignore', 'pipe', 'pipe'],
+        });
+
+        let disposed = false;
+        let stdoutRemainder = '';
+        let stderrBuffer = '';
+        let pendingMessageLines: string[] = [];
+
+        const truncateMessage = (message: string): string => {
+            const maxChars = 6000;
+            if (message.length <= maxChars) {
+                return message;
+            }
+            return `${message.slice(0, maxChars)}\n... (truncated)`;
+        };
+
+        const emitPendingMessage = () => {
+            const normalized = pendingMessageLines.join('\n').trim();
+            pendingMessageLines = [];
+            if (!normalized) {
+                return;
+            }
+            onMessage(truncateMessage(normalized));
+        };
+
+        const processStdoutLine = (rawLine: string) => {
+            const line = rawLine.replace(/\r$/, '');
+            const trimmed = line.trim();
+
+            // ROS topic echo separates individual messages with `---`.
+            if (trimmed === '---') {
+                emitPendingMessage();
+                return;
+            }
+
+            if (!trimmed && pendingMessageLines.length === 0) {
+                return;
+            }
+
+            pendingMessageLines.push(line);
+        };
+
+        child.stdout?.on('data', (chunk: Buffer) => {
+            stdoutRemainder += chunk.toString();
+            const lines = stdoutRemainder.split(/\r?\n/);
+            stdoutRemainder = lines.pop() ?? '';
+            for (const line of lines) {
+                processStdoutLine(line);
+            }
+        });
+
+        child.stderr?.on('data', (chunk: Buffer) => {
+            stderrBuffer += chunk.toString();
+        });
+
+        child.on('close', (code, signal) => {
+            if (stdoutRemainder.trim()) {
+                processStdoutLine(stdoutRemainder);
+            }
+            emitPendingMessage();
+
+            if (!disposed) {
+                const normalizedStderr = stderrBuffer.trim();
+                onClosed?.({
+                    code,
+                    signal,
+                    errorOutput: normalizedStderr ? this.normalizeCliError(normalizedStderr, '') : undefined,
+                });
+            }
+        });
+
+        child.on('error', (err) => {
+            if (disposed) {
+                return;
+            }
+            onClosed?.({
+                code: null,
+                signal: null,
+                errorOutput: this.normalizeCliError(err, 'Failed to start topic echo process.'),
+            });
+        });
+
+        const dispose = () => {
+            if (disposed) {
+                return;
+            }
+            disposed = true;
+            child.stdout?.removeAllListeners();
+            child.stderr?.removeAllListeners();
+            child.removeAllListeners();
+
+            if (child.killed) {
+                return;
+            }
+
+            child.kill('SIGTERM');
+            const killTimer = setTimeout(() => {
+                if (!child.killed) {
+                    child.kill('SIGKILL');
+                }
+            }, 1000);
+            killTimer.unref();
+        };
+
+        return {
+            topicName,
+            dispose,
+        };
+    }
+
+    async getTopicRoles(topicName: string): Promise<{ publishers: string[]; subscribers: string[] }> {
+        if (!this.isValidRosResourceName(topicName)) {
+            return { publishers: [], subscribers: [] };
+        }
+
+        try {
+            const timeoutSeconds = this.getTopicInfoTimeoutSeconds();
+            const raw = this.isRos2()
+                ? await this.exec(`timeout ${timeoutSeconds}s ros2 topic info ${topicName} --verbose`)
+                : await this.exec(`timeout ${timeoutSeconds}s rostopic info ${topicName}`);
+            return this.isRos2()
+                ? this.parseRos2TopicRoles(raw)
+                : this.parseRos1TopicRoles(raw);
+        } catch {
+            return { publishers: [], subscribers: [] };
         }
     }
 
@@ -1577,9 +1882,10 @@ if __name__ == '__main__':
 
     async getNodeGraphInfo(nodeName: string): Promise<RosNodeGraphInfo> {
         try {
+            const timeoutSeconds = this.getNodeInfoTimeoutSeconds();
             const raw = this.isRos2()
-                ? await this.exec(`ros2 node info ${nodeName}`)
-                : await this.exec(`rosnode info ${nodeName}`);
+                ? await this.exec(`timeout ${timeoutSeconds}s ros2 node info ${nodeName}`)
+                : await this.exec(`timeout ${timeoutSeconds}s rosnode info ${nodeName}`);
             return this.parseNodeGraphInfo(raw);
         } catch {
             return {
@@ -1596,6 +1902,49 @@ if __name__ == '__main__':
     async getNodeInfo(nodeName: string): Promise<{ publishers: string[]; subscribers: string[] }> {
         const info = await this.getNodeGraphInfo(nodeName);
         return { publishers: info.publishers, subscribers: info.subscribers };
+    }
+
+    private getGraphListTimeoutSeconds(): number {
+        return this.getNumericRosSetting(
+            ROS_GRAPH_LIST_TIMEOUT_SETTING,
+            DEFAULT_ROS_GRAPH_LIST_TIMEOUT_SECONDS,
+            1,
+            120,
+        );
+    }
+
+    private getNodeInfoTimeoutSeconds(): number {
+        return this.getNumericRosSetting(
+            ROS_NODE_INFO_TIMEOUT_SETTING,
+            DEFAULT_ROS_NODE_INFO_TIMEOUT_SECONDS,
+            1,
+            120,
+        );
+    }
+
+    private getTopicInfoTimeoutSeconds(): number {
+        return this.getNumericRosSetting(
+            ROS_TOPIC_INFO_TIMEOUT_SETTING,
+            DEFAULT_ROS_TOPIC_INFO_TIMEOUT_SECONDS,
+            1,
+            120,
+        );
+    }
+
+    private getNumericRosSetting(
+        key: string,
+        defaultValue: number,
+        min: number,
+        max: number,
+    ): number {
+        const raw = vscode.workspace
+            .getConfiguration('rosDevToolkit')
+            .get<number>(key, defaultValue);
+        const numeric = Number(raw);
+        if (!Number.isFinite(numeric)) {
+            return defaultValue;
+        }
+        return Math.min(max, Math.max(min, Math.floor(numeric)));
     }
 
     private parseEntityList(raw: string): RosGraphEntityInfo[] {
@@ -1790,6 +2139,121 @@ if __name__ == '__main__':
             return undefined;
         }
         return pathMatch[1];
+    }
+
+    private parseRos2TopicRoles(raw: string): { publishers: string[]; subscribers: string[] } {
+        const publishers: string[] = [];
+        const subscribers: string[] = [];
+        let currentNodeName = '';
+
+        for (const line of raw.split('\n')) {
+            const trimmed = line.trim();
+            if (!trimmed) {
+                continue;
+            }
+
+            const nodePrefix = 'Node name:';
+            if (trimmed.startsWith(nodePrefix)) {
+                currentNodeName = trimmed.slice(nodePrefix.length).trim();
+                continue;
+            }
+
+            const endpointPrefix = 'Endpoint type:';
+            if (!trimmed.startsWith(endpointPrefix)) {
+                continue;
+            }
+
+            const endpointType = trimmed.slice(endpointPrefix.length).trim().toUpperCase();
+            const normalizedNodeName = this.normalizeTopicRoleNodeName(currentNodeName);
+            if (!normalizedNodeName) {
+                continue;
+            }
+
+            if (endpointType.includes('PUBLISHER')) {
+                publishers.push(normalizedNodeName);
+                continue;
+            }
+            if (endpointType.includes('SUBSCRIPTION')) {
+                subscribers.push(normalizedNodeName);
+            }
+        }
+
+        return {
+            publishers: Array.from(new Set(publishers)),
+            subscribers: Array.from(new Set(subscribers)),
+        };
+    }
+
+    private parseRos1TopicRoles(raw: string): { publishers: string[]; subscribers: string[] } {
+        const publishers: string[] = [];
+        const subscribers: string[] = [];
+        let section: 'publishers' | 'subscribers' | null = null;
+
+        for (const line of raw.split('\n')) {
+            const trimmed = line.trim();
+            if (!trimmed) {
+                continue;
+            }
+
+            const lower = trimmed.toLowerCase();
+            if (lower.startsWith('publishers:')) {
+                section = 'publishers';
+                continue;
+            }
+            if (lower.startsWith('subscribers:')) {
+                section = 'subscribers';
+                continue;
+            }
+
+            const nodeName = this.parseTopicRoleNodeEntry(trimmed);
+            if (!nodeName || !section) {
+                continue;
+            }
+
+            if (section === 'publishers') {
+                publishers.push(nodeName);
+                continue;
+            }
+            subscribers.push(nodeName);
+        }
+
+        return {
+            publishers: Array.from(new Set(publishers)),
+            subscribers: Array.from(new Set(subscribers)),
+        };
+    }
+
+    private parseTopicRoleNodeEntry(trimmedLine: string): string | undefined {
+        if (!(trimmedLine.startsWith('*') || trimmedLine.startsWith('-'))) {
+            return undefined;
+        }
+
+        const withoutBullet = trimmedLine.replace(/^[-*]\s*/, '').trim();
+        if (!withoutBullet) {
+            return undefined;
+        }
+
+        const token = withoutBullet.split(/\s+/)[0] ?? '';
+        return this.normalizeTopicRoleNodeName(token);
+    }
+
+    private normalizeTopicRoleNodeName(rawName: string): string | undefined {
+        const trimmed = String(rawName || '').trim();
+        if (!trimmed) {
+            return undefined;
+        }
+
+        if (this.isValidRosResourceName(trimmed)) {
+            return trimmed;
+        }
+
+        // ROS 2 topic info can print relative node names (without leading '/').
+        if (/^[A-Za-z0-9_./~-]+$/.test(trimmed)) {
+            const normalized = '/' + trimmed.replace(/^\/+/, '');
+            return this.isValidRosResourceName(normalized) ? normalized : undefined;
+        }
+
+        return undefined;
     }
 
     private isValidRosResourceName(name: string): boolean {
@@ -2088,6 +2552,125 @@ if __name__ == '__main__':
         return Array.from(nodeMap.values()).sort((a, b) => a.name.localeCompare(b.name));
     }
 
+    private async listRosCliRunnableNodes(packageName: string): Promise<RosRunnableNodeInfo[]> {
+        if (!this.isRos2()) {
+            return [];
+        }
+
+        const safePackageName = this.sanitizeRosPackageName(packageName);
+        if (!safePackageName) {
+            return [];
+        }
+
+        try {
+            const raw = await this.exec(`ros2 pkg executables ${safePackageName}`);
+            const nodeNames = new Set<string>();
+
+            for (const line of raw.split('\n')) {
+                const executable = this.parseRos2ExecutableName(line, safePackageName);
+                if (!executable) {
+                    continue;
+                }
+                nodeNames.add(executable);
+            }
+
+            return Array.from(nodeNames)
+                .sort((a, b) => a.localeCompare(b))
+                .map((name) => ({ name }));
+        } catch {
+            return [];
+        }
+    }
+
+    private parseRos2ExecutableName(line: string, packageName: string): string | undefined {
+        const trimmed = line.trim();
+        if (!trimmed) {
+            return undefined;
+        }
+
+        const pkgPrefix = new RegExp(`^${this.escapeRegex(packageName)}\\s+([^\\s]+)`);
+        const prefixedMatch = trimmed.match(pkgPrefix);
+        const candidate = prefixedMatch?.[1]
+            || (trimmed.includes(' ') ? '' : trimmed);
+        if (!candidate) {
+            return undefined;
+        }
+        if (!/^[A-Za-z0-9_.-]+$/.test(candidate)) {
+            return undefined;
+        }
+        return candidate;
+    }
+
+    private async resolvePackagePath(packageName: string): Promise<string | undefined> {
+        const safePackageName = this.sanitizeRosPackageName(packageName);
+        if (!safePackageName) {
+            return undefined;
+        }
+
+        if (this.isRos2()) {
+            try {
+                const shareRaw = await this.exec(`ros2 pkg prefix --share ${safePackageName}`);
+                const sharePath = this.extractFirstExistingPath(shareRaw);
+                if (sharePath) {
+                    return sharePath;
+                }
+            } catch {
+                // Ignore and fall through to prefix fallback.
+            }
+
+            try {
+                const prefixRaw = await this.exec(`ros2 pkg prefix ${safePackageName}`);
+                const prefixPath = this.extractFirstExistingPath(prefixRaw);
+                if (prefixPath) {
+                    const shareCandidate = path.join(prefixPath, 'share', safePackageName);
+                    if (fs.existsSync(shareCandidate)) {
+                        return shareCandidate;
+                    }
+                    return prefixPath;
+                }
+            } catch {
+                return undefined;
+            }
+
+            return undefined;
+        }
+
+        try {
+            const raw = await this.exec(`rospack find ${safePackageName}`);
+            return this.extractFirstExistingPath(raw);
+        } catch {
+            return undefined;
+        }
+    }
+
+    private extractFirstExistingPath(raw: string): string | undefined {
+        for (const line of raw.split('\n')) {
+            const candidate = line.trim();
+            if (!candidate) {
+                continue;
+            }
+            if (fs.existsSync(candidate)) {
+                return candidate;
+            }
+        }
+        return undefined;
+    }
+
+    private sanitizeRosPackageName(name: string): string | undefined {
+        const trimmed = name.trim();
+        if (!trimmed) {
+            return undefined;
+        }
+        if (!/^[A-Za-z][A-Za-z0-9_]*$/.test(trimmed)) {
+            return undefined;
+        }
+        return trimmed;
+    }
+
+    private escapeRegex(value: string): string {
+        return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    }
+
     getWorkspacePath(): string {
         const folders = vscode.workspace.workspaceFolders;
         return folders?.[0]?.uri.fsPath ?? process.cwd();
@@ -2324,6 +2907,11 @@ if __name__ == '__main__':
         }
         parts.push(cmd);
         return parts.join(' && ');
+    }
+
+    private escapeShellArg(value: string): string {
+        const normalized = String(value ?? '');
+        return `'${normalized.replace(/'/g, `'\\''`)}'`;
     }
 
     private resolveRosSetupPath(): string {

@@ -41,6 +41,44 @@
           "type": "boolean",
           "default": true,
           "description": "Use --symlink-install when building with colcon. This avoids full rebuilds for ament_python packages when only .py, launch, or config files change."
+        },
+        "rosDevToolkit.defaultMaintainerName": {
+          "type": "string",
+          "default": "",
+          "description": "Default maintainer name used for new ROS packages. If empty, Git user.name is used or the extension prompts once."
+        },
+        "rosDevToolkit.defaultMaintainerEmail": {
+          "type": "string",
+          "default": "",
+          "description": "Default maintainer email used for new ROS packages. If empty, Git user.email is used or the extension prompts once."
+        },
+        "rosDevToolkit.nodeVisualizerAutoRefreshIntervalMs": {
+          "type": "number",
+          "default": 3000,
+          "minimum": 250,
+          "maximum": 120000,
+          "description": "Node Visualizer auto-refresh frequency in milliseconds."
+        },
+        "rosDevToolkit.graphListTimeoutSeconds": {
+          "type": "number",
+          "default": 6,
+          "minimum": 1,
+          "maximum": 120,
+          "description": "Timeout (seconds) for ROS graph list commands used by refresh (nodes/topics/services/actions/parameters)."
+        },
+        "rosDevToolkit.nodeInfoTimeoutSeconds": {
+          "type": "number",
+          "default": 3,
+          "minimum": 1,
+          "maximum": 120,
+          "description": "Timeout (seconds) for ROS node info queries in the Node Visualizer."
+        },
+        "rosDevToolkit.topicInfoTimeoutSeconds": {
+          "type": "number",
+          "default": 3,
+          "minimum": 1,
+          "maximum": 120,
+          "description": "Timeout (seconds) for ROS topic info queries in the Node Visualizer."
         }
       }
     },

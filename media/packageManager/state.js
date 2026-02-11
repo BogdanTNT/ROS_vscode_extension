@@ -11,6 +11,7 @@
         expandedPackages: {},
         expandedPackageRows: {},
         workspacePackagesVisible: true,
+        otherPackagesVisible: true,
         launchArgConfigs: {},
         argsOptions: [],
         currentArgsKey: '',

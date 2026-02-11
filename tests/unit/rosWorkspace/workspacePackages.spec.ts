@@ -82,4 +82,42 @@ setup(
             },
         ]);
     });
+
+    it('loads non-workspace package details with launch files and ROS CLI executables', async () => {
+        workspaceRoot = createTempWorkspace({
+            'opt/share/other_pkg/package.xml': '<package><name>other_pkg</name></package>',
+            'opt/share/other_pkg/launch/demo.launch.py': '# launch',
+            'opt/share/other_pkg/launch/extra.xml': '<launch/>',
+        });
+
+        const otherPkgSharePath = path.join(workspaceRoot, 'opt/share/other_pkg');
+        const ros = new RosWorkspace();
+        vi.spyOn(ros as any, 'exec').mockImplementation(async (cmd: string) => {
+            if (cmd === 'ros2 pkg prefix --share other_pkg') {
+                return `${otherPkgSharePath}\n`;
+            }
+            if (cmd === 'ros2 pkg executables other_pkg') {
+                return 'other_pkg talker\nother_pkg listener\n';
+            }
+            return '';
+        });
+
+        const details = await ros.listPackageDetails(['other_pkg']);
+
+        expect(details).toEqual([
+            {
+                name: 'other_pkg',
+                packagePath: otherPkgSharePath,
+                launchFiles: [
+                    path.join(otherPkgSharePath, 'launch/demo.launch.py'),
+                    path.join(otherPkgSharePath, 'launch/extra.xml'),
+                ],
+                nodes: [
+                    { name: 'listener' },
+                    { name: 'talker' },
+                ],
+                isPython: false,
+            },
+        ]);
+    });
 });

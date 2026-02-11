@@ -7,6 +7,7 @@
             CREATE_PACKAGE: 'createPackage',
             REFRESH_PACKAGES: 'refreshPackages',
             LOAD_OTHER_PACKAGES: 'loadOtherPackages',
+            LOAD_OTHER_PACKAGE_DETAILS: 'loadOtherPackageDetails',
             OPEN_LAUNCH: 'openLaunch',
             OPEN_NODE: 'openNode',
             LAUNCH_FILE: 'launchFile',
@@ -23,6 +24,7 @@
         toWebview: Object.freeze({
             PACKAGE_LIST: 'packageList',
             OTHER_PACKAGE_LIST: 'otherPackageList',
+            OTHER_PACKAGE_DETAILS: 'otherPackageDetails',
             CREATE_DONE: 'createDone',
             FOCUS_CREATE: 'focusCreate',
             LAUNCH_ARGS_OPTIONS: 'launchArgsOptions',

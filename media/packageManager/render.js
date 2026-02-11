@@ -12,6 +12,10 @@
 
     const getPkgList = () => document.getElementById('pkgList');
     const getOtherPkgList = () => document.getElementById('otherPkgList');
+    const renderPackageSections = () => {
+        renderPackages();
+        renderOtherPackages();
+    };
     const getSectionStateKey = (packageName, sectionKey) => {
         if (!packageName || !sectionKey) {
             return '';
@@ -35,10 +39,16 @@
         }
         state.expandedPackages[key] = expanded;
     };
-    const togglePackageSectionExpanded = (packageName, sectionKey, recursive = false) => {
+    const togglePackageSectionExpanded = (
+        packageName,
+        sectionKey,
+        recursive = false,
+        packageList = [],
+        loadOtherDetailsOnExpand = false,
+    ) => {
         const nextExpanded = !isPackageSectionExpanded(packageName, sectionKey);
         if (recursive) {
-            (state.allPackages || []).forEach((pkg) => {
+            packageList.forEach((pkg) => {
                 setPackageSectionExpanded(pkg.name, sectionKey, nextExpanded);
                 if (nextExpanded) {
                     // Expanding a child foldout should also surface its parent row.
@@ -47,8 +57,11 @@
             });
         } else {
             setPackageSectionExpanded(packageName, sectionKey, nextExpanded);
+            if (loadOtherDetailsOnExpand && nextExpanded) {
+                ensureOtherPackageDetailsLoaded(packageName);
+            }
         }
-        renderPackages();
+        renderPackageSections();
     };
     const isPackageRowExpanded = (packageName) => Boolean(state.expandedPackageRows?.[packageName]);
     const setPackageRowExpanded = (packageName, expanded) => {
@@ -66,25 +79,33 @@
         }
         return Boolean(event?.altKey);
     };
-    const togglePackageRowExpanded = (packageName, recursive = false) => {
+    const togglePackageRowExpanded = (packageName, recursive = false, loadOtherDetailsOnExpand = false) => {
         const nextExpanded = !isPackageRowExpanded(packageName);
         setPackageRowExpanded(packageName, nextExpanded);
         if (recursive) {
             // Keep child foldouts aligned with the parent when Alt+click is used.
             setPackageSectionExpanded(packageName, 'launchFiles', nextExpanded);
             setPackageSectionExpanded(packageName, 'nodes', nextExpanded);
+        } else if (loadOtherDetailsOnExpand && nextExpanded) {
+            ensureOtherPackageDetailsLoaded(packageName);
         }
-        renderPackages();
+        renderPackageSections();
     };
-    const setAllWorkspacePackagesExpanded = (expanded, shouldRender = true) => {
-        (state.allPackages || []).forEach((pkg) => {
+    const setAllPackagesExpanded = (packages, expanded, shouldRender = true) => {
+        packages.forEach((pkg) => {
             setPackageRowExpanded(pkg.name, expanded);
             setPackageSectionExpanded(pkg.name, 'launchFiles', expanded);
             setPackageSectionExpanded(pkg.name, 'nodes', expanded);
         });
         if (shouldRender) {
-            renderPackages();
+            renderPackageSections();
         }
+    };
+    const setAllWorkspacePackagesExpanded = (expanded, shouldRender = true) => {
+        setAllPackagesExpanded(state.allPackages || [], expanded, shouldRender);
+    };
+    const setAllOtherPackagesExpanded = (expanded, shouldRender = true) => {
+        setAllPackagesExpanded(state.otherPackages || [], expanded, shouldRender);
     };
     const setWorkspacePackagesVisible = (visible, shouldRender = true) => {
         state.workspacePackagesVisible = visible;
@@ -101,6 +122,81 @@
             setAllWorkspacePackagesExpanded(nextVisible, false);
         }
         renderPackages();
+    };
+    const setOtherPackagesVisible = (visible, shouldRender = true) => {
+        state.otherPackagesVisible = visible;
+        if (shouldRender) {
+            renderOtherPackages();
+        }
+    };
+    const isOtherPackagesVisible = () => state.otherPackagesVisible !== false;
+    const toggleOtherPackages = (recursive = false) => {
+        const nextVisible = !isOtherPackagesVisible();
+        setOtherPackagesVisible(nextVisible, false);
+        if (recursive) {
+            setAllOtherPackagesExpanded(nextVisible, false);
+        }
+        renderOtherPackages();
+    };
+    const getPackagePinKey = (packageName) => packageName ? ('pkg::' + packageName) : '';
+    const isPackagePinKey = (pinKey) => pinKey.startsWith('pkg::');
+    const getPackageNameFromPinKey = (pinKey) => pinKey.startsWith('pkg::') ? pinKey.slice('pkg::'.length) : '';
+    const findOtherPackageByName = (packageName) => (state.otherPackages || []).find((pkg) => pkg.name === packageName);
+    const findPackageByName = (packageName) => (
+        (state.allPackages || []).find((pkg) => pkg.name === packageName)
+        || (state.otherPackages || []).find((pkg) => pkg.name === packageName)
+    );
+    const ensureOtherPackageDetailsLoaded = (packageName) => {
+        if (!packageName) {
+            return;
+        }
+        const pkg = findOtherPackageByName(packageName);
+        if (!pkg || pkg.detailsLoaded || pkg.detailsLoading) {
+            return;
+        }
+        pkg.detailsLoading = true;
+        renderOtherPackages();
+        actions.loadOtherPackageDetails(packageName);
+    };
+    const focusPinnedPackage = (packageName) => {
+        if (!packageName) {
+            return;
+        }
+
+        const isWorkspace = (state.allPackages || []).some((pkg) => pkg.name === packageName);
+        const isOther = (state.otherPackages || []).some((pkg) => pkg.name === packageName);
+
+        if (!isWorkspace && !isOther) {
+            if (!state.otherPackagesLoaded && !state.otherPackagesLoading) {
+                state.otherPackagesLoading = true;
+                actions.loadOtherPackages(false);
+                renderOtherPackages();
+            }
+            return;
+        }
+
+        if (isWorkspace) {
+            setWorkspacePackagesVisible(true, false);
+        }
+        if (isOther) {
+            setOtherPackagesVisible(true, false);
+            ensureOtherPackageDetailsLoaded(packageName);
+        }
+
+        if (isWorkspace || isOther) {
+            setPackageRowExpanded(packageName, true);
+            renderPackageSections();
+            setTimeout(() => {
+                document.querySelectorAll('.pkg-name').forEach((el) => {
+                    if (!(el instanceof HTMLElement)) {
+                        return;
+                    }
+                    if (el.dataset.name === packageName) {
+                        el.scrollIntoView({ block: 'center' });
+                    }
+                });
+            }, 0);
+        }
     };
     const escapeHtml = (value) => String(value ?? '').replace(/[&<>"']/g, (ch) => {
         if (ch === '&') {
@@ -207,6 +303,14 @@
         actions.togglePin(pinKey);
     };
 
+    const togglePinFromPackageName = (packageName) => {
+        const pinKey = getPackagePinKey(packageName);
+        if (!pinKey) {
+            return;
+        }
+        actions.togglePin(pinKey);
+    };
+
     const openArgsFromItem = (argsKey, sourcePath) => {
         if (!argsKey) {
             return;
@@ -257,20 +361,40 @@
 
         const pkgRowToggleEl = target.closest('.pkg-row-toggle');
         if (pkgRowToggleEl) {
+            const fromOtherList = Boolean(pkgRowToggleEl.closest('#otherPkgList'));
             togglePackageRowExpanded(
                 pkgRowToggleEl.dataset.pkgName || '',
                 isRecursiveToggleEvent(event),
+                fromOtherList,
             );
             return;
         }
 
         const pkgToggleEl = target.closest('.pkg-toggle');
         if (pkgToggleEl) {
+            const fromOtherList = Boolean(pkgToggleEl.closest('#otherPkgList'));
+            const packageList = fromOtherList
+                ? (state.otherPackages || [])
+                : (state.allPackages || []);
             togglePackageSectionExpanded(
                 pkgToggleEl.dataset.pkgName || '',
                 pkgToggleEl.dataset.sectionKey || '',
                 isRecursiveToggleEvent(event),
+                packageList,
+                fromOtherList,
             );
+            return;
+        }
+
+        const pkgPinBtn = target.closest('.pkg-pin-btn');
+        if (pkgPinBtn) {
+            togglePinFromPackageName(pkgPinBtn.dataset.pkgName || '');
+            return;
+        }
+
+        const pinnedPackageOpen = target.closest('.pinned-package-open');
+        if (pinnedPackageOpen) {
+            focusPinnedPackage(pinnedPackageOpen.dataset.pkgName || '');
             return;
         }
 
@@ -357,6 +481,13 @@
             return;
         }
 
+        const pinnedPackageOpen = target.closest('.pinned-package-open');
+        if (pinnedPackageOpen) {
+            event.preventDefault();
+            focusPinnedPackage(pinnedPackageOpen.dataset.pkgName || '');
+            return;
+        }
+
         const launchItem = target.closest('.launch-item');
         if (launchItem) {
             if (target.closest('.launch-run')) {
@@ -433,6 +564,11 @@
             if (pkgList) {
                 pkgList.addEventListener('click', handleLaunchListClick);
                 pkgList.addEventListener('keydown', handleLaunchListKeydown);
+            }
+            const otherPkgList = getOtherPkgList();
+            if (otherPkgList) {
+                otherPkgList.addEventListener('click', handleLaunchListClick);
+                otherPkgList.addEventListener('keydown', handleLaunchListKeydown);
             }
 
             if (dom.pinnedList) {
@@ -564,6 +700,32 @@
         );
     };
 
+    const buildPinnedPackageItemHtml = ({ packageName, isPinned, scopeLabel }) => {
+        const pinTitle = isPinned ? 'Unpin package' : 'Pin package';
+        return (
+            '<li class="node-item pinned-package-item" data-pkg-name="' +
+            escapeAttr(packageName) +
+            '">' +
+            '<span class="node-action pinned-package-open" tabindex="0" data-pkg-name="' +
+            escapeAttr(packageName) +
+            '">Open</span>' +
+            '<span class="node-action node-open pinned-package-open" tabindex="0" data-pkg-name="' +
+            escapeAttr(packageName) +
+            '">' +
+            escapeHtml(packageName) +
+            '</span>' +
+            '<span class="badge info">' + escapeHtml(scopeLabel) + '</span>' +
+            '<button class="pin-btn pkg-pin-btn ' +
+            (isPinned ? 'pinned' : '') +
+            '" data-pkg-name="' +
+            escapeAttr(packageName) +
+            '" title="' +
+            escapeAttr(pinTitle) +
+            '">★</button>' +
+            '</li>'
+        );
+    };
+
     const buildPackageDropdownHtml = ({
         packageName,
         sectionKey,
@@ -657,6 +819,26 @@
             matchesFilter: !filter || nodes.some((node) => node.name.toLowerCase().includes(filter)),
             bodyHtml: nodeItemsHtml ? '<ul class="node-list">' + nodeItemsHtml + '</ul>' : '',
             emptyText: 'No runnable nodes detected',
+        };
+    };
+
+    const buildDeferredDropdownModel = (pkg, sectionKey, label) => {
+        const detailsLoading = pkg.detailsLoading === true;
+        const countLabel = sectionKey === 'launchFiles' ? 'files' : 'nodes';
+        const emptyText = detailsLoading
+            ? 'Loading package details…'
+            : 'Expand package row to load details';
+        const bodyHtml = detailsLoading
+            ? '<div class="text-muted text-sm"><span class="spinner"></span> Loading package details…</div>'
+            : '';
+        return {
+            sectionKey,
+            label,
+            count: 0,
+            countLabel,
+            matchesFilter: false,
+            bodyHtml,
+            emptyText,
         };
     };
 
@@ -803,6 +985,116 @@
             .join('');
     };
 
+    const packageMatchesFilter = (pkg, filter, includeDeferredDetails = false) => {
+        if (!filter) {
+            return true;
+        }
+        const nameMatch = pkg.name.toLowerCase().includes(filter);
+        if (nameMatch) {
+            return true;
+        }
+        if (includeDeferredDetails && pkg.detailsLoaded !== true) {
+            return false;
+        }
+        const launchMatch = (pkg.launchFiles || []).some((f) => f.toLowerCase().includes(filter));
+        const nodeMatch = (pkg.nodes || []).some((n) => (n.name || '').toLowerCase().includes(filter));
+        return launchMatch || nodeMatch;
+    };
+
+    const getFilteredPackages = (packages, filter, includeDeferredDetails = false) => (
+        filter
+            ? packages.filter((pkg) => packageMatchesFilter(pkg, filter, includeDeferredDetails))
+            : packages
+    );
+
+    const buildPackageRowsHtml = (packages, filter, runningLaunchPaths, canAddNode, lazyDetails = false) => packages
+        .map((pkg) => {
+            const launchCount = pkg.launchFiles?.length || 0;
+            const nodeCount = pkg.nodes?.length || 0;
+            const launchLabel = launchCount === 1 ? 'launch' : 'launches';
+            const nodeLabel = nodeCount === 1 ? 'node' : 'nodes';
+            const detailsReady = !lazyDetails || pkg.detailsLoaded === true;
+            const summaryLabel = detailsReady
+                ? `${launchCount} ${launchLabel} / ${nodeCount} ${nodeLabel}`
+                : (pkg.detailsLoading ? 'loading details…' : 'details on expand');
+            const addNodeBtn = canAddNode && pkg.isPython
+                ? '<button class="secondary small add-node-btn" data-pkg="' + escapeAttr(pkg.name) + '">＋ Node</button>'
+                : '';
+            const packagePinKey = getPackagePinKey(pkg.name);
+            const packagePinned = state.pinnedPaths.includes(packagePinKey);
+            const packagePinTitle = packagePinned ? 'Unpin package' : 'Pin package';
+            const packageNameMatches = filter.length > 0 && pkg.name.toLowerCase().includes(filter);
+            const dropdownModels = detailsReady
+                ? [
+                    buildLaunchDropdownModel(pkg, runningLaunchPaths, filter),
+                    buildNodesDropdownModel(pkg, runningLaunchPaths, filter),
+                ]
+                : [
+                    buildDeferredDropdownModel(pkg, 'launchFiles', 'Launch Files'),
+                    buildDeferredDropdownModel(pkg, 'nodes', 'Nodes'),
+                ];
+            const forceExpandByFilter = filter.length > 0
+                && (packageNameMatches || dropdownModels.some((section) => section.matchesFilter));
+            const rowExpanded = forceExpandByFilter || isPackageRowExpanded(pkg.name);
+            const rowToggleTitle = rowExpanded
+                ? 'Collapse package (Alt+click: collapse nested sections)'
+                : 'Expand package (Alt+click: expand nested sections)';
+            const dropdownHtml = dropdownModels
+                .map((section) => {
+                    const expanded = forceExpandByFilter
+                        || isPackageSectionExpanded(pkg.name, section.sectionKey);
+                    return buildPackageDropdownHtml({
+                        packageName: pkg.name,
+                        sectionKey: section.sectionKey,
+                        label: section.label,
+                        count: section.count,
+                        countLabel: section.countLabel,
+                        bodyHtml: section.bodyHtml,
+                        emptyText: section.emptyText,
+                        expanded,
+                    });
+                })
+                .join('');
+
+            return (
+                '<li class="pkg-row">' +
+                '<div class="pkg-header">' +
+                '<div class="pkg-main">' +
+                '<button class="pkg-toggle pkg-row-toggle" data-pkg-name="' +
+                escapeAttr(pkg.name) +
+                '" aria-expanded="' +
+                (rowExpanded ? 'true' : 'false') +
+                '" title="' +
+                escapeAttr(rowToggleTitle) +
+                '">' +
+                (rowExpanded ? '▾' : '▸') +
+                '</button>' +
+                '<span class="pkg-name" tabindex="0" data-name="' +
+                escapeAttr(pkg.name) +
+                '">' +
+                escapeHtml(pkg.name) +
+                '</span>' +
+                '</div>' +
+                '<span class="text-muted text-sm">' +
+                escapeHtml(summaryLabel) +
+                '</span>' +
+                addNodeBtn +
+                '<button class="pin-btn pkg-pin-btn ' +
+                (packagePinned ? 'pinned' : '') +
+                '" data-pkg-name="' +
+                escapeAttr(pkg.name) +
+                '" title="' +
+                escapeAttr(packagePinTitle) +
+                '">★</button>' +
+                '</div>' +
+                '<div class="pkg-dropdowns' + (rowExpanded ? '' : ' hidden') + '">' +
+                dropdownHtml +
+                '</div>' +
+                '</li>'
+            );
+        })
+        .join('');
+
     const renderPackages = () => {
         bindDelegatedEvents();
 
@@ -811,17 +1103,10 @@
             return;
         }
 
-        const filter = dom.filterInput.value.trim().toLowerCase();
+        const filter = (dom.filterInput?.value || '').trim().toLowerCase();
         const running = getRunningLaunchPaths();
-        const filtered = state.allPackages.filter((p) => {
-            if (!filter) {
-                return true;
-            }
-            const nameMatch = p.name.toLowerCase().includes(filter);
-            const launchMatch = (p.launchFiles || []).some((f) => f.toLowerCase().includes(filter));
-            const nodeMatch = (p.nodes || []).some((n) => (n.name || '').toLowerCase().includes(filter));
-            return nameMatch || launchMatch || nodeMatch;
-        });
+        const packages = state.allPackages || [];
+        const filtered = getFilteredPackages(packages, filter);
         dom.pkgCount.textContent = String(filtered.length);
 
         if (dom.btnToggleWorkspacePackages) {
@@ -838,83 +1123,12 @@
             return;
         }
 
-        list.innerHTML = filtered
-            .map((pkg) => {
-                const launchCount = pkg.launchFiles?.length || 0;
-                const nodeCount = pkg.nodes?.length || 0;
-                const launchLabel = launchCount === 1 ? 'launch' : 'launches';
-                const nodeLabel = nodeCount === 1 ? 'node' : 'nodes';
-                const addNodeBtn = pkg.isPython
-                    ? '<button class="secondary small add-node-btn" data-pkg="' + escapeAttr(pkg.name) + '">＋ Node</button>'
-                    : '';
-                const packageNameMatches = filter.length > 0 && pkg.name.toLowerCase().includes(filter);
-                const dropdownModels = [
-                    buildLaunchDropdownModel(pkg, running, filter),
-                    buildNodesDropdownModel(pkg, running, filter),
-                ];
-                const forceExpandByFilter = filter.length > 0
-                    && (packageNameMatches || dropdownModels.some((section) => section.matchesFilter));
-                const rowExpanded = forceExpandByFilter || isPackageRowExpanded(pkg.name);
-                const rowToggleTitle = rowExpanded
-                    ? 'Collapse package (Alt+click: collapse nested sections)'
-                    : 'Expand package (Alt+click: expand nested sections)';
-                const dropdownHtml = dropdownModels
-                    .map((section) => {
-                        const expanded = forceExpandByFilter
-                            || isPackageSectionExpanded(pkg.name, section.sectionKey);
-                        return buildPackageDropdownHtml({
-                            packageName: pkg.name,
-                            sectionKey: section.sectionKey,
-                            label: section.label,
-                            count: section.count,
-                            countLabel: section.countLabel,
-                            bodyHtml: section.bodyHtml,
-                            emptyText: section.emptyText,
-                            expanded,
-                        });
-                    })
-                    .join('');
-
-                return (
-                    '<li class="pkg-row">' +
-                    '<div class="pkg-header">' +
-                    '<div class="pkg-main">' +
-                    '<button class="pkg-toggle pkg-row-toggle" data-pkg-name="' +
-                    escapeAttr(pkg.name) +
-                    '" aria-expanded="' +
-                    (rowExpanded ? 'true' : 'false') +
-                    '" title="' +
-                    escapeAttr(rowToggleTitle) +
-                    '">' +
-                    (rowExpanded ? '▾' : '▸') +
-                    '</button>' +
-                    '<span class="pkg-name" tabindex="0" data-name="' +
-                    escapeAttr(pkg.name) +
-                    '">' +
-                    escapeHtml(pkg.name) +
-                    '</span>' +
-                    '</div>' +
-                    '<span class="text-muted text-sm">' +
-                    launchCount +
-                    ' ' +
-                    launchLabel +
-                    ' / ' +
-                    nodeCount +
-                    ' ' +
-                    nodeLabel +
-                    '</span>' +
-                    addNodeBtn +
-                    '</div>' +
-                    '<div class="pkg-dropdowns' + (rowExpanded ? '' : ' hidden') + '">' +
-                    dropdownHtml +
-                    '</div>' +
-                    '</li>'
-                );
-            })
-            .join('');
+        list.innerHTML = buildPackageRowsHtml(filtered, filter, running, true, false);
     };
 
     const renderOtherPackages = () => {
+        bindDelegatedEvents();
+
         const list = getOtherPkgList();
         if (!list) {
             return;
@@ -923,6 +1137,10 @@
         const filter = (dom.filterInput?.value || '').trim().toLowerCase();
         const packages = state.otherPackages || [];
 
+        if (dom.btnToggleOtherPackages) {
+            dom.btnToggleOtherPackages.textContent = isOtherPackagesVisible() ? '▾' : '▸';
+        }
+
         if (!state.otherPackagesLoaded) {
             list.innerHTML = state.otherPackagesLoading
                 ? '<li class="text-muted"><span class="spinner"></span> Loading packages…</li>'
@@ -930,26 +1148,19 @@
             return;
         }
 
-        const filtered = filter
-            ? packages.filter((name) => name.toLowerCase().includes(filter))
-            : packages;
+        if (!isOtherPackagesVisible()) {
+            list.innerHTML = '<li class="text-muted">Other ROS packages are hidden</li>';
+            return;
+        }
 
+        const filtered = getFilteredPackages(packages, filter, true);
         if (!filtered.length) {
             list.innerHTML = '<li class="text-muted">No matching packages</li>';
             return;
         }
 
-        list.innerHTML = filtered
-            .map((name) => (
-                '<li class="other-pkg-item" title="' +
-                escapeAttr(name) +
-                '">' +
-                '<span class="other-pkg-name">' +
-                escapeHtml(name) +
-                '</span>' +
-                '</li>'
-            ))
-            .join('');
+        const running = getRunningLaunchPaths();
+        list.innerHTML = buildPackageRowsHtml(filtered, filter, running, false, true);
     };
 
     const renderPinned = () => {
@@ -962,10 +1173,28 @@
 
         const running = getRunningLaunchPaths();
         const pinnedItems = [];
+        const allKnownPackages = [...(state.allPackages || []), ...(state.otherPackages || [])];
 
         for (const pinKey of state.pinnedPaths) {
+            if (isPackagePinKey(pinKey)) {
+                const packageName = getPackageNameFromPinKey(pinKey);
+                if (!packageName) {
+                    continue;
+                }
+                const pkg = findPackageByName(packageName);
+                const scopeLabel = (state.allPackages || []).some((item) => item.name === packageName)
+                    ? 'workspace'
+                    : 'other';
+                pinnedItems.push(buildPinnedPackageItemHtml({
+                    packageName: pkg?.name || packageName,
+                    isPinned: true,
+                    scopeLabel,
+                }));
+                continue;
+            }
+
             if (pinKey.startsWith('node::')) {
-                const nodeMatch = state.allPackages
+                const nodeMatch = allKnownPackages
                     .flatMap((pkg) => (pkg.nodes || []).map((node) => ({ pkg, node })))
                     .find(({ pkg, node }) => ('node::' + pkg.name + '::' + node.name) === pinKey);
                 if (!nodeMatch) {
@@ -983,7 +1212,7 @@
                 continue;
             }
 
-            const launchMatch = state.allPackages
+            const launchMatch = allKnownPackages
                 .flatMap((pkg) => (pkg.launchFiles || []).map((filePath) => ({ pkg, filePath })))
                 .find(({ filePath }) => filePath === pinKey);
             if (!launchMatch) {
@@ -1024,8 +1253,12 @@
         renderTerminals,
         copyPackage,
         toggleWorkspacePackages,
+        toggleOtherPackages,
         setAllWorkspacePackagesExpanded,
+        setAllOtherPackagesExpanded,
         setWorkspacePackagesVisible,
+        setOtherPackagesVisible,
         isWorkspacePackagesVisible,
+        isOtherPackagesVisible,
     };
 })();

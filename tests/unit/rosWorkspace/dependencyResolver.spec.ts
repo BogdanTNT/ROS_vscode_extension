@@ -1,5 +1,4 @@
 import path from 'node:path';
-import fs from 'node:fs';
 import { afterEach, describe, expect, it } from 'vitest';
 import { createTempWorkspace, removeTempWorkspace } from '../../helpers/workspaceFactory/tempWorkspace';
 import { DependencyResolver } from '../../../src/ros/dependencyResolver';
@@ -159,119 +158,136 @@ describe('DependencyResolver', () => {
 
     // ── Interface change detection ─────────────────────────────
 
-    it('detects interface changes in msg/ directory', () => {
+    it.each([
+        {
+            name: 'msg/ directory',
+            packageName: 'msgs',
+            relativePath: 'msg/Pose.msg',
+            content: 'float64 x\nfloat64 y',
+        },
+        {
+            name: 'CMakeLists.txt',
+            packageName: 'pkg',
+            relativePath: 'CMakeLists.txt',
+            content: 'cmake_minimum_required(VERSION 3.8)',
+        },
+        {
+            name: 'urdf/ directory',
+            packageName: 'robot_desc',
+            relativePath: 'urdf/robot.urdf',
+            content: '<robot name="test"/>',
+        },
+        {
+            name: '.xacro files',
+            packageName: 'robot_desc',
+            relativePath: 'urdf/robot.urdf.xacro',
+            content: '<robot/>',
+        },
+        {
+            name: 'config/ directory',
+            packageName: 'nav_pkg',
+            relativePath: 'config/params.yaml',
+            content: 'speed: 1.0',
+        },
+        {
+            name: '.yaml file extension',
+            packageName: 'pkg',
+            relativePath: 'params.yaml',
+            content: 'key: value',
+        },
+    ])('detects interface changes in $name', ({ packageName, relativePath, content }) => {
         workspaceRoot = createTempWorkspace({
-            'src/msgs/package.xml': '<package><name>msgs</name></package>',
-            'src/msgs/msg/Pose.msg': 'float64 x\nfloat64 y',
+            [`src/${packageName}/package.xml`]: `<package><name>${packageName}</name></package>`,
+            [`src/${packageName}/${relativePath}`]: content,
         });
 
         const resolver = new DependencyResolver();
-        // Since = 0 means everything is "changed"
         expect(resolver.hasInterfaceChanges(
-            path.join(workspaceRoot, 'src/msgs'), 0,
+            path.join(workspaceRoot, `src/${packageName}`), 0,
         )).toBe(true);
     });
 
-    it('detects interface changes in CMakeLists.txt', () => {
+    it.each([
+        {
+            name: 'implementation-only source file',
+            packageName: 'pkg',
+            relativePath: 'src/main.cpp',
+        },
+        {
+            name: 'non-interface .cpp file',
+            packageName: 'pkg',
+            relativePath: 'src/impl.cpp',
+        },
+    ])('returns false when $name changed after the comparison timestamp', ({ packageName, relativePath }) => {
         workspaceRoot = createTempWorkspace({
-            'src/pkg/package.xml': '<package><name>pkg</name></package>',
-            'src/pkg/CMakeLists.txt': 'cmake_minimum_required(VERSION 3.8)',
+            [`src/${packageName}/package.xml`]: `<package><name>${packageName}</name></package>`,
+            [`src/${packageName}/${relativePath}`]: '// implementation only',
         });
 
         const resolver = new DependencyResolver();
         expect(resolver.hasInterfaceChanges(
-            path.join(workspaceRoot, 'src/pkg'), 0,
-        )).toBe(true);
-    });
-
-    it('returns false when no interface files changed since timestamp', () => {
-        workspaceRoot = createTempWorkspace({
-            'src/pkg/package.xml': '<package><name>pkg</name></package>',
-            'src/pkg/src/main.cpp': '// implementation only',
-        });
-
-        const resolver = new DependencyResolver();
-        // Far in the future: nothing is newer
-        expect(resolver.hasInterfaceChanges(
-            path.join(workspaceRoot, 'src/pkg'), Date.now() + 100_000,
-        )).toBe(false);
-    });
-
-    // ── Resource file change detection ──────────────────────────
-
-    it('detects interface changes in urdf/ directory', () => {
-        workspaceRoot = createTempWorkspace({
-            'src/robot_desc/package.xml': '<package><name>robot_desc</name></package>',
-            'src/robot_desc/urdf/robot.urdf': '<robot name="test"/>',
-        });
-
-        const resolver = new DependencyResolver();
-        expect(resolver.hasInterfaceChanges(
-            path.join(workspaceRoot, 'src/robot_desc'), 0,
-        )).toBe(true);
-    });
-
-    it('detects interface changes for .xacro files', () => {
-        workspaceRoot = createTempWorkspace({
-            'src/robot_desc/package.xml': '<package><name>robot_desc</name></package>',
-            'src/robot_desc/urdf/robot.urdf.xacro': '<robot/>',
-        });
-
-        const resolver = new DependencyResolver();
-        expect(resolver.hasInterfaceChanges(
-            path.join(workspaceRoot, 'src/robot_desc'), 0,
-        )).toBe(true);
-    });
-
-    it('detects interface changes in config/ directory', () => {
-        workspaceRoot = createTempWorkspace({
-            'src/nav_pkg/package.xml': '<package><name>nav_pkg</name></package>',
-            'src/nav_pkg/config/params.yaml': 'speed: 1.0',
-        });
-
-        const resolver = new DependencyResolver();
-        expect(resolver.hasInterfaceChanges(
-            path.join(workspaceRoot, 'src/nav_pkg'), 0,
-        )).toBe(true);
-    });
-
-    it('detects .yaml file changes via extension match', () => {
-        workspaceRoot = createTempWorkspace({
-            'src/pkg/package.xml': '<package><name>pkg</name></package>',
-            'src/pkg/params.yaml': 'key: value',
-        });
-
-        const resolver = new DependencyResolver();
-        expect(resolver.hasInterfaceChanges(
-            path.join(workspaceRoot, 'src/pkg'), 0,
-        )).toBe(true);
-    });
-
-    it('does NOT detect .cpp as interface change', () => {
-        workspaceRoot = createTempWorkspace({
-            'src/pkg/package.xml': '<package><name>pkg</name></package>',
-            'src/pkg/src/impl.cpp': '// just source',
-        });
-
-        const resolver = new DependencyResolver();
-        // Far future: only package.xml would match, but we test with a
-        // timestamp after creation
-        expect(resolver.hasInterfaceChanges(
-            path.join(workspaceRoot, 'src/pkg'), Date.now() + 100_000,
+            path.join(workspaceRoot, `src/${packageName}`), Date.now() + 100_000,
         )).toBe(false);
     });
 
     // ── Launch-file cross-reference detection ───────────────────
 
-    it('discovers Python launch file refs via FindPackageShare', () => {
-        workspaceRoot = createTempWorkspace({
-            'src/bringup/package.xml': '<package><name>bringup</name></package>',
-            'src/bringup/launch/robot.launch.py': `
+    it.each([
+        {
+            name: 'FindPackageShare',
+            launchPath: 'src/bringup/launch/robot.launch.py',
+            launchContent: `
 from launch_ros.substitutions import FindPackageShare
 pkg_share = FindPackageShare('robot_description')
 `,
+        },
+        {
+            name: 'get_package_share_directory',
+            launchPath: 'src/bringup/launch/start.launch.py',
+            launchContent: `
+from ament_index_python.packages import get_package_share_directory
+urdf = get_package_share_directory('robot_description')
+`,
+        },
+        {
+            name: 'get_package_share_path',
+            launchPath: 'src/bringup/launch/path.launch.py',
+            launchContent: `
+from ament_index_python.packages import get_package_share_path
+urdf = get_package_share_path('robot_description')
+`,
+        },
+        {
+            name: 'PackageShareDirectory(package=...)',
+            launchPath: 'src/bringup/launch/share.launch.py',
+            launchContent: `
+from launch_ros.substitutions import PackageShareDirectory
+urdf = PackageShareDirectory(package='robot_description')
+`,
+        },
+        {
+            name: '$(find pkg)',
+            launchPath: 'src/bringup/launch/robot.launch',
+            launchContent: `
+<launch>
+  <include file="$(find robot_description)/launch/desc.launch"/>
+</launch>
+`,
+        },
+        {
+            name: '$(find-pkg-share pkg)',
+            launchPath: 'src/bringup/launch/robot.launch.xml',
+            launchContent: `
+<launch>
+  <let name="urdf" value="$(find-pkg-share robot_description)/urdf/robot.urdf"/>
+</launch>
+`,
+        },
+    ])('discovers launch-file refs via $name', ({ launchPath, launchContent }) => {
+        workspaceRoot = createTempWorkspace({
+            'src/bringup/package.xml': '<package><name>bringup</name></package>',
+            [launchPath]: launchContent,
             'src/robot_description/package.xml': '<package><name>robot_description</name></package>',
-            'src/robot_description/urdf/robot.urdf': '<robot/>',
         });
 
         const resolver = new DependencyResolver();
@@ -281,56 +297,6 @@ pkg_share = FindPackageShare('robot_description')
         expect(bringup).toBeDefined();
         expect(bringup!.launchFileDeps).toContain('robot_description');
         expect(bringup!.localDeps).toContain('robot_description');
-    });
-
-    it('discovers Python launch file refs via get_package_share_directory', () => {
-        workspaceRoot = createTempWorkspace({
-            'src/bringup/package.xml': '<package><name>bringup</name></package>',
-            'src/bringup/launch/start.launch.py': `
-from ament_index_python.packages import get_package_share_directory
-urdf = get_package_share_directory('robot_description')
-`,
-            'src/robot_description/package.xml': '<package><name>robot_description</name></package>',
-        });
-
-        const resolver = new DependencyResolver();
-        const graph = resolver.buildGraph(path.join(workspaceRoot, 'src'));
-
-        expect(graph.get('bringup')!.localDeps).toContain('robot_description');
-    });
-
-    it('discovers XML launch file refs via $(find pkg)', () => {
-        workspaceRoot = createTempWorkspace({
-            'src/bringup/package.xml': '<package><name>bringup</name></package>',
-            'src/bringup/launch/robot.launch': `
-<launch>
-  <include file="$(find robot_description)/launch/desc.launch"/>
-</launch>
-`,
-            'src/robot_description/package.xml': '<package><name>robot_description</name></package>',
-        });
-
-        const resolver = new DependencyResolver();
-        const graph = resolver.buildGraph(path.join(workspaceRoot, 'src'));
-
-        expect(graph.get('bringup')!.localDeps).toContain('robot_description');
-    });
-
-    it('discovers XML launch file refs via $(find-pkg-share pkg)', () => {
-        workspaceRoot = createTempWorkspace({
-            'src/bringup/package.xml': '<package><name>bringup</name></package>',
-            'src/bringup/launch/robot.launch.xml': `
-<launch>
-  <let name="urdf" value="$(find-pkg-share robot_description)/urdf/robot.urdf"/>
-</launch>
-`,
-            'src/robot_description/package.xml': '<package><name>robot_description</name></package>',
-        });
-
-        const resolver = new DependencyResolver();
-        const graph = resolver.buildGraph(path.join(workspaceRoot, 'src'));
-
-        expect(graph.get('bringup')!.localDeps).toContain('robot_description');
     });
 
     it('does not include self-references in launchFileDeps', () => {

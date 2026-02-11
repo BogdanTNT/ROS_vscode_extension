@@ -7,13 +7,20 @@
             REFRESH: 'refresh',
             SET_AUTO_REFRESH: 'setAutoRefresh',
             SET_OVERVIEW_TOGGLES: 'setOverviewToggles',
-            REFRESH_TRACKED_TOPIC_MESSAGES: 'refreshTrackedTopicMessages',
+            VIEW_SCOPE: 'viewScope',
+            FETCH_NODE_INFO: 'fetchNodeInfo',
+            REFRESH_CONNECTIONS: 'refreshConnections',
+            GET_TOPIC_ROLES: 'getTopicRoles',
+            SET_TRACKED_TOPICS: 'setTrackedTopics',
             GET_TOPIC_PUBLISH_TEMPLATE: 'getTopicPublishTemplate',
             PUBLISH_TOPIC_MESSAGE: 'publishTopicMessage',
         }),
         toWebview: Object.freeze({
             LOADING: 'loading',
             GRAPH_DATA: 'graphData',
+            CONNECTION_DATA: 'connectionData',
+            NODE_INFO: 'nodeInfo',
+            TOPIC_ROLES: 'topicRoles',
             TOPIC_LATEST_MESSAGE: 'topicLatestMessage',
             TOPIC_PUBLISH_TEMPLATE: 'topicPublishTemplate',
             TOPIC_PUBLISH_RESULT: 'topicPublishResult',
@@ -36,12 +43,13 @@
         [viewKinds.ACTIONS]: 'Actions',
         [viewKinds.PARAMETERS]: 'Parameters',
     });
-    const TRACKED_TOPIC_POLL_INTERVAL_MS = 500;
-    let trackedTopicPollTimer;
+    const TOPIC_ROLES_REFRESH_MIN_INTERVAL_MS = 2000;
+    const TOPIC_MESSAGE_STALE_AFTER_MS = 15000;
 
     const dom = {
         btnRefresh: document.getElementById('btnRefresh'),
         btnPublishTopic: document.getElementById('btnPublishTopic'),
+        btnRefetchSelected: document.getElementById('btnRefetchSelected'),
         toggleAutoRefresh: document.getElementById('toggleAutoRefresh'),
         status: document.getElementById('status'),
         tabs: Array.from(document.querySelectorAll('.nv-tab')),
@@ -50,6 +58,7 @@
         tabServicesCount: document.getElementById('tabServicesCount'),
         tabActionsCount: document.getElementById('tabActionsCount'),
         tabParametersCount: document.getElementById('tabParametersCount'),
+        overviewToggleBar: document.getElementById('overviewToggleBar'),
         overviewView: document.getElementById('overviewView'),
         listView: document.getElementById('listView'),
         overviewSections: document.getElementById('overviewSections'),
@@ -88,7 +97,28 @@
         activeView: viewKinds.OVERVIEW,
         filter: '',
         selectedKey: '',
+        viewLoadingByKind: {
+            [viewKinds.OVERVIEW]: false,
+            [viewKinds.NODES]: false,
+            [viewKinds.TOPICS]: false,
+            [viewKinds.SERVICES]: false,
+            [viewKinds.ACTIONS]: false,
+            [viewKinds.PARAMETERS]: false,
+        },
         topicMessageCache: {},
+        topicMessageReceivedAt: {},
+        lastTrackedTopicSignature: '',
+        nodeInfoLoadingByName: {},
+        topicRolesByName: {},
+        topicRolesLoadingByName: {},
+        topicRolesLastFetchedAt: {},
+        selectedRefetchPendingByKind: {
+            [viewKinds.NODES]: false,
+            [viewKinds.TOPICS]: false,
+            [viewKinds.SERVICES]: false,
+            [viewKinds.ACTIONS]: false,
+            [viewKinds.PARAMETERS]: false,
+        },
         pinnedTopics: [],
         frozenPinnedTopics: [],
         frozenTopicMessages: {},
@@ -156,11 +186,18 @@
         '<div><span class="text-muted">' + escapeHtml(label) + ':</span> ' + renderNameList(values) + '</div>';
 
     dom.btnRefresh.addEventListener('click', () => {
-        vscode.postMessage({ command: commands.toHost.REFRESH });
+        requestGraphRefresh({
+            showGlobalLoading: true,
+            showLocalLoading: true,
+            localView: state.activeView,
+        });
     });
 
     dom.btnPublishTopic.addEventListener('click', () => {
         openPublishTopicModal();
+    });
+    dom.btnRefetchSelected?.addEventListener('click', () => {
+        refetchSelectedDetails();
     });
 
     dom.toggleAutoRefresh.addEventListener('change', () => {
@@ -168,6 +205,7 @@
             command: commands.toHost.SET_AUTO_REFRESH,
             enabled: dom.toggleAutoRefresh.checked,
         });
+        sendViewScope();
     });
 
     dom.btnClosePublishTopic.addEventListener('click', () => {
@@ -190,7 +228,7 @@
             closePublishTopicModal();
         }
     });
-    dom.detailsCard.addEventListener('click', (event) => {
+    dom.detailsCard?.addEventListener('click', (event) => {
         const target = event.target;
         if (!(target instanceof Element)) {
             return;
@@ -202,7 +240,7 @@
         }
         togglePinnedTopic(pinBtn.getAttribute('data-topic-name') || '');
     });
-    dom.pinnedTopicList.addEventListener('click', (event) => {
+    dom.pinnedTopicList?.addEventListener('click', (event) => {
         const target = event.target;
         if (!(target instanceof Element)) {
             return;
@@ -222,9 +260,6 @@
     dom.btnToggleAllPinnedPause?.addEventListener('click', () => {
         toggleAllPinnedTopicsPause();
     });
-    window.addEventListener('unload', () => {
-        stopTrackedTopicPolling();
-    });
 
     dom.filterInput.addEventListener('input', () => {
         state.filter = dom.filterInput.value.trim().toLowerCase();
@@ -236,6 +271,7 @@
     [dom.toggleNodes, dom.toggleTopics, dom.toggleServices, dom.toggleActions, dom.toggleParameters].forEach((toggle) => {
         toggle.addEventListener('change', () => {
             persistOverviewToggleState();
+            sendViewScope();
             if (state.activeView === viewKinds.OVERVIEW) {
                 renderOverview();
             }
@@ -270,18 +306,57 @@
                 parameters: msg.parameters || [],
                 connections: msg.connections || {},
             };
+            Object.keys(state.viewLoadingByKind).forEach((view) => {
+                state.viewLoadingByKind[view] = false;
+            });
             applyPreferences(msg.prefs || {});
-            mergeTopicMessageCache(msg.topicLatestMessages || {});
+            mergeTopicMessageCache(msg.topicLatestMessages || {}, msg.topicLatestMessageTimes || {});
             pruneTopicMessageCacheByGraph();
+            pruneTopicRoleCacheByGraph();
             prunePinnedTopicsByGraph();
+            state.selectedRefetchPendingByKind[viewKinds.PARAMETERS] = false;
             state.publishTemplateByTopic = {};
             renderStatus();
             renderTabCounts();
             updateActionAvailability();
             renderPublishButtonState();
             renderPinnedTopics();
-            syncTrackedTopicPolling({ requestNow: true });
+            syncTrackedTopicSubscriptions({ force: true });
             renderCurrentView();
+            return;
+        }
+
+        if (msg.command === commands.toWebview.CONNECTION_DATA) {
+            state.graphData.connections = msg.connections || {};
+            state.selectedRefetchPendingByKind[viewKinds.SERVICES] = false;
+            state.selectedRefetchPendingByKind[viewKinds.ACTIONS] = false;
+            renderCurrentView();
+            return;
+        }
+
+        if (msg.command === commands.toWebview.NODE_INFO) {
+            const nodeName = String(msg.nodeName || '');
+            if (nodeName && msg.info) {
+                state.graphData.connections[nodeName] = msg.info;
+                state.nodeInfoLoadingByName[nodeName] = false;
+                if (state.selectedKey === (viewKinds.NODES + ':' + nodeName)) {
+                    state.selectedRefetchPendingByKind[viewKinds.NODES] = false;
+                }
+                // Re-render the detail card if this node (or a
+                // topic/service that depends on it) is selected.
+                renderCurrentView();
+                if (state.selectedKey === (viewKinds.NODES + ':' + nodeName)) {
+                    showNodeDetails(nodeName, dom.detailsCard);
+                } else if (state.selectedKey.startsWith(viewKinds.TOPICS + ':') ||
+                           state.selectedKey.startsWith(viewKinds.SERVICES + ':') ||
+                           state.selectedKey.startsWith(viewKinds.ACTIONS + ':')) {
+                    // Reverse-lookup data may have changed — refresh detail card.
+                    const selectedRow = findSelectedRow();
+                    if (selectedRow) {
+                        selectedRow.showDetails(dom.detailsCard);
+                    }
+                }
+            }
             return;
         }
 
@@ -295,7 +370,41 @@
                 return;
             }
             state.topicMessageCache[topicName] = message;
+            const receivedAt = Number(msg.receivedAt || Date.now());
+            if (Number.isFinite(receivedAt) && receivedAt > 0) {
+                state.topicMessageReceivedAt[topicName] = receivedAt;
+            } else {
+                state.topicMessageReceivedAt[topicName] = Date.now();
+            }
             renderPinnedTopics();
+
+            if (state.selectedKey === (viewKinds.TOPICS + ':' + topicName)) {
+                showTopicDetails(topicName, dom.detailsCard);
+            }
+            return;
+        }
+
+        if (msg.command === commands.toWebview.TOPIC_ROLES) {
+            const topicName = String(msg.topicName || '').trim();
+            if (!topicName) {
+                return;
+            }
+
+            const normalizeRoleList = (values) => Array.from(new Set(
+                (Array.isArray(values) ? values : [])
+                    .map((value) => String(value || '').trim())
+                    .filter(Boolean),
+            ));
+
+            state.topicRolesByName[topicName] = {
+                publishers: normalizeRoleList(msg.publishers),
+                subscribers: normalizeRoleList(msg.subscribers),
+            };
+            state.topicRolesLoadingByName[topicName] = false;
+            state.topicRolesLastFetchedAt[topicName] = Date.now();
+            if (state.selectedKey === (viewKinds.TOPICS + ':' + topicName)) {
+                state.selectedRefetchPendingByKind[viewKinds.TOPICS] = false;
+            }
 
             if (state.selectedKey === (viewKinds.TOPICS + ':' + topicName)) {
                 showTopicDetails(topicName, dom.detailsCard);
@@ -375,7 +484,7 @@
         });
     }
 
-    function mergeTopicMessageCache(rawCache) {
+    function mergeTopicMessageCache(rawCache, rawTimes) {
         if (!rawCache || typeof rawCache !== 'object') {
             return;
         }
@@ -386,6 +495,11 @@
                 continue;
             }
             state.topicMessageCache[normalizedTopicName] = normalizedMessage;
+
+            const receivedAt = Number(rawTimes?.[normalizedTopicName] || 0);
+            if (Number.isFinite(receivedAt) && receivedAt > 0) {
+                state.topicMessageReceivedAt[normalizedTopicName] = receivedAt;
+            }
         }
     }
 
@@ -396,6 +510,30 @@
                 delete state.topicMessageCache[topicName];
             }
         }
+        for (const topicName of Object.keys(state.topicMessageReceivedAt)) {
+            if (!topicNames.has(topicName)) {
+                delete state.topicMessageReceivedAt[topicName];
+            }
+        }
+    }
+
+    function pruneTopicRoleCacheByGraph() {
+        const topicNames = new Set((state.graphData.topics || []).map((topic) => topic.name));
+        for (const topicName of Object.keys(state.topicRolesByName)) {
+            if (!topicNames.has(topicName)) {
+                delete state.topicRolesByName[topicName];
+            }
+        }
+        for (const topicName of Object.keys(state.topicRolesLoadingByName)) {
+            if (!topicNames.has(topicName)) {
+                delete state.topicRolesLoadingByName[topicName];
+            }
+        }
+        for (const topicName of Object.keys(state.topicRolesLastFetchedAt)) {
+            if (!topicNames.has(topicName)) {
+                delete state.topicRolesLastFetchedAt[topicName];
+            }
+        }
     }
 
     function getTopicCachedMessage(topicName) {
@@ -404,6 +542,153 @@
 
     function normalizeTopicName(topicName) {
         return String(topicName || '').trim();
+    }
+
+    function requestTopicRoles(topicName, options = {}) {
+        const normalizedTopicName = normalizeTopicName(topicName);
+        if (!normalizedTopicName) {
+            return;
+        }
+        if (state.topicRolesLoadingByName[normalizedTopicName]) {
+            return;
+        }
+
+        const now = Date.now();
+        const minInterval = options.force ? 0 : TOPIC_ROLES_REFRESH_MIN_INTERVAL_MS;
+        const lastFetchedAt = Number(state.topicRolesLastFetchedAt[normalizedTopicName] || 0);
+        if (now - lastFetchedAt < minInterval) {
+            return;
+        }
+
+        state.topicRolesLoadingByName[normalizedTopicName] = true;
+        if (state.selectedKey === (viewKinds.TOPICS + ':' + normalizedTopicName)) {
+            showTopicDetails(normalizedTopicName, dom.detailsCard);
+        }
+        vscode.postMessage({
+            command: commands.toHost.GET_TOPIC_ROLES,
+            topicName: normalizedTopicName,
+        });
+    }
+
+    function requestNodeInfo(nodeName, options = {}) {
+        const normalizedNodeName = String(nodeName || '').trim();
+        if (!normalizedNodeName) {
+            return;
+        }
+        if (state.nodeInfoLoadingByName[normalizedNodeName] && options.force !== true) {
+            return;
+        }
+
+        state.nodeInfoLoadingByName[normalizedNodeName] = true;
+        vscode.postMessage({
+            command: commands.toHost.FETCH_NODE_INFO,
+            nodeName: normalizedNodeName,
+        });
+    }
+
+    function getSelectedEntityRef() {
+        if (!state.selectedKey) {
+            return undefined;
+        }
+        const separator = state.selectedKey.indexOf(':');
+        if (separator < 0) {
+            return undefined;
+        }
+
+        const kind = state.selectedKey.slice(0, separator);
+        const name = state.selectedKey.slice(separator + 1);
+        if (!kind || !name) {
+            return undefined;
+        }
+        return { kind, name };
+    }
+
+    function getRefetchLabelForKind(kind) {
+        if (kind === viewKinds.NODES) {
+            return 'Node';
+        }
+        if (kind === viewKinds.TOPICS) {
+            return 'Topic';
+        }
+        if (kind === viewKinds.SERVICES) {
+            return 'Service';
+        }
+        if (kind === viewKinds.ACTIONS) {
+            return 'Action';
+        }
+        if (kind === viewKinds.PARAMETERS) {
+            return 'Parameter';
+        }
+        return 'Selected';
+    }
+
+    function updateRefetchSelectedButtonState() {
+        const button = dom.btnRefetchSelected;
+        if (!button) {
+            return;
+        }
+
+        const selected = getSelectedEntityRef();
+        if (!selected) {
+            button.classList.add('hidden');
+            button.disabled = true;
+            button.textContent = '↻ Refetch Selected';
+            button.title = 'Select an item to refetch details.';
+            button.setAttribute('aria-label', 'Select an item to refetch details.');
+            return;
+        }
+
+        button.classList.remove('hidden');
+        const label = getRefetchLabelForKind(selected.kind);
+        const pending = state.selectedRefetchPendingByKind[selected.kind] === true;
+        button.disabled = false;
+        button.textContent = pending ? '↻ Refreshing ' + label + '...' : '↻ Refetch ' + label;
+        button.title = pending
+            ? 'Refreshing ' + label.toLowerCase() + ' details...'
+            : 'Refetch ' + label.toLowerCase() + ' details';
+        button.setAttribute(
+            'aria-label',
+            pending
+                ? 'Refreshing ' + label.toLowerCase() + ' details'
+                : 'Refetch ' + label.toLowerCase() + ' details',
+        );
+    }
+
+    function refetchSelectedDetails() {
+        const selected = getSelectedEntityRef();
+        if (!selected) {
+            return;
+        }
+
+        if (selected.kind === viewKinds.NODES) {
+            state.selectedRefetchPendingByKind[viewKinds.NODES] = true;
+            requestNodeInfo(selected.name, { force: true });
+            showNodeDetails(selected.name, dom.detailsCard);
+            updateRefetchSelectedButtonState();
+            return;
+        }
+
+        if (selected.kind === viewKinds.TOPICS) {
+            state.selectedRefetchPendingByKind[viewKinds.TOPICS] = true;
+            requestTopicRoles(selected.name, { force: true });
+            syncTrackedTopicSubscriptions();
+            showTopicDetails(selected.name, dom.detailsCard);
+            updateRefetchSelectedButtonState();
+            return;
+        }
+
+        if (selected.kind === viewKinds.SERVICES || selected.kind === viewKinds.ACTIONS) {
+            state.selectedRefetchPendingByKind[selected.kind] = true;
+            vscode.postMessage({ command: commands.toHost.REFRESH_CONNECTIONS });
+            renderCurrentView();
+            return;
+        }
+
+        if (selected.kind === viewKinds.PARAMETERS) {
+            state.selectedRefetchPendingByKind[viewKinds.PARAMETERS] = true;
+            vscode.postMessage({ command: commands.toHost.REFRESH });
+            renderCurrentView();
+        }
     }
 
     function persistTopicMonitorState() {
@@ -495,12 +780,11 @@
 
         persistTopicMonitorState();
         renderPinnedTopics();
-        syncTrackedTopicPolling({ requestNow: true });
+        syncTrackedTopicSubscriptions();
 
         if (!wasPinned && !state.allPinnedTopicsPaused) {
-            // Fetch as soon as a topic is pinned so its monitor card does not
-            // wait for the next global graph refresh cycle.
-            requestTrackedTopicMessages([normalizedTopicName]);
+            // Topic stream subscription sync is enough for immediate updates.
+            syncTrackedTopicSubscriptions();
         }
 
         renderCurrentView();
@@ -520,7 +804,7 @@
             state.frozenPinnedTopics = state.frozenPinnedTopics.filter((name) => name !== normalizedTopicName);
             delete state.frozenTopicMessages[normalizedTopicName];
             persistTopicMonitorState();
-            syncTrackedTopicPolling({ requestNow: true });
+            syncTrackedTopicSubscriptions();
             renderPinnedTopics();
             return;
         }
@@ -533,7 +817,7 @@
         }
         state.frozenPinnedTopics = [...state.frozenPinnedTopics, normalizedTopicName];
         persistTopicMonitorState();
-        syncTrackedTopicPolling();
+        syncTrackedTopicSubscriptions();
         renderPinnedTopics();
     }
 
@@ -556,7 +840,7 @@
         }
 
         persistTopicMonitorState();
-        syncTrackedTopicPolling({ requestNow: !nextPaused });
+        syncTrackedTopicSubscriptions();
         renderPinnedTopics();
     }
 
@@ -583,30 +867,6 @@
         pauseAllBtn.setAttribute('aria-label', label);
     }
 
-    function requestTrackedTopicMessages(topicNames) {
-        const normalizedTopicNames = Array.from(new Set(
-            (Array.isArray(topicNames) ? topicNames : [])
-                .map((name) => normalizeTopicName(name))
-                .filter(Boolean),
-        ));
-        if (!normalizedTopicNames.length) {
-            return;
-        }
-
-        vscode.postMessage({
-            command: commands.toHost.REFRESH_TRACKED_TOPIC_MESSAGES,
-            topicNames: normalizedTopicNames,
-        });
-    }
-
-    function stopTrackedTopicPolling() {
-        if (!trackedTopicPollTimer) {
-            return;
-        }
-        clearInterval(trackedTopicPollTimer);
-        trackedTopicPollTimer = undefined;
-    }
-
     function getTrackedTopicNames() {
         const trackedTopicNames = new Set();
         if (!state.allPinnedTopicsPaused) {
@@ -624,32 +884,52 @@
         return Array.from(trackedTopicNames);
     }
 
-    function syncTrackedTopicPolling(options = {}) {
-        const trackedTopicNames = getTrackedTopicNames();
-        if (!trackedTopicNames.length) {
-            stopTrackedTopicPolling();
+    function sendTrackedTopicsToHost(topicNames, options = {}) {
+        const normalizedTopicNames = Array.from(new Set(
+            (Array.isArray(topicNames) ? topicNames : [])
+                .map((name) => normalizeTopicName(name))
+                .filter(Boolean),
+        ));
+        const signature = normalizedTopicNames.slice().sort().join('|');
+        if (!options.force && signature === state.lastTrackedTopicSignature) {
             return;
         }
+        state.lastTrackedTopicSignature = signature;
+        vscode.postMessage({
+            command: commands.toHost.SET_TRACKED_TOPICS,
+            topicNames: normalizedTopicNames,
+        });
+    }
 
-        if (!trackedTopicPollTimer) {
-            // Only tracked topics (pinned + selected details topic) are polled.
-            trackedTopicPollTimer = setInterval(() => {
-                requestTrackedTopicMessages(getTrackedTopicNames());
-            }, TRACKED_TOPIC_POLL_INTERVAL_MS);
+    function syncTrackedTopicSubscriptions(options = {}) {
+        sendTrackedTopicsToHost(getTrackedTopicNames(), options);
+    }
+
+    function getTopicMessageReceivedAt(topicName) {
+        const timestamp = Number(state.topicMessageReceivedAt[topicName] || 0);
+        if (!Number.isFinite(timestamp) || timestamp <= 0) {
+            return 0;
+        }
+        return timestamp;
+    }
+
+    function formatTopicMessageAge(topicName) {
+        const receivedAt = getTopicMessageReceivedAt(topicName);
+        if (!receivedAt) {
+            return '';
         }
 
-        if (options.requestNow) {
-            requestTrackedTopicMessages(trackedTopicNames);
-            return;
-        }
-
-        const missingMessages = trackedTopicNames.filter((topicName) => !getTopicCachedMessage(topicName));
-        if (missingMessages.length) {
-            requestTrackedTopicMessages(missingMessages);
-        }
+        const ageMs = Math.max(0, Date.now() - receivedAt);
+        const ageSeconds = Math.floor(ageMs / 1000);
+        const stamp = new Date(receivedAt).toLocaleTimeString();
+        const staleSuffix = ageMs > TOPIC_MESSAGE_STALE_AFTER_MS ? ' · stale' : '';
+        return 'Updated ' + ageSeconds + 's ago (' + stamp + ')' + staleSuffix;
     }
 
     function renderPinnedTopics() {
+        if (!dom.pinnedTopicList) {
+            return;
+        }
         renderPinnedTopicsHeaderControls();
         dom.pinnedTopicList.innerHTML = '';
 
@@ -898,6 +1178,7 @@
 
         if (topicName) {
             delete state.topicMessageCache[topicName];
+            delete state.topicMessageReceivedAt[topicName];
             if (state.selectedKey === (viewKinds.TOPICS + ':' + topicName)) {
                 showTopicDetails(topicName, dom.detailsCard);
             }
@@ -905,20 +1186,98 @@
 
         // Trigger a fresh graph + topic-message poll so the latest
         // message appears quickly in details and pinned topic cards.
-        vscode.postMessage({ command: commands.toHost.REFRESH });
+        requestGraphRefresh({
+            showGlobalLoading: false,
+            showLocalLoading: true,
+            localView: state.activeView,
+        });
+    }
+
+    function computeCurrentScope() {
+        const view = state.activeView;
+        if (view === viewKinds.OVERVIEW) {
+            return {
+                nodes: dom.toggleNodes.checked,
+                topics: dom.toggleTopics.checked,
+                services: dom.toggleServices.checked,
+                actions: dom.toggleActions.checked && state.graphData.rosVersion === 2,
+                parameters: dom.toggleParameters.checked,
+            };
+        }
+
+        return {
+            nodes: view === viewKinds.NODES,
+            topics: view === viewKinds.TOPICS,
+            services: view === viewKinds.SERVICES,
+            actions: view === viewKinds.ACTIONS,
+            parameters: view === viewKinds.PARAMETERS,
+        };
+    }
+
+    /**
+     * Tell the backend which graph categories are currently visible so
+     * auto-refresh can skip unnecessary CLI calls.
+     *
+     * - Single-kind tab (nodes / topics / …) → only that category.
+     * - Overview → whichever overview toggles are checked.
+     */
+    function sendViewScope() {
+        const scope = computeCurrentScope();
+        vscode.postMessage({
+            command: commands.toHost.VIEW_SCOPE,
+            ...scope,
+        });
+        return scope;
+    }
+
+    function setViewLoading(view, loading) {
+        if (!Object.prototype.hasOwnProperty.call(state.viewLoadingByKind, view)) {
+            return;
+        }
+        state.viewLoadingByKind[view] = Boolean(loading);
+    }
+
+    function isViewLoading(view) {
+        return state.viewLoadingByKind[view] === true;
+    }
+
+    function requestGraphRefresh(options = {}) {
+        const scope = options.scope || computeCurrentScope();
+        const localView = options.localView || state.activeView;
+        const showLocalLoading = options.showLocalLoading !== false;
+        const showGlobalLoading = options.showGlobalLoading === true;
+
+        if (showLocalLoading) {
+            setViewLoading(localView, true);
+            renderCurrentView();
+        }
+
+        vscode.postMessage({
+            command: commands.toHost.REFRESH,
+            showLoading: showGlobalLoading,
+            ...scope,
+        });
     }
 
     function switchView(view) {
         state.activeView = view;
         state.selectedKey = '';
+        updateRefetchSelectedButtonState();
         dom.tabs.forEach((tab) => tab.classList.toggle('active', tab.dataset.view === view));
+        dom.overviewToggleBar?.classList.toggle('hidden', view !== viewKinds.OVERVIEW);
         renderPublishButtonState();
+        const scope = sendViewScope();
 
         if (view === viewKinds.OVERVIEW) {
             closePublishTopicModal();
             dom.overviewView.classList.remove('hidden');
             dom.listView.classList.add('hidden');
-            renderOverview();
+            requestGraphRefresh({
+                scope,
+                localView: viewKinds.OVERVIEW,
+                showLocalLoading: true,
+                showGlobalLoading: false,
+            });
             return;
         }
 
@@ -929,15 +1288,21 @@
         dom.overviewView.classList.add('hidden');
         dom.listView.classList.remove('hidden');
         dom.filterInput.placeholder = 'Filter ' + view + '...';
-        renderListView();
+        requestGraphRefresh({
+            scope,
+            localView: view,
+            showLocalLoading: true,
+            showGlobalLoading: false,
+        });
     }
 
     function renderCurrentView() {
         if (state.activeView === viewKinds.OVERVIEW) {
             renderOverview();
-            return;
+        } else {
+            renderListView();
         }
-        renderListView();
+        updateRefetchSelectedButtonState();
     }
 
     function renderOverview() {
@@ -946,11 +1311,19 @@
 
         dom.overviewSections.innerHTML = '';
 
+        if (isViewLoading(viewKinds.OVERVIEW)) {
+            dom.overviewSections.innerHTML =
+                '<div class="text-muted"><span class="spinner"></span> Fetching overview data...</div>';
+            setDetailsPlaceholder();
+            syncTrackedTopicSubscriptions();
+            return;
+        }
+
         if (selectedKinds.length === 0) {
             dom.overviewSections.innerHTML = '<div class="text-muted">Select at least one list above.</div>';
             setDetailsPlaceholder();
             state.selectedKey = '';
-            syncTrackedTopicPolling();
+            syncTrackedTopicSubscriptions();
             return;
         }
 
@@ -964,13 +1337,13 @@
         const selected = allVisibleRows.find((row) => row.key === state.selectedKey);
         if (selected) {
             selected.showDetails(dom.detailsCard);
-            syncTrackedTopicPolling({ requestNow: true });
+            syncTrackedTopicSubscriptions();
             return;
         }
 
         state.selectedKey = '';
         setDetailsPlaceholder();
-        syncTrackedTopicPolling();
+        syncTrackedTopicSubscriptions();
     }
 
     function getSelectedOverviewKinds() {
@@ -1011,8 +1384,11 @@
                 state.selectedKey = '';
             } else {
                 state.selectedKey = row.key;
+                if (row.key.startsWith(viewKinds.TOPICS + ':')) {
+                    requestTopicRoles(row.name, { force: true });
+                }
             }
-            syncTrackedTopicPolling({ requestNow: true });
+            syncTrackedTopicSubscriptions();
             renderOverview();
         });
 
@@ -1021,6 +1397,17 @@
     }
 
     function renderListView() {
+        if (isViewLoading(state.activeView)) {
+            dom.entityCount.textContent = '...';
+            dom.entityList.innerHTML =
+                '<li class="text-muted"><span class="spinner"></span> Fetching ' +
+                escapeHtml(kindLabels[state.activeView] || 'data') +
+                '...</li>';
+            setDetailsPlaceholder();
+            syncTrackedTopicSubscriptions();
+            return;
+        }
+
         const rows = getRowsForKind(state.activeView)
             .filter((row) => row.name.toLowerCase().includes(state.filter));
 
@@ -1030,19 +1417,22 @@
                 state.selectedKey = '';
             } else {
                 state.selectedKey = row.key;
+                if (row.key.startsWith(viewKinds.TOPICS + ':')) {
+                    requestTopicRoles(row.name, { force: true });
+                }
             }
-            syncTrackedTopicPolling({ requestNow: true });
+            syncTrackedTopicSubscriptions();
             renderListView();
         });
 
         const selected = rows.find((row) => row.key === state.selectedKey);
         if (selected) {
             selected.showDetails(dom.detailsCard);
-            syncTrackedTopicPolling({ requestNow: true });
+            syncTrackedTopicSubscriptions();
             return;
         }
         setDetailsPlaceholder();
-        syncTrackedTopicPolling();
+        syncTrackedTopicSubscriptions();
     }
 
     function renderRowsToList(listEl, rows, onSelect) {
@@ -1110,23 +1500,41 @@
             && row.key.startsWith(viewKinds.TOPICS + ':');
     }
 
+    function findSelectedRow() {
+        if (!state.selectedKey) {
+            return undefined;
+        }
+        const colonIndex = state.selectedKey.indexOf(':');
+        if (colonIndex < 0) {
+            return undefined;
+        }
+        const kind = state.selectedKey.slice(0, colonIndex);
+        return getRowsForKind(kind).find((row) => row.key === state.selectedKey);
+    }
+
     function getRowsForKind(kind) {
         const data = state.graphData;
 
         if (kind === viewKinds.NODES) {
             return data.nodes.map((name) => {
-                const info = data.connections[name] || emptyNodeInfo;
-                const relationCount =
-                    (info.publishers || []).length +
-                    (info.subscribers || []).length +
-                    (info.serviceServers || []).length +
-                    (info.serviceClients || []).length +
-                    (info.actionServers || []).length +
-                    (info.actionClients || []).length;
+                const info = data.connections[name];
+                let meta;
+                if (info) {
+                    const relationCount =
+                        (info.publishers || []).length +
+                        (info.subscribers || []).length +
+                        (info.serviceServers || []).length +
+                        (info.serviceClients || []).length +
+                        (info.actionServers || []).length +
+                        (info.actionClients || []).length;
+                    meta = relationCount + ' links';
+                } else {
+                    meta = 'click for details';
+                }
                 return {
                     key: viewKinds.NODES + ':' + name,
                     name,
-                    meta: relationCount + ' links',
+                    meta,
                     showDetails: (target) => showNodeDetails(name, target),
                 };
             });
@@ -1177,10 +1585,20 @@
     }
 
     function showNodeDetails(name, targetEl) {
-        const info = state.graphData.connections[name] || emptyNodeInfo;
+        const info = state.graphData.connections[name] || null;
         const nodeParameters = state.graphData.parameters
             .filter((parameter) => parameter.node === name)
             .map((parameter) => parameter.name);
+        const isRefreshing = state.nodeInfoLoadingByName[name] === true;
+
+        if (!info) {
+            // Info not yet fetched — request it lazily.
+            requestNodeInfo(name);
+            targetEl.innerHTML =
+                '<strong>' + escapeHtml(name) + '</strong> <span class="text-muted">(node)</span>' +
+                '<div class="text-muted"><span class="spinner"></span> Loading node info…</div>';
+            return;
+        }
 
         targetEl.innerHTML =
             '<strong>' + escapeHtml(name) + '</strong> <span class="text-muted">(node)</span>' +
@@ -1190,15 +1608,22 @@
             renderDetailLine('Service clients', info.serviceClients || []) +
             renderDetailLine('Action servers', info.actionServers || []) +
             renderDetailLine('Action clients', info.actionClients || []) +
-            renderDetailLine('Parameters', nodeParameters);
+            renderDetailLine('Parameters', nodeParameters) +
+            (isRefreshing
+                ? '<div class="text-muted text-sm"><span class="spinner"></span> Refreshing node info...</div>'
+                : '');
     }
 
     function showParameterDetails(parameter, targetEl) {
         const nodeLabel = parameter.node || 'global';
+        const isRefreshing = state.selectedRefetchPendingByKind[viewKinds.PARAMETERS] === true;
         targetEl.innerHTML =
             '<strong>' + escapeHtml(parameter.name || '') + '</strong> <span class="text-muted">(parameter)</span>' +
             renderDetailLine('Node', [nodeLabel]) +
-            renderDetailLine('Name', [parameter.name || '']);
+            renderDetailLine('Name', [parameter.name || '']) +
+            (isRefreshing
+                ? '<div class="text-muted text-sm"><span class="spinner"></span> Refreshing parameter list...</div>'
+                : '');
     }
 
     function showEntityDetails(kind, name, targetEl) {
@@ -1212,17 +1637,32 @@
 
         const primaryLabel = kind === viewKinds.TOPICS ? 'Publishers' : 'Servers';
         const secondaryLabel = kind === viewKinds.TOPICS ? 'Subscribers' : 'Clients';
+        const isRefreshing = kind === viewKinds.SERVICES
+            ? state.selectedRefetchPendingByKind[viewKinds.SERVICES] === true
+            : (kind === viewKinds.ACTIONS && state.selectedRefetchPendingByKind[viewKinds.ACTIONS] === true);
 
         targetEl.innerHTML =
             '<strong>' + escapeHtml(name) + '</strong> <span class="text-muted">(' + escapeHtml(kind.slice(0, -1)) + ')</span>' +
             renderDetailLine('Type', [entity ? entity.type : 'unknown']) +
             renderDetailLine(primaryLabel, roles.primary) +
-            renderDetailLine(secondaryLabel, roles.secondary);
+            renderDetailLine(secondaryLabel, roles.secondary) +
+            (isRefreshing
+                ? '<div class="text-muted text-sm"><span class="spinner"></span> Refreshing relation data...</div>'
+                : '');
     }
 
     function showTopicDetails(name, targetEl) {
         const entity = getEntity(viewKinds.TOPICS, name);
-        const roles = collectEntityRoles(viewKinds.TOPICS, name);
+        const cachedRoles = state.topicRolesByName[name];
+        const fallbackRoles = collectEntityRoles(viewKinds.TOPICS, name);
+        const roles = cachedRoles
+            ? { primary: cachedRoles.publishers, secondary: cachedRoles.subscribers }
+            : fallbackRoles;
+        const loadingRoles = state.topicRolesLoadingByName[name] === true;
+        if (!cachedRoles && !loadingRoles) {
+            requestTopicRoles(name);
+        }
+        const isRefreshing = state.selectedRefetchPendingByKind[viewKinds.TOPICS] === true;
         const pinned = isTopicPinned(name);
         const messageBlock = renderTopicMessageBlock(name);
         const pinButtonLabel = pinned ? 'Unpin topic' : 'Pin topic';
@@ -1241,6 +1681,9 @@
             renderDetailLine('Type', [entity ? entity.type : 'unknown']) +
             renderDetailLine('Publishers', roles.primary) +
             renderDetailLine('Subscribers', roles.secondary) +
+            (loadingRoles || isRefreshing
+                ? '<div class="text-muted text-sm"><span class="spinner"></span> Refreshing topic details...</div>'
+                : '') +
             messageBlock;
     }
 
@@ -1261,9 +1704,15 @@
             );
         }
 
+        const ageText = formatTopicMessageAge(topicName);
+        const ageLine = ageText
+            ? '<div class="text-muted text-sm">' + escapeHtml(ageText) + '</div>'
+            : '';
+
         return (
             '<div class="' + rowClass + '"><span class="text-muted">' + escapeHtml(label) + ':</span></div>' +
-            '<pre class="' + contentClass + '">' + escapeHtml(cached) + '</pre>'
+            '<pre class="' + contentClass + '">' + escapeHtml(cached) + '</pre>' +
+            ageLine
         );
     }
 
@@ -1330,5 +1779,4 @@
     }
 
     switchView(viewKinds.OVERVIEW);
-    vscode.postMessage({ command: commands.toHost.REFRESH });
 })();
