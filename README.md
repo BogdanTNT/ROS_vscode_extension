@@ -27,27 +27,27 @@ Tested on **ROS 2 Jazzy**.
 
 ### Create package
 
-![Create package](media/readme_gifs/create%20package.png)
+![Create package](media/readme_gifs/createpackage.gif)
 
 ### Create node
 
-![Create node](media/readme_gifs/create%20node.png)
+![Create node](media/readme_gifs/createnode.gif)
 
 ### Launch with arguments
 
-![Launch with arguments](media/readme_gifs/launch%20with%20args.png)
+![Launch with arguments](media/readme_gifs/launchwithargs.gif)
 
 ### Smart auto build check
 
-![Smart auto build check](media/readme_gifs/auto%20build.png)
+![Smart auto build check](media/readme_gifs/autobuild.gif)
 
 ### Package manager panel
 
-![Package manager panel](media/readme_gifs/node%20panel.png)
+![Package manager panel](media/readme_gifs/nodepanel.gif)
 
 ### Node visualizer topic tools
 
-![Node visualizer topic tools](media/readme_gifs/topic.png)
+![Node visualizer topic tools](media/readme_gifs/topic.gif)
 
 ## VS Code views
 
