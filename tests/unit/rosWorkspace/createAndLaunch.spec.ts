@@ -119,6 +119,7 @@ describe('RosWorkspace create and launch commands', () => {
         expect(cmd).toContain("--maintainer-name 'Test Maintainer'");
         expect(cmd).toContain("--maintainer-email 'test@example.com'");
         expect(cmd).toContain("--license 'GPL-3.0'");
+        expect(cmd).toContain("--description 'TO DO: A very good package description'");
     });
 
     it.each([

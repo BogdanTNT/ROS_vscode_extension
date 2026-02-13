@@ -118,6 +118,7 @@ const ROS_TOPIC_INFO_TIMEOUT_SETTING = 'topicInfoTimeoutSeconds';
 const DEFAULT_MAINTAINER_NAME_SETTING = 'defaultMaintainerName';
 const DEFAULT_MAINTAINER_EMAIL_SETTING = 'defaultMaintainerEmail';
 const DEFAULT_CREATE_PACKAGE_LICENSE = 'GPL-3.0';
+const DEFAULT_CREATE_PACKAGE_DESCRIPTION = 'TO DO: A very good package description';
 
 /**
  * Central helper that interacts with the ROS CLI tools installed on the host.
@@ -453,7 +454,13 @@ export class RosWorkspace {
         return [];
     }
 
-    async createPackage(name: string, buildType: string, deps: string[], license?: string): Promise<boolean> {
+    async createPackage(
+        name: string,
+        buildType: string,
+        deps: string[],
+        license?: string,
+        description?: string,
+    ): Promise<boolean> {
         const srcDir = this.getSrcDir();
         if (!srcDir) {
             vscode.window.showErrorMessage('Could not determine workspace src directory.');
@@ -486,12 +493,14 @@ export class RosWorkspace {
         const maintainerEmailArg = this.escapeShellArg(maintainer.email);
         const ros1MaintainerArg = this.escapeShellArg(`${maintainer.name} <${maintainer.email}>`);
         const normalizedLicense = String(license || '').trim() || DEFAULT_CREATE_PACKAGE_LICENSE;
+        const normalizedDescription = String(description || '').trim() || DEFAULT_CREATE_PACKAGE_DESCRIPTION;
         const licenseArg = this.escapeShellArg(normalizedLicense);
+        const descriptionArg = this.escapeShellArg(normalizedDescription);
         const ros1DepsArg = mergedDeps.join(' ');
 
         const cmd = this.isRos2()
-            ? `cd "${srcDir}" && ros2 pkg create ${normalizedName} --build-type ${buildType}${depString} --maintainer-name ${maintainerNameArg} --maintainer-email ${maintainerEmailArg} --license ${licenseArg}`
-            : `cd "${srcDir}" && catkin_create_pkg -m ${ros1MaintainerArg} --license ${licenseArg} ${normalizedName}${ros1DepsArg ? ` ${ros1DepsArg}` : ''}`;
+            ? `cd "${srcDir}" && ros2 pkg create ${normalizedName} --build-type ${buildType}${depString} --maintainer-name ${maintainerNameArg} --maintainer-email ${maintainerEmailArg} --license ${licenseArg} --description ${descriptionArg}`
+            : `cd "${srcDir}" && catkin_create_pkg -m ${ros1MaintainerArg} --license ${licenseArg} --description ${descriptionArg} ${normalizedName}${ros1DepsArg ? ` ${ros1DepsArg}` : ''}`;
 
         this.runInTerminal(cmd);
         return true;

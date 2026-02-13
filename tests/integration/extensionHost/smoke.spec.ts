@@ -9,7 +9,6 @@ import {
 import { activate } from '../../../src/extension';
 import { RosWorkspace } from '../../../src/ros/rosWorkspace';
 import { PackageManagerViewProvider } from '../../../src/views/packageManagerView';
-import { BuildRunViewProvider } from '../../../src/views/buildRunView';
 import { NodeVisualizerViewProvider } from '../../../src/views/nodeVisualizerView';
 
 vi.mock('vscode', () => import('../../helpers/mocks/vscode'));
@@ -57,8 +56,6 @@ describe('extension activation wiring', () => {
         const detectEnvironmentSpy = vi.spyOn(RosWorkspace.prototype, 'detectEnvironment').mockResolvedValue(undefined);
 
         const focusCreateSpy = vi.spyOn(PackageManagerViewProvider.prototype, 'focusCreateForm').mockImplementation(() => {});
-        const triggerBuildSpy = vi.spyOn(BuildRunViewProvider.prototype, 'triggerBuild').mockImplementation(() => {});
-        const triggerRunSpy = vi.spyOn(BuildRunViewProvider.prototype, 'triggerRun').mockImplementation(() => {});
         const openSourcedTerminalSpy = vi.spyOn(RosWorkspace.prototype, 'openSourcedTerminal').mockImplementation(() => {});
         const refreshGraphSpy = vi.spyOn(NodeVisualizerViewProvider.prototype, 'refreshGraph').mockImplementation(() => {});
 
@@ -74,33 +71,26 @@ describe('extension activation wiring', () => {
         expect(initSmartBuildSpy).toHaveBeenCalledWith(context);
         expect(detectEnvironmentSpy).toHaveBeenCalledTimes(1);
 
-        expect(registerWebviewSpy).toHaveBeenCalledTimes(3);
+        expect(registerWebviewSpy).toHaveBeenCalledTimes(2);
         expect(registerWebviewSpy.mock.calls.map((call) => call[0])).toEqual([
             'rosPackageManager',
-            'rosBuildRun',
             'rosNodeVisualizer',
         ]);
 
-        expect(registerCommandSpy).toHaveBeenCalledTimes(5);
+        expect(registerCommandSpy).toHaveBeenCalledTimes(3);
         expect(Array.from(commandHandlers.keys()).sort()).toEqual([
-            'rosDevToolkit.buildPackage',
             'rosDevToolkit.createPackage',
             'rosDevToolkit.openSourcedTerminal',
             'rosDevToolkit.refreshGraph',
-            'rosDevToolkit.runNode',
         ]);
 
-        expect(context.subscriptions).toHaveLength(8);
+        expect(context.subscriptions).toHaveLength(5);
 
         commandHandlers.get('rosDevToolkit.createPackage')?.();
-        commandHandlers.get('rosDevToolkit.buildPackage')?.();
-        commandHandlers.get('rosDevToolkit.runNode')?.();
         commandHandlers.get('rosDevToolkit.openSourcedTerminal')?.();
         commandHandlers.get('rosDevToolkit.refreshGraph')?.();
 
         expect(focusCreateSpy).toHaveBeenCalledTimes(1);
-        expect(triggerBuildSpy).toHaveBeenCalledTimes(1);
-        expect(triggerRunSpy).toHaveBeenCalledTimes(1);
         expect(openSourcedTerminalSpy).toHaveBeenCalledTimes(1);
         expect(refreshGraphSpy).toHaveBeenCalledTimes(1);
 

@@ -3,7 +3,7 @@
   "displayName": "ROS Dev Toolkit",
   "description": "A VS Code extension for ROS development – create packages, build & run nodes, and visualize the ROS graph.",
   "version": "0.1.0",
-  "publisher": "ros-dev",
+  "publisher": "BogdanRosca",
   "engines": {
     "vscode": "^1.85.0"
   },
@@ -12,8 +12,6 @@
   ],
   "activationEvents": [
     "onCommand:rosDevToolkit.createPackage",
-    "onCommand:rosDevToolkit.buildPackage",
-    "onCommand:rosDevToolkit.runNode",
     "onCommand:rosDevToolkit.openSourcedTerminal",
     "onCommand:rosDevToolkit.refreshGraph"
   ],
@@ -100,11 +98,6 @@
         },
         {
           "type": "webview",
-          "id": "rosBuildRun",
-          "name": "Build & Run"
-        },
-        {
-          "type": "webview",
           "id": "rosNodeVisualizer",
           "name": "Node Visualizer"
         }
@@ -114,14 +107,6 @@
       {
         "command": "rosDevToolkit.createPackage",
         "title": "ROS: Create Package"
-      },
-      {
-        "command": "rosDevToolkit.buildPackage",
-        "title": "ROS: Build Package"
-      },
-      {
-        "command": "rosDevToolkit.runNode",
-        "title": "ROS: Run Node"
       },
       {
         "command": "rosDevToolkit.openSourcedTerminal",

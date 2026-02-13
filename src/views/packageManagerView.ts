@@ -9,6 +9,7 @@ type LaunchArgConfigMap = Record<string, { configs: LaunchArgConfig[] }>;
 const PINNED_LAUNCH_FILES_KEY = 'pinnedLaunchFiles';
 const LAUNCH_ARG_CONFIGS_KEY = 'launchArgConfigs';
 const LEGACY_LAUNCH_ARGS_KEY = 'launchArgs';
+const DEFAULT_CREATE_PACKAGE_DESCRIPTION = 'TO DO: A very good package description';
 // TODO(remove-by: v0.3.0 / 2026-06-30): Remove migration from legacy launch args.
 
 /**
@@ -151,7 +152,9 @@ export class PackageManagerViewProvider implements vscode.WebviewViewProvider {
             .update('preLaunchBuildCheck', enabled, vscode.ConfigurationTarget.Global);
     }
 
-    private async _handleCreate(msg: { name: string; buildType: string; deps: string; license?: string }) {
+    private async _handleCreate(
+        msg: { name: string; buildType: string; deps: string; license?: string; description?: string },
+    ) {
         const normalizedName = String(msg.name || '').trim().replace(/\s+/g, '_');
         if (!normalizedName) {
             this._view?.webview.postMessage({ command: PMToWebviewCommand.CREATE_DONE, success: false });
@@ -163,7 +166,8 @@ export class PackageManagerViewProvider implements vscode.WebviewViewProvider {
             .map((d: string) => d.trim())
             .filter(Boolean);
         const license = String(msg.license || '').trim() || 'GPL-3.0';
-        const ok = await this._ros.createPackage(normalizedName, msg.buildType, deps, license);
+        const description = String(msg.description || '').trim() || DEFAULT_CREATE_PACKAGE_DESCRIPTION;
+        const ok = await this._ros.createPackage(normalizedName, msg.buildType, deps, license, description);
         if (ok) {
             vscode.window.showInformationMessage(`Package "${normalizedName}" created.`);
         }
@@ -485,6 +489,9 @@ export class PackageManagerViewProvider implements vscode.WebviewViewProvider {
                 <option value="MIT">MIT</option>
                 <option value="BSD-3-Clause">BSD-3-Clause</option>
             </select>
+
+            <label for="pkgDescription">Description</label>
+            <textarea id="pkgDescription" rows="3" spellcheck="false">${DEFAULT_CREATE_PACKAGE_DESCRIPTION}</textarea>
 
             <label for="deps">Dependencies <span class="text-muted text-sm">(space / comma separated)</span></label>
             <input type="text" id="deps" placeholder="auto: rclcpp std_msgs / rclpy std_msgs" />

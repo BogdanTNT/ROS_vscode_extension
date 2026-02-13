@@ -1,6 +1,5 @@
 import * as vscode from 'vscode';
 import { PackageManagerViewProvider } from './views/packageManagerView';
-import { BuildRunViewProvider } from './views/buildRunView';
 import { NodeVisualizerViewProvider } from './views/nodeVisualizerView';
 import { RosWorkspace } from './ros/rosWorkspace';
 
@@ -19,12 +18,10 @@ export function activate(context: vscode.ExtensionContext) {
 
     // ── Sidebar Webview Providers ──────────────────────────────
     const packageManagerProvider = new PackageManagerViewProvider(context.extensionUri, rosWorkspace, context);
-    const buildRunProvider = new BuildRunViewProvider(context.extensionUri, rosWorkspace);
     const nodeVisualizerProvider = new NodeVisualizerViewProvider(context.extensionUri, rosWorkspace, context);
 
     context.subscriptions.push(
         vscode.window.registerWebviewViewProvider('rosPackageManager', packageManagerProvider),
-        vscode.window.registerWebviewViewProvider('rosBuildRun', buildRunProvider),
         vscode.window.registerWebviewViewProvider('rosNodeVisualizer', nodeVisualizerProvider),
     );
 
@@ -32,12 +29,6 @@ export function activate(context: vscode.ExtensionContext) {
     context.subscriptions.push(
         vscode.commands.registerCommand('rosDevToolkit.createPackage', () => {
             packageManagerProvider.focusCreateForm();
-        }),
-        vscode.commands.registerCommand('rosDevToolkit.buildPackage', () => {
-            buildRunProvider.triggerBuild();
-        }),
-        vscode.commands.registerCommand('rosDevToolkit.runNode', () => {
-            buildRunProvider.triggerRun();
         }),
         vscode.commands.registerCommand('rosDevToolkit.openSourcedTerminal', () => {
             rosWorkspace.openSourcedTerminal();

@@ -43,12 +43,13 @@
             name,
         }),
         toggleBuildCheck: (enabled) => vscode.postMessage({ command: toHost.TOGGLE_BUILD_CHECK, enabled }),
-        createPackage: (name, buildType, deps, license) => vscode.postMessage({
+        createPackage: (name, buildType, deps, license, description) => vscode.postMessage({
             command: toHost.CREATE_PACKAGE,
             name,
             buildType,
             deps,
             license,
+            description,
         }),
         addNode: (pkg, nodeName) => vscode.postMessage({ command: toHost.ADD_NODE, pkg, nodeName }),
         setLaunchArgConfigs: (argsKey, configs) => vscode.postMessage({

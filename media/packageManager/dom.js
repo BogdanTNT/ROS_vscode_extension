@@ -14,6 +14,7 @@
         pkgNameNormalizedHint: document.getElementById('pkgNameNormalizedHint'),
         buildTypeInput: document.getElementById('buildType'),
         licenseInput: document.getElementById('pkgLicense'),
+        descriptionInput: document.getElementById('pkgDescription'),
         depsInput: document.getElementById('deps'),
         statusEl: document.getElementById('createStatus'),
         pkgStatusEl: document.getElementById('pkgStatus'),

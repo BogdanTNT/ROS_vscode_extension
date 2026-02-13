@@ -9,6 +9,7 @@
         ament_cmake: 'rclcpp std_msgs',
         ament_python: 'rclpy std_msgs',
     };
+    const defaultPackageDescription = 'TO DO: A very good package description';
 
     const getDefaultDeps = (buildType) => defaultDepsByBuildType[buildType] || '';
 
@@ -52,6 +53,9 @@
         dom.createModal.classList.remove('hidden');
         dom.statusEl.className = 'mt hidden';
         dom.statusEl.textContent = '';
+        if (dom.descriptionInput) {
+            dom.descriptionInput.value = defaultPackageDescription;
+        }
         if (dom.licenseInput) {
             dom.licenseInput.value = 'GPL-3.0';
         }
@@ -99,6 +103,9 @@
         const buildType = dom.buildTypeInput ? dom.buildTypeInput.value : 'ament_cmake';
         const deps = dom.depsInput ? dom.depsInput.value.trim() : '';
         const license = dom.licenseInput ? String(dom.licenseInput.value || '').trim() : 'GPL-3.0';
+        const description = dom.descriptionInput
+            ? String(dom.descriptionInput.value || '').trim()
+            : defaultPackageDescription;
         if (!name) {
             return;
         }
@@ -109,7 +116,13 @@
         dom.btnCreate.disabled = true;
         dom.statusEl.className = 'mt';
         dom.statusEl.innerHTML = '<span class="spinner"></span> Creating…';
-        actions.createPackage(name, buildType, deps, license || 'GPL-3.0');
+        actions.createPackage(
+            name,
+            buildType,
+            deps,
+            license || 'GPL-3.0',
+            description || defaultPackageDescription,
+        );
     });
 
     dom.btnOpenCreate.addEventListener('click', openCreate);
