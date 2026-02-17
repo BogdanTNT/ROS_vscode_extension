@@ -257,7 +257,7 @@ setup(
         expect(nodeFile).toContain('self.create_publisher(String, \'chatter\', 10)');
     });
 
-    it('uses the provided topic suggestion when creating a subscriber template node', async () => {
+    it('normalizes topic spaces to underscores when creating a subscriber template node', async () => {
         workspaceRoot = createTempWorkspace({
             'src/pkg_a/package.xml': '<package><name>pkg_a</name></package>',
             'src/pkg_a/setup.py': `
@@ -277,13 +277,19 @@ setup(
         __setWorkspaceFolder(workspaceRoot);
         const ros = new RosWorkspace();
 
-        const created = await ros.addNodeToPackage('pkg_a', 'sub_node', undefined, 'subscriber', '/scan');
+        const created = await ros.addNodeToPackage(
+            'pkg_a',
+            'sub_node',
+            undefined,
+            'subscriber',
+            '/scan lidar',
+        );
         expect(created).toBe(true);
 
         const nodeFilePath = path.join(workspaceRoot, 'src/pkg_a/pkg_a/sub_node.py');
         const nodeFile = fs.readFileSync(nodeFilePath, 'utf8');
         expect(nodeFile).toContain('self.create_subscription(');
-        expect(nodeFile).toContain('\'/scan\'');
+        expect(nodeFile).toContain('\'/scan_lidar\'');
     });
 
     it('uses publisher template for C++ node and adds std_msgs dependency', async () => {
@@ -394,5 +400,148 @@ ament_package()
         expect(cmake).toContain('install(TARGETS');
         expect(cmake).toContain('DESTINATION lib/${PROJECT_NAME}');
         expect((cmake.match(/add_executable\(new_cpp_node\s+src\/new_cpp_node\.cpp\)/g) || []).length).toBe(1);
+    });
+
+    it('removes a python node source and unregisters it from setup.py', async () => {
+        workspaceRoot = createTempWorkspace({
+            'src/pkg_a/package.xml': '<package><name>pkg_a</name></package>',
+            'src/pkg_a/setup.py': `
+from setuptools import setup
+
+setup(
+    name='pkg_a',
+    entry_points={
+        'console_scripts': [
+            'talker = pkg_a.talker:main',
+            'listener = pkg_a.listener:main',
+        ],
+    },
+)
+`,
+            'src/pkg_a/pkg_a/__init__.py': '',
+            'src/pkg_a/pkg_a/talker.py': 'def main(): pass',
+            'src/pkg_a/pkg_a/listener.py': 'def main(): pass',
+        });
+
+        __setWorkspaceFolder(workspaceRoot);
+        const ros = new RosWorkspace();
+
+        const removed = await ros.removeNodeFromPackage('pkg_a', 'talker');
+        expect(removed).toBe(true);
+
+        const packagePath = path.join(workspaceRoot, 'src/pkg_a');
+        expect(fs.existsSync(path.join(packagePath, 'pkg_a/talker.py'))).toBe(false);
+        expect(fs.existsSync(path.join(packagePath, 'pkg_a/listener.py'))).toBe(true);
+
+        const setupPy = fs.readFileSync(path.join(packagePath, 'setup.py'), 'utf8');
+        expect(setupPy).not.toContain("'talker = pkg_a.talker:main'");
+        expect(setupPy).toContain("'listener = pkg_a.listener:main'");
+
+        const details = await ros.listWorkspacePackageDetails();
+        expect(details.find((pkg) => pkg.name === 'pkg_a')?.nodes).toEqual([
+            {
+                name: 'listener',
+                sourcePath: path.join(packagePath, 'pkg_a/listener.py'),
+            },
+        ]);
+    });
+
+    it('removes a python node registration from setup.cfg when entry points are defined there', async () => {
+        workspaceRoot = createTempWorkspace({
+            'src/pkg_cfg/package.xml': '<package><name>pkg_cfg</name></package>',
+            'src/pkg_cfg/setup.py': `
+from setuptools import setup
+
+setup(
+    name='pkg_cfg',
+)
+`,
+            'src/pkg_cfg/setup.cfg': `
+[metadata]
+name = pkg_cfg
+
+[options.entry_points]
+console_scripts =
+    cfg_node = pkg_cfg.cfg_node:main
+    keep_node = pkg_cfg.keep_node:main
+`,
+            'src/pkg_cfg/pkg_cfg/__init__.py': '',
+            'src/pkg_cfg/pkg_cfg/cfg_node.py': 'def main(): pass',
+            'src/pkg_cfg/pkg_cfg/keep_node.py': 'def main(): pass',
+        });
+
+        __setWorkspaceFolder(workspaceRoot);
+        const ros = new RosWorkspace();
+
+        const removed = await ros.removeNodeFromPackage('pkg_cfg', 'cfg_node');
+        expect(removed).toBe(true);
+
+        const packagePath = path.join(workspaceRoot, 'src/pkg_cfg');
+        expect(fs.existsSync(path.join(packagePath, 'pkg_cfg/cfg_node.py'))).toBe(false);
+        expect(fs.existsSync(path.join(packagePath, 'pkg_cfg/keep_node.py'))).toBe(true);
+
+        const setupCfg = fs.readFileSync(path.join(packagePath, 'setup.cfg'), 'utf8');
+        expect(setupCfg).not.toContain('cfg_node = pkg_cfg.cfg_node:main');
+        expect(setupCfg).toContain('keep_node = pkg_cfg.keep_node:main');
+    });
+
+    it('removes a C++ node target from CMakeLists.txt while keeping other node targets intact', async () => {
+        workspaceRoot = createTempWorkspace({
+            'src/cpp_pkg/package.xml': '<package><name>cpp_pkg</name></package>',
+            'src/cpp_pkg/CMakeLists.txt': `
+cmake_minimum_required(VERSION 3.8)
+project(cpp_pkg)
+
+find_package(ament_cmake REQUIRED)
+find_package(rclcpp REQUIRED)
+
+add_executable(node_a src/node_a.cpp)
+ament_target_dependencies(node_a rclcpp)
+
+add_executable(node_b src/node_b.cpp)
+ament_target_dependencies(node_b rclcpp)
+
+install(TARGETS
+  node_a
+  node_b
+  DESTINATION lib/\${PROJECT_NAME}
+)
+
+ament_package()
+`,
+            'src/cpp_pkg/src/node_a.cpp': 'int main() { return 0; }',
+            'src/cpp_pkg/src/node_b.cpp': 'int main() { return 0; }',
+        });
+
+        __setWorkspaceFolder(workspaceRoot);
+        const ros = new RosWorkspace();
+
+        const packagePath = path.join(workspaceRoot, 'src/cpp_pkg');
+        const removed = await ros.removeNodeFromPackage(
+            'cpp_pkg',
+            'node_a',
+            packagePath,
+            path.join(packagePath, 'src/node_a.cpp'),
+        );
+        expect(removed).toBe(true);
+
+        const cmake = fs.readFileSync(path.join(packagePath, 'CMakeLists.txt'), 'utf8');
+        expect(cmake).not.toContain('add_executable(node_a');
+        expect(cmake).not.toContain('ament_target_dependencies(node_a');
+        expect(cmake).toContain('add_executable(node_b src/node_b.cpp)');
+        expect(cmake).toContain('ament_target_dependencies(node_b rclcpp)');
+        expect(cmake).not.toContain('\n  node_a\n');
+        expect(cmake).toContain('node_b');
+
+        expect(fs.existsSync(path.join(packagePath, 'src/node_a.cpp'))).toBe(false);
+        expect(fs.existsSync(path.join(packagePath, 'src/node_b.cpp'))).toBe(true);
+
+        const details = await ros.listWorkspacePackageDetails();
+        expect(details.find((pkg) => pkg.name === 'cpp_pkg')?.nodes).toEqual([
+            {
+                name: 'node_b',
+                sourcePath: path.join(packagePath, 'src/node_b.cpp'),
+            },
+        ]);
     });
 });

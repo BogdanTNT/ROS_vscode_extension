@@ -204,8 +204,13 @@
                     ? '<span class="badge success">✓ Node added</span>'
                     : '<span class="badge error">✗ Failed</span>';
                 if (msg.success) {
-                    const currentTopic = String(d2.addNodeTopic?.value || '').trim();
+                    const currentTopic = String(d2.addNodeTopic?.value || '')
+                        .trim()
+                        .replace(/\s+/g, '_');
                     if (currentTopic) {
+                        if (d2.addNodeTopic) {
+                            d2.addNodeTopic.value = currentTopic;
+                        }
                         if (typeof window.PM.setLastNodeTopic === 'function') {
                             window.PM.setLastNodeTopic(currentTopic);
                         } else {
@@ -214,6 +219,18 @@
                     }
                     actions.refreshPackages();
                     window.PM.handlers.closeAddNodeModal();
+                }
+                break;
+            }
+            case toWebview.REMOVE_NODE_DONE: {
+                const { dom: d3 } = window.PM;
+                d3.btnRemoveNode.disabled = false;
+                d3.removeNodeStatus.innerHTML = msg.success
+                    ? '<span class="badge success">✓ Node removed</span>'
+                    : '<span class="badge error">✗ Failed</span>';
+                if (msg.success) {
+                    actions.refreshPackages();
+                    window.PM.handlers.closeRemoveNodeModal();
                 }
                 break;
             }

@@ -59,6 +59,13 @@
             nodeTemplate,
             nodeTopic,
         }),
+        removeNode: (pkg, nodeName, pkgPath, nodePath) => vscode.postMessage({
+            command: toHost.REMOVE_NODE,
+            pkg,
+            nodeName,
+            pkgPath,
+            nodePath,
+        }),
         setLaunchArgConfigs: (argsKey, configs) => vscode.postMessage({
             command: toHost.SET_LAUNCH_ARG_CONFIGS,
             path: argsKey,

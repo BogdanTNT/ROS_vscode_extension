@@ -104,7 +104,8 @@ textarea {
 }
 
 #pkgName,
-#addNodeName {
+#addNodeName,
+#addNodeTopic {
     margin-bottom: 2px;
 }
 
@@ -899,6 +900,34 @@ button.term-kill.is-pending {
     line-height: 1;
     align-items: center;
     justify-content: center;
+}
+
+.nv-rich-tooltip {
+    position: fixed;
+    z-index: 1305;
+    pointer-events: none;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    max-width: min(64ch, calc(100vw - 20px));
+    padding: 6px 8px;
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    background: var(--panel-bg);
+    box-shadow: 0 6px 16px rgba(0, 0, 0, 0.35);
+    color: var(--text);
+    line-height: 1.32;
+    font-size: 0.8em;
+}
+
+.nv-rich-tooltip-command {
+    color: var(--text);
+    font-family: var(--vscode-editor-font-family, monospace);
+}
+
+.nv-rich-tooltip-description {
+    color: var(--text-muted);
+    font-style: italic;
 }
 
 .nv-details-card-content {

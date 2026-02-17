@@ -321,12 +321,13 @@
 
     const getNodeItemData = (nodeItem) => {
         if (!nodeItem) {
-            return { pkg: '', executable: '', path: '', argsKey: '', pinKey: '' };
+            return { pkg: '', executable: '', path: '', pkgPath: '', argsKey: '', pinKey: '' };
         }
         return {
             pkg: nodeItem.dataset.pkg || '',
             executable: nodeItem.dataset.node || '',
             path: nodeItem.dataset.path || '',
+            pkgPath: nodeItem.dataset.pkgPath || '',
             argsKey: nodeItem.dataset.argsKey || '',
             pinKey: nodeItem.dataset.pinKey || nodeItem.dataset.argsKey || '',
         };
@@ -520,6 +521,14 @@
         }
 
         if (nodeItem) {
+            if (target.closest('.remove-node-btn')) {
+                const { pkg, executable, path, pkgPath } = getNodeItemData(nodeItem);
+                if (pkg && executable && window.PM.handlers?.openRemoveNodeModal) {
+                    window.PM.handlers.openRemoveNodeModal(pkg, executable, pkgPath || '', path || '');
+                }
+                return;
+            }
+
             if (target.closest('.node-run')) {
                 runNodeFromItem(nodeItem, '', '');
                 return;
@@ -730,7 +739,16 @@
         );
     };
 
-    const buildNodeItemHtml = ({ packageName, nodeName, sourcePath, openLabel, isPinned, isRunning }) => {
+    const buildNodeItemHtml = ({
+        packageName,
+        packagePath,
+        nodeName,
+        sourcePath,
+        openLabel,
+        isPinned,
+        isRunning,
+        canRemove,
+    }) => {
         const argsKey = 'node::' + packageName + '::' + nodeName;
         const pinKey = argsKey;
         const cfg = state.launchArgConfigs[argsKey];
@@ -741,12 +759,17 @@
         const pinTitle = isPinned ? 'Unpin' : 'Pin';
         const runningBadge = isRunning ? '<span class="badge success">running</span>' : '';
         const runningClass = isRunning ? ' running' : '';
+        const removeButton = canRemove
+            ? '<button class="danger small remove-node-btn" title="Remove node">Remove</button>'
+            : '';
 
         return (
             '<li class="node-item' +
             runningClass +
             '" data-pkg="' +
             escapeAttr(packageName) +
+            '" data-pkg-path="' +
+            escapeAttr(packagePath || '') +
             '" data-node="' +
             escapeAttr(nodeName) +
             '" data-path="' +
@@ -769,6 +792,7 @@
             configButtons +
             '</span>' +
             runningBadge +
+            removeButton +
             '<button class="pin-btn ' +
             (isPinned ? 'pinned' : '') +
             '" title="' +
@@ -874,17 +898,19 @@
         };
     };
 
-    const buildNodesDropdownModel = (pkg, runningLaunchPaths, filter) => {
+    const buildNodesDropdownModel = (pkg, runningLaunchPaths, filter, canRemoveNode = false) => {
         const nodes = pkg.nodes || [];
         const nodeItemsHtml = nodes
             .map((node) => {
                 const nodeLabel = pkg.name + ' / ' + node.name;
                 return buildNodeItemHtml({
                     packageName: pkg.name,
+                    packagePath: pkg.packagePath,
                     nodeName: node.name,
                     sourcePath: node.sourcePath,
                     isPinned: state.pinnedPaths.includes('node::' + pkg.name + '::' + node.name),
                     isRunning: runningLaunchPaths.has(nodeLabel) || (node.sourcePath && runningLaunchPaths.has(node.sourcePath)),
+                    canRemove: canRemoveNode,
                 });
             })
             .join('');
@@ -1105,7 +1131,7 @@
             const dropdownModels = detailsReady
                 ? [
                     buildLaunchDropdownModel(pkg, runningLaunchPaths, filter),
-                    buildNodesDropdownModel(pkg, runningLaunchPaths, filter),
+                    buildNodesDropdownModel(pkg, runningLaunchPaths, filter, canAddNode),
                 ]
                 : [
                     buildDeferredDropdownModel(pkg, 'launchFiles', 'Launch Files'),
@@ -1279,13 +1305,17 @@
                     continue;
                 }
                 const nodeLabel = nodeMatch.pkg.name + ' / ' + nodeMatch.node.name;
+                const canRemovePinnedNode = (state.allPackages || [])
+                    .some((workspacePkg) => workspacePkg.name === nodeMatch.pkg.name);
                 pinnedItems.push(buildNodeItemHtml({
                     packageName: nodeMatch.pkg.name,
+                    packagePath: nodeMatch.pkg.packagePath,
                     nodeName: nodeMatch.node.name,
                     sourcePath: nodeMatch.node.sourcePath,
                     openLabel: nodeLabel,
                     isPinned: true,
                     isRunning: running.has(nodeLabel) || (nodeMatch.node.sourcePath && running.has(nodeMatch.node.sourcePath)),
+                    canRemove: canRemovePinnedNode,
                 }));
                 continue;
             }

@@ -651,6 +651,439 @@ export class RosWorkspace {
         return false;
     }
 
+    /**
+     * Remove a node from an existing workspace package.
+     * Supports both ament_python (setup.py/setup.cfg) and ament_cmake (CMakeLists.txt).
+     */
+    async removeNodeFromPackage(
+        packageName: string,
+        nodeName: string,
+        packagePathHint?: string,
+        nodeSourcePathHint?: string,
+    ): Promise<boolean> {
+        const safePackageName = this.sanitizeRosPackageName(packageName);
+        if (!safePackageName) {
+            vscode.window.showErrorMessage(
+                'Invalid package name. Use only letters, numbers, and underscores, and start with a letter.',
+            );
+            return false;
+        }
+
+        const safeNodeName = this.sanitizeRosNodeName(nodeName);
+        if (!safeNodeName) {
+            vscode.window.showErrorMessage(
+                'Invalid node name. Use only letters, numbers, and underscores, and start with a letter.',
+            );
+            return false;
+        }
+
+        const pkgDir = this.resolveWorkspacePackagePath(safePackageName, packagePathHint);
+        if (!pkgDir) {
+            vscode.window.showErrorMessage(`Package folder not found for "${safePackageName}" in this workspace.`);
+            return false;
+        }
+
+        const setupPyPath = path.join(pkgDir, 'setup.py');
+        const setupCfgPath = path.join(pkgDir, 'setup.cfg');
+        const cmakePath = path.join(pkgDir, 'CMakeLists.txt');
+        const hasPythonBuildFiles = fs.existsSync(setupPyPath) || fs.existsSync(setupCfgPath);
+        const hasCmakeBuildFile = fs.existsSync(cmakePath);
+
+        // Source hint can disambiguate mixed packages; fall back to trying Python first,
+        // then CMake if nothing was changed.
+        const normalizedHintExt = path.extname(String(nodeSourcePathHint || '').trim()).toLowerCase();
+        const preferCmake = normalizedHintExt === '.cpp'
+            || normalizedHintExt === '.cc'
+            || normalizedHintExt === '.cxx'
+            || normalizedHintExt === '.c';
+        const preferPython = normalizedHintExt === '.py';
+
+        if (preferCmake && hasCmakeBuildFile) {
+            if (await this.removeCppNodeFromPackage(pkgDir, safeNodeName, cmakePath, nodeSourcePathHint)) {
+                return true;
+            }
+            if (hasPythonBuildFiles) {
+                if (await this.removePythonNodeFromPackage(
+                    pkgDir,
+                    safePackageName,
+                    safeNodeName,
+                    setupPyPath,
+                    setupCfgPath,
+                    nodeSourcePathHint,
+                )) {
+                    return true;
+                }
+            }
+        } else if (preferPython && hasPythonBuildFiles) {
+            if (await this.removePythonNodeFromPackage(
+                pkgDir,
+                safePackageName,
+                safeNodeName,
+                setupPyPath,
+                setupCfgPath,
+                nodeSourcePathHint,
+            )) {
+                return true;
+            }
+            if (hasCmakeBuildFile) {
+                if (await this.removeCppNodeFromPackage(pkgDir, safeNodeName, cmakePath, nodeSourcePathHint)) {
+                    return true;
+                }
+            }
+        } else {
+            if (hasPythonBuildFiles) {
+                if (await this.removePythonNodeFromPackage(
+                    pkgDir,
+                    safePackageName,
+                    safeNodeName,
+                    setupPyPath,
+                    setupCfgPath,
+                    nodeSourcePathHint,
+                )) {
+                    return true;
+                }
+            }
+            if (hasCmakeBuildFile) {
+                if (await this.removeCppNodeFromPackage(pkgDir, safeNodeName, cmakePath, nodeSourcePathHint)) {
+                    return true;
+                }
+            }
+        }
+
+        if (!hasPythonBuildFiles && !hasCmakeBuildFile) {
+            vscode.window.showErrorMessage(
+                `Package "${safePackageName}" is not supported for remove-node (missing setup.py/setup.cfg and CMakeLists.txt).`,
+            );
+            return false;
+        }
+
+        vscode.window.showWarningMessage(
+            `No removable node artifacts found for "${safeNodeName}" in package "${safePackageName}".`,
+        );
+        return false;
+    }
+
+    private async removePythonNodeFromPackage(
+        pkgDir: string,
+        safePackageName: string,
+        safeNodeName: string,
+        setupPyPath: string,
+        setupCfgPath: string,
+        nodeSourcePathHint?: string,
+    ): Promise<boolean> {
+        let changed = false;
+
+        if (fs.existsSync(setupPyPath)) {
+            try {
+                const setupPy = fs.readFileSync(setupPyPath, 'utf8');
+                const updated = this.removeNodeFromSetupPyConsoleScripts(setupPy, safeNodeName);
+                if (updated !== setupPy) {
+                    fs.writeFileSync(setupPyPath, updated, 'utf8');
+                    changed = true;
+                }
+            } catch (err) {
+                vscode.window.showErrorMessage(`Failed to update setup.py: ${err}`);
+                return false;
+            }
+        }
+
+        if (fs.existsSync(setupCfgPath)) {
+            try {
+                const setupCfg = fs.readFileSync(setupCfgPath, 'utf8');
+                const updated = this.removeNodeFromSetupCfgConsoleScripts(setupCfg, safeNodeName);
+                if (updated !== setupCfg) {
+                    fs.writeFileSync(setupCfgPath, updated, 'utf8');
+                    changed = true;
+                }
+            } catch (err) {
+                vscode.window.showErrorMessage(`Failed to update setup.cfg: ${err}`);
+                return false;
+            }
+        }
+
+        const sourceCandidates = this.resolveSafeNodeSourceCandidates(
+            pkgDir,
+            nodeSourcePathHint,
+            [
+                path.join(safePackageName, `${safeNodeName}.py`),
+                `${safeNodeName}.py`,
+            ],
+        );
+        for (const sourceCandidate of sourceCandidates) {
+            if (this.tryDeleteSourceFile(sourceCandidate)) {
+                changed = true;
+                break;
+            }
+        }
+
+        return changed;
+    }
+
+    private async removeCppNodeFromPackage(
+        pkgDir: string,
+        safeNodeName: string,
+        cmakePath: string,
+        nodeSourcePathHint?: string,
+    ): Promise<boolean> {
+        let changed = false;
+
+        try {
+            const cmake = fs.readFileSync(cmakePath, 'utf8');
+            const updated = this.removeTargetFromCmake(cmake, safeNodeName);
+            if (updated !== cmake) {
+                fs.writeFileSync(cmakePath, updated, 'utf8');
+                changed = true;
+            }
+        } catch (err) {
+            vscode.window.showErrorMessage(`Failed to update CMakeLists.txt: ${err}`);
+            return false;
+        }
+
+        const sourceCandidates = this.resolveSafeNodeSourceCandidates(
+            pkgDir,
+            nodeSourcePathHint,
+            [
+                path.join('src', `${safeNodeName}.cpp`),
+                path.join('src', `${safeNodeName}.cc`),
+                path.join('src', `${safeNodeName}.cxx`),
+                path.join('src', `${safeNodeName}.c`),
+            ],
+        );
+        for (const sourceCandidate of sourceCandidates) {
+            if (this.tryDeleteSourceFile(sourceCandidate)) {
+                changed = true;
+                break;
+            }
+        }
+
+        return changed;
+    }
+
+    private removeNodeFromSetupPyConsoleScripts(setupPy: string, nodeName: string): string {
+        const escapedNode = this.escapeRegex(nodeName);
+        const consoleScriptsBlockPattern = /(['"]console_scripts['"]\s*:\s*\[)([\s\S]*?)(\])/gm;
+        let changed = false;
+
+        const updated = setupPy.replace(
+            consoleScriptsBlockPattern,
+            (full, prefix: string, body: string, suffix: string) => {
+                const updatedBody = this.removeNodeFromPythonConsoleScriptBody(body, escapedNode);
+                if (updatedBody !== body) {
+                    changed = true;
+                }
+                return `${prefix}${updatedBody}${suffix}`;
+            },
+        );
+
+        if (!changed) {
+            return setupPy;
+        }
+        return updated.replace(/\n{3,}/g, '\n\n');
+    }
+
+    private removeNodeFromPythonConsoleScriptBody(body: string, escapedNodeName: string): string {
+        let updatedBody = body;
+
+        // Primary path: remove normal list entries on their own lines.
+        const linePattern = new RegExp(
+            `^[ \\t]*['"]\\s*${escapedNodeName}\\s*=\\s*[^'"]+['"]\\s*,?\\s*(?:#.*)?\\r?\\n?`,
+            'gm',
+        );
+        updatedBody = updatedBody.replace(linePattern, '');
+
+        // Fallback for one-line lists.
+        if (!updatedBody.includes('\n') && !updatedBody.includes('\r')) {
+            const inlinePattern = new RegExp(
+                `(^|\\s*,\\s*)['"]\\s*${escapedNodeName}\\s*=\\s*[^'"]+['"]\\s*(?=\\s*,|\\s*$)`,
+                'g',
+            );
+            updatedBody = updatedBody
+                .replace(inlinePattern, '')
+                .replace(/^\s*,\s*/, '')
+                .replace(/\s*,\s*$/, '');
+        }
+
+        return updatedBody;
+    }
+
+    private removeNodeFromSetupCfgConsoleScripts(setupCfg: string, nodeName: string): string {
+        const escapedNode = this.escapeRegex(nodeName);
+        const lineEnding = setupCfg.includes('\r\n') ? '\r\n' : '\n';
+        const lines = setupCfg.split(/\r?\n/);
+        const nextLines: string[] = [];
+        let inEntryPointsSection = false;
+        const entryPattern = new RegExp(`^\\s*${escapedNode}\\s*=`);
+
+        for (const line of lines) {
+            if (/^\s*\[options\.entry_points\]\s*$/i.test(line)) {
+                inEntryPointsSection = true;
+                nextLines.push(line);
+                continue;
+            }
+            if (inEntryPointsSection && /^\s*\[.*\]\s*$/.test(line)) {
+                inEntryPointsSection = false;
+            }
+            if (inEntryPointsSection && entryPattern.test(line)) {
+                continue;
+            }
+            nextLines.push(line);
+        }
+
+        return nextLines.join(lineEnding).replace(/\n{3,}/g, '\n\n');
+    }
+
+    private removeTargetFromCmake(cmake: string, targetName: string): string {
+        let updated = cmake;
+        const targetAwareCommands = [
+            'add_executable',
+            'ament_target_dependencies',
+            'target_link_libraries',
+            'target_include_directories',
+            'target_compile_definitions',
+            'target_compile_options',
+            'target_compile_features',
+            'set_target_properties',
+        ];
+
+        targetAwareCommands.forEach((commandName) => {
+            updated = this.removeCmakeCommandBlockForTarget(updated, commandName, targetName);
+        });
+        updated = this.removeTargetFromInstallTargetsBlocks(updated, targetName);
+        updated = updated.replace(/\n{3,}/g, '\n\n');
+
+        return updated;
+    }
+
+    private removeCmakeCommandBlockForTarget(cmake: string, commandName: string, targetName: string): string {
+        const escapedCommand = this.escapeRegex(commandName);
+        const escapedTarget = this.escapeRegex(targetName);
+        const commandPattern = new RegExp(
+            `^[ \\t]*${escapedCommand}\\s*\\(\\s*${escapedTarget}\\b[\\s\\S]*?\\)\\s*\\n?`,
+            'gmi',
+        );
+        return cmake.replace(commandPattern, '');
+    }
+
+    private removeTargetFromInstallTargetsBlocks(cmake: string, targetName: string): string {
+        const installTargetsPattern = /install\s*\(\s*TARGETS[\s\S]*?\)/gim;
+        return cmake.replace(
+            installTargetsPattern,
+            (block: string) => this.removeTargetFromSingleInstallTargetsBlock(block, targetName),
+        );
+    }
+
+    private removeTargetFromSingleInstallTargetsBlock(block: string, targetName: string): string {
+        const openParen = block.indexOf('(');
+        const closeParen = block.lastIndexOf(')');
+        if (openParen < 0 || closeParen <= openParen) {
+            return block;
+        }
+
+        const inner = block.slice(openParen + 1, closeParen).trim();
+        if (!inner) {
+            return block;
+        }
+        const tokens = inner.split(/\s+/).filter(Boolean);
+        if (tokens.length < 2 || tokens[0].toUpperCase() !== 'TARGETS') {
+            return block;
+        }
+
+        const installKeywords = new Set([
+            'ARCHIVE',
+            'BUNDLE',
+            'COMPONENT',
+            'CONFIGURATIONS',
+            'DESTINATION',
+            'EXCLUDE_FROM_ALL',
+            'EXPORT',
+            'FRAMEWORK',
+            'INCLUDES',
+            'LIBRARY',
+            'NAMELINK_COMPONENT',
+            'NAMELINK_ONLY',
+            'NAMELINK_SKIP',
+            'OPTIONAL',
+            'PERMISSIONS',
+            'PRIVATE_HEADER',
+            'PUBLIC_HEADER',
+            'RESOURCE',
+            'RUNTIME',
+        ]);
+
+        let targetEnd = tokens.length;
+        for (let idx = 1; idx < tokens.length; idx += 1) {
+            if (installKeywords.has(tokens[idx].toUpperCase())) {
+                targetEnd = idx;
+                break;
+            }
+        }
+
+        const declaredTargets = tokens.slice(1, targetEnd);
+        const remainingTargets = declaredTargets.filter((token) => token !== targetName);
+        if (remainingTargets.length === declaredTargets.length) {
+            return block;
+        }
+        if (remainingTargets.length === 0) {
+            return '';
+        }
+
+        const trailingTokens = tokens.slice(targetEnd);
+        const rebuiltInner = ['TARGETS', ...remainingTargets, ...trailingTokens].join(' ');
+        return `${block.slice(0, openParen + 1)}${rebuiltInner}${block.slice(closeParen)}`;
+    }
+
+    private resolveSafeNodeSourceCandidates(
+        packageDir: string,
+        sourcePathHint: string | undefined,
+        relativeCandidates: string[],
+    ): string[] {
+        const candidates: string[] = [];
+        const addCandidate = (candidatePath: string) => {
+            if (!candidatePath) {
+                return;
+            }
+            const resolved = path.resolve(candidatePath);
+            if (!this.isPathInsideDirectory(resolved, packageDir)) {
+                return;
+            }
+            if (!candidates.includes(resolved)) {
+                candidates.push(resolved);
+            }
+        };
+
+        const trimmedHint = String(sourcePathHint || '').trim();
+        if (trimmedHint) {
+            addCandidate(trimmedHint);
+        }
+        relativeCandidates.forEach((relativePath) => addCandidate(path.join(packageDir, relativePath)));
+
+        return candidates;
+    }
+
+    private tryDeleteSourceFile(filePath: string): boolean {
+        try {
+            if (!fs.existsSync(filePath)) {
+                return false;
+            }
+            const stat = fs.statSync(filePath);
+            if (!stat.isFile()) {
+                return false;
+            }
+            fs.unlinkSync(filePath);
+            return true;
+        } catch (err) {
+            vscode.window.showWarningMessage(`Failed to remove source file "${path.basename(filePath)}": ${err}`);
+            return false;
+        }
+    }
+
+    private isPathInsideDirectory(candidatePath: string, directoryPath: string): boolean {
+        const resolvedCandidate = path.resolve(candidatePath);
+        const resolvedDirectory = path.resolve(directoryPath);
+        const relative = path.relative(resolvedDirectory, resolvedCandidate);
+        return relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative));
+    }
+
     private async addPythonNodeToPackage(
         pkgDir: string,
         safePackageName: string,
@@ -745,7 +1178,7 @@ export class RosWorkspace {
         if (!trimmed) {
             return 'chatter';
         }
-        return trimmed;
+        return trimmed.replace(/\s+/g, '_');
     }
 
     private escapePythonSingleQuotedString(value: string): string {

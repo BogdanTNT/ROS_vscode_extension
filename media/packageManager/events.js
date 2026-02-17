@@ -47,6 +47,7 @@
 
     const normalizePackageName = (rawName) => String(rawName || '').trim().replace(/\s+/g, '_');
     const normalizeNodeName = (rawName) => String(rawName || '').trim().replace(/\s+/g, '_');
+    const normalizeNodeTopic = (rawTopic) => String(rawTopic || '').trim().replace(/\s+/g, '_');
     const nodeTemplateTopicSuggestions = Object.freeze({
         publisher: 'chatter',
         subscriber: 'chatter',
@@ -102,25 +103,56 @@
         dom.addNodeNameNormalizedHint.classList.remove('hidden');
     };
 
+    const updateNodeTopicPreview = () => {
+        if (!dom.addNodeTopic || !dom.addNodeTopicNormalizedHint) {
+            return;
+        }
+
+        const rawTopic = String(dom.addNodeTopic.value || '');
+        const normalizedTopic = normalizeNodeTopic(rawTopic);
+
+        if (!normalizedTopic) {
+            dom.addNodeTopicNormalizedHint.textContent = 'Spaces are converted to "_" in topic names.';
+            dom.addNodeTopicNormalizedHint.classList.remove('hidden');
+            return;
+        }
+
+        if (rawTopic.trim() !== normalizedTopic) {
+            dom.addNodeTopicNormalizedHint.textContent =
+                'Spaces are converted to "_". Topic will be created as: ' + normalizedTopic;
+            dom.addNodeTopicNormalizedHint.classList.remove('hidden');
+            return;
+        }
+
+        dom.addNodeTopicNormalizedHint.textContent = 'Topic will be created as: ' + normalizedTopic;
+        dom.addNodeTopicNormalizedHint.classList.remove('hidden');
+    };
+
     const updateNodeTemplateFields = (forceSuggestion = false) => {
         const template = String(dom.addNodeTemplate?.value || 'none').toLowerCase();
         const suggestedTopic = nodeTemplateTopicSuggestions[template] || '';
         const requiresTopic = Boolean(suggestedTopic);
-        const rememberedTopic = String(state.lastNodeTopic || '').trim();
+        const rememberedTopic = normalizeNodeTopic(state.lastNodeTopic || '');
 
         if (dom.addNodeTopicRow) {
             dom.addNodeTopicRow.classList.toggle('hidden', !requiresTopic);
+        }
+        if (dom.addNodeTopicNormalizedHint) {
+            dom.addNodeTopicNormalizedHint.classList.toggle('hidden', !requiresTopic);
         }
         if (!dom.addNodeTopic) {
             return;
         }
 
         dom.addNodeTopic.placeholder = suggestedTopic || 'chatter';
-        const currentValue = String(dom.addNodeTopic.value || '').trim();
+        const currentValue = normalizeNodeTopic(dom.addNodeTopic.value || '');
         if (requiresTopic) {
             if (forceSuggestion || !currentValue) {
                 dom.addNodeTopic.value = rememberedTopic || suggestedTopic;
+            } else {
+                dom.addNodeTopic.value = currentValue;
             }
+            updateNodeTopicPreview();
         } else if (forceSuggestion) {
             dom.addNodeTopic.value = '';
         }
@@ -388,12 +420,16 @@
         const nodeName = normalizeNodeName(dom.addNodeName.value);
         const pkgPath = (dom.addNodeModal.dataset.pkgPath || '').trim();
         const nodeTemplate = String(dom.addNodeTemplate?.value || 'none');
-        const nodeTopic = String(dom.addNodeTopic?.value || '').trim();
+        const nodeTopic = normalizeNodeTopic(dom.addNodeTopic?.value || '');
         if (!pkg || !nodeName) {
             return;
         }
         dom.addNodeName.value = nodeName;
+        if (dom.addNodeTopic) {
+            dom.addNodeTopic.value = nodeTopic;
+        }
         updateNodeNamePreview();
+        updateNodeTopicPreview();
         dom.btnAddNode.disabled = true;
         dom.addNodeStatus.className = 'mt';
         dom.addNodeStatus.innerHTML = '<span class="spinner"></span> Adding node…';
@@ -408,6 +444,9 @@
     if (dom.addNodeName) {
         dom.addNodeName.addEventListener('input', updateNodeNamePreview);
     }
+    if (dom.addNodeTopic) {
+        dom.addNodeTopic.addEventListener('input', updateNodeTopicPreview);
+    }
     if (dom.addNodeTemplate) {
         dom.addNodeTemplate.addEventListener('change', () => updateNodeTemplateFields(true));
     }
@@ -418,6 +457,54 @@
         });
     }
 
+    // ── Remove Node modal ──────────────────────────────────────
+    const openRemoveNodeModal = (pkgName, nodeName, pkgPath, nodePath) => {
+        if (!pkgName || !nodeName) {
+            return;
+        }
+        dom.removeNodePkg.value = pkgName;
+        dom.removeNodeName.value = nodeName;
+        dom.removeNodePath.value = nodePath || '(not detected)';
+        dom.removeNodeModal.dataset.pkgPath = typeof pkgPath === 'string' ? pkgPath : '';
+        dom.removeNodeModal.dataset.nodePath = typeof nodePath === 'string' ? nodePath : '';
+        dom.removeNodeStatus.className = 'mt hidden';
+        dom.removeNodeStatus.textContent = '';
+        dom.removeNodeModal.classList.remove('hidden');
+        dom.btnRemoveNode.focus();
+    };
+
+    const closeRemoveNodeModal = () => {
+        dom.removeNodeModal.dataset.pkgPath = '';
+        dom.removeNodeModal.dataset.nodePath = '';
+        dom.removeNodeModal.classList.add('hidden');
+    };
+
+    const submitRemoveNode = () => {
+        const pkg = String(dom.removeNodePkg?.value || '').trim();
+        const nodeName = String(dom.removeNodeName?.value || '').trim();
+        const pkgPath = String(dom.removeNodeModal?.dataset?.pkgPath || '').trim();
+        const nodePath = String(dom.removeNodeModal?.dataset?.nodePath || '').trim();
+        if (!pkg || !nodeName) {
+            return;
+        }
+
+        dom.btnRemoveNode.disabled = true;
+        dom.removeNodeStatus.className = 'mt';
+        dom.removeNodeStatus.innerHTML = '<span class="spinner"></span> Removing node…';
+        actions.removeNode(pkg, nodeName, pkgPath, nodePath);
+    };
+
+    dom.btnRemoveNode.addEventListener('click', submitRemoveNode);
+    dom.btnCancelRemoveNode.addEventListener('click', closeRemoveNodeModal);
+    dom.btnCloseRemoveNode.addEventListener('click', closeRemoveNodeModal);
+    dom.removeNodeBackdrop.addEventListener('click', closeRemoveNodeModal);
+    if (uiInteractions?.bindModalEnterConfirm) {
+        uiInteractions.bindModalEnterConfirm({
+            modal: dom.removeNodeModal,
+            confirmButton: dom.btnRemoveNode,
+        });
+    }
+
     window.PM.handlers = {
         openArgsModal,
         closeArgsModal,
@@ -425,5 +512,7 @@
         closeCreate,
         openAddNodeModal,
         closeAddNodeModal,
+        openRemoveNodeModal,
+        closeRemoveNodeModal,
     };
 })();

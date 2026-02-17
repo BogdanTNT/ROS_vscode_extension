@@ -219,6 +219,11 @@
         [viewKinds.PARAMETERS]: buttonDescriptions.tabParameters,
     });
 
+    const tooltipState = {
+        activeTarget: null,
+        element: null,
+    };
+
     function wordCount(text) {
         return String(text || '')
             .trim()
@@ -227,52 +232,327 @@
             .length;
     }
 
-    function buildButtonTooltip(commandName, description) {
-        const command = String(commandName || '').trim() || 'unknown';
-        const summary = String(description || '').trim().replace(/\s+/g, ' ');
+    function normalizeTooltipCommand(commandName) {
+        const command = String(commandName || '').trim();
+        return command || 'unknown';
+    }
+
+    function normalizeTooltipDescription(description) {
+        return String(description || '').trim().replace(/\s+/g, ' ');
+    }
+
+    function validateTooltipDescription(summary) {
         if (wordCount(summary) !== 5) {
             console.warn('[NodeVisualizer] Tooltip description should be five words:', summary);
         }
-        return 'Command: ' + command + ' | ' + summary;
     }
 
     function buildButtonAriaLabel(commandName, description) {
-        const command = String(commandName || '').trim() || 'unknown';
-        const summary = String(description || '').trim().replace(/\s+/g, ' ');
+        const command = normalizeTooltipCommand(commandName);
+        const summary = normalizeTooltipDescription(description);
+        validateTooltipDescription(summary);
         return summary + '. Command ' + command + '.';
+    }
+
+    function buildTooltipDataAttrs(commandName, description) {
+        const command = normalizeTooltipCommand(commandName);
+        const summary = normalizeTooltipDescription(description);
+        validateTooltipDescription(summary);
+        return (
+            ' data-rdt-tooltip="1"' +
+            ' data-rdt-tooltip-command="' + escapeHtml(command) + '"' +
+            ' data-rdt-tooltip-description="' + escapeHtml(summary) + '"'
+        );
     }
 
     function applyButtonTooltip(button, commandName, description) {
         if (!(button instanceof HTMLElement)) {
             return;
         }
-        button.title = buildButtonTooltip(commandName, description);
-        button.setAttribute('aria-label', buildButtonAriaLabel(commandName, description));
+        const command = normalizeTooltipCommand(commandName);
+        const summary = normalizeTooltipDescription(description);
+        validateTooltipDescription(summary);
+        button.dataset.rdtTooltip = '1';
+        button.dataset.rdtTooltipCommand = command;
+        button.dataset.rdtTooltipDescription = summary;
+        button.removeAttribute('title');
+        button.setAttribute('aria-label', buildButtonAriaLabel(command, summary));
     }
 
-    function getRefetchCommandForKind(kind) {
+    function ensureTooltipElement() {
+        if (tooltipState.element) {
+            return tooltipState.element;
+        }
+        const tooltip = document.createElement('div');
+        tooltip.className = 'nv-rich-tooltip hidden';
+        tooltip.innerHTML =
+            '<div class="nv-rich-tooltip-command"></div>' +
+            '<div class="nv-rich-tooltip-description"></div>';
+        document.body.appendChild(tooltip);
+        tooltipState.element = tooltip;
+        return tooltip;
+    }
+
+    function hideRichTooltip() {
+        if (tooltipState.element) {
+            tooltipState.element.classList.add('hidden');
+        }
+        tooltipState.activeTarget = null;
+    }
+
+    function positionRichTooltip(target, tooltip) {
+        const margin = 8;
+        const gap = 8;
+        const targetRect = target.getBoundingClientRect();
+        const tooltipRect = tooltip.getBoundingClientRect();
+        const viewportWidth = window.innerWidth || document.documentElement.clientWidth || 0;
+        const viewportHeight = window.innerHeight || document.documentElement.clientHeight || 0;
+
+        let left = targetRect.left + ((targetRect.width - tooltipRect.width) / 2);
+        left = Math.max(margin, Math.min(left, viewportWidth - tooltipRect.width - margin));
+
+        let top = targetRect.bottom + gap;
+        if (top + tooltipRect.height > viewportHeight - margin) {
+            top = targetRect.top - tooltipRect.height - gap;
+        }
+        if (top < margin) {
+            top = margin;
+        }
+
+        tooltip.style.left = `${Math.round(left)}px`;
+        tooltip.style.top = `${Math.round(top)}px`;
+    }
+
+    function showRichTooltip(target) {
+        if (!(target instanceof HTMLElement)) {
+            hideRichTooltip();
+            return;
+        }
+        const command = String(target.dataset.rdtTooltipCommand || '').trim();
+        const description = String(target.dataset.rdtTooltipDescription || '').trim();
+        if (!command || !description || target.hasAttribute('disabled')) {
+            hideRichTooltip();
+            return;
+        }
+
+        const tooltip = ensureTooltipElement();
+        const commandEl = tooltip.querySelector('.nv-rich-tooltip-command');
+        const descriptionEl = tooltip.querySelector('.nv-rich-tooltip-description');
+        if (!(commandEl instanceof HTMLElement) || !(descriptionEl instanceof HTMLElement)) {
+            return;
+        }
+
+        commandEl.textContent = 'Command: ' + command;
+        descriptionEl.textContent = description;
+        tooltip.classList.remove('hidden');
+        positionRichTooltip(target, tooltip);
+        tooltipState.activeTarget = target;
+    }
+
+    function installRichTooltipHandlers() {
+        const resolveTarget = (rawTarget) => {
+            if (!(rawTarget instanceof Element)) {
+                return null;
+            }
+            return rawTarget.closest('[data-rdt-tooltip="1"]');
+        };
+
+        document.addEventListener('mouseover', (event) => {
+            const target = resolveTarget(event.target);
+            if (!target) {
+                hideRichTooltip();
+                return;
+            }
+            showRichTooltip(target);
+        });
+
+        document.addEventListener('mouseout', (event) => {
+            const active = tooltipState.activeTarget;
+            if (!(active instanceof Element)) {
+                return;
+            }
+            const leavingFromActive = event.target instanceof Node && active.contains(event.target);
+            if (!leavingFromActive) {
+                return;
+            }
+            const related = event.relatedTarget;
+            if (related instanceof Node && active.contains(related)) {
+                return;
+            }
+            hideRichTooltip();
+        });
+
+        document.addEventListener('focusin', (event) => {
+            const target = resolveTarget(event.target);
+            if (!target) {
+                return;
+            }
+            showRichTooltip(target);
+        });
+
+        document.addEventListener('focusout', (event) => {
+            const active = tooltipState.activeTarget;
+            if (!(active instanceof Element)) {
+                return;
+            }
+            if (!(event.target instanceof Node) || !active.contains(event.target)) {
+                return;
+            }
+            const related = event.relatedTarget;
+            if (related instanceof Node && active.contains(related)) {
+                return;
+            }
+            hideRichTooltip();
+        });
+
+        document.addEventListener('pointerdown', () => {
+            hideRichTooltip();
+        }, true);
+        document.addEventListener('scroll', () => {
+            hideRichTooltip();
+        }, true);
+        window.addEventListener('resize', () => {
+            hideRichTooltip();
+        });
+        document.addEventListener('keydown', (event) => {
+            if (event.key === 'Escape') {
+                hideRichTooltip();
+            }
+        });
+    }
+
+    function isRos2Mode() {
+        return state.graphData.rosVersion === 2;
+    }
+
+    function getRosListCommandForKind(kind) {
         if (kind === viewKinds.NODES) {
-            return commands.toHost.FETCH_NODE_INFO;
+            return isRos2Mode() ? 'ros2 node list' : 'rosnode list';
         }
         if (kind === viewKinds.TOPICS) {
-            return commands.toHost.GET_TOPIC_ROLES;
+            return isRos2Mode() ? 'ros2 topic list -t' : 'rostopic list';
         }
-        if (kind === viewKinds.SERVICES || kind === viewKinds.ACTIONS) {
-            return commands.toHost.REFRESH_CONNECTIONS;
+        if (kind === viewKinds.SERVICES) {
+            return isRos2Mode() ? 'ros2 service list -t' : 'rosservice list';
+        }
+        if (kind === viewKinds.ACTIONS) {
+            return isRos2Mode()
+                ? 'ros2 action list -t'
+                : 'Unavailable in ROS 1 mode';
         }
         if (kind === viewKinds.PARAMETERS) {
-            return commands.toHost.REFRESH;
+            return isRos2Mode() ? 'ros2 param list' : 'rosparam list';
         }
-        return 'refetchSelectedDetails';
+        return 'No ROS command';
+    }
+
+    function getRosNodeInfoCommand(nodeName) {
+        const target = String(nodeName || '<node>');
+        return isRos2Mode()
+            ? ('ros2 node info ' + target)
+            : ('rosnode info ' + target);
+    }
+
+    function getRosTopicInfoCommand(topicName) {
+        const target = String(topicName || '<topic>');
+        return isRos2Mode()
+            ? ('ros2 topic info ' + target + ' --verbose')
+            : ('rostopic info ' + target);
+    }
+
+    function getRosPublishCommand(topicName, topicType) {
+        const safeTopic = String(topicName || '<topic>');
+        const safeType = String(topicType || '<type>');
+        return isRos2Mode()
+            ? ("ros2 topic pub --once " + safeTopic + ' ' + safeType + " '<payload>'")
+            : ("rostopic pub -1 " + safeTopic + ' ' + safeType + " '<payload>'");
+    }
+
+    function getRosTopicEchoCommand(topicName) {
+        const safeTopic = String(topicName || '<topic>');
+        return isRos2Mode()
+            ? ('ros2 topic echo ' + safeTopic)
+            : ('rostopic echo ' + safeTopic);
+    }
+
+    function getRosRefreshCommandForScope(scope) {
+        const commandsForScope = [];
+        if (scope.nodes) {
+            commandsForScope.push(getRosListCommandForKind(viewKinds.NODES));
+        }
+        if (scope.topics) {
+            commandsForScope.push(getRosListCommandForKind(viewKinds.TOPICS));
+        }
+        if (scope.services) {
+            commandsForScope.push(getRosListCommandForKind(viewKinds.SERVICES));
+        }
+        if (scope.actions) {
+            commandsForScope.push(getRosListCommandForKind(viewKinds.ACTIONS));
+        }
+        if (scope.parameters) {
+            commandsForScope.push(getRosListCommandForKind(viewKinds.PARAMETERS));
+        }
+        if (!commandsForScope.length) {
+            return 'No ROS graph command selected';
+        }
+        return commandsForScope.join(' + ');
+    }
+
+    function getRosCommandForTab(view) {
+        if (view === viewKinds.OVERVIEW) {
+            return getRosRefreshCommandForScope({
+                nodes: dom.toggleNodes.checked,
+                topics: dom.toggleTopics.checked,
+                services: dom.toggleServices.checked,
+                actions: dom.toggleActions.checked && isRos2Mode(),
+                parameters: dom.toggleParameters.checked,
+            });
+        }
+        return getRosListCommandForKind(view);
+    }
+
+    function getRefetchRosCommandForSelection(selected) {
+        if (!selected) {
+            return getRosRefreshCommandForScope(computeCurrentScope());
+        }
+        if (selected.kind === viewKinds.NODES) {
+            return getRosNodeInfoCommand(selected.name);
+        }
+        if (selected.kind === viewKinds.TOPICS) {
+            return getRosTopicInfoCommand(selected.name);
+        }
+        if (selected.kind === viewKinds.SERVICES || selected.kind === viewKinds.ACTIONS) {
+            return getRosNodeInfoCommand('<node>') + ' (for discovered nodes)';
+        }
+        if (selected.kind === viewKinds.PARAMETERS) {
+            return getRosListCommandForKind(viewKinds.PARAMETERS);
+        }
+        return getRosRefreshCommandForScope(computeCurrentScope());
+    }
+
+    function getRowSelectCommand(row) {
+        if (!row || typeof row.key !== 'string') {
+            return getRosRefreshCommandForScope(computeCurrentScope());
+        }
+        if (row.key.startsWith(viewKinds.NODES + ':')) {
+            return getRosNodeInfoCommand(row.name);
+        }
+        if (row.key.startsWith(viewKinds.TOPICS + ':')) {
+            return getRosTopicInfoCommand(row.name);
+        }
+        if (row.key.startsWith(viewKinds.PARAMETERS + ':')) {
+            return getRosListCommandForKind(viewKinds.PARAMETERS);
+        }
+        return getRosRefreshCommandForScope(computeCurrentScope());
     }
 
     function getTabCommand(view) {
-        return 'switchView:' + String(view || 'overview');
+        return getRosCommandForTab(String(view || viewKinds.OVERVIEW));
     }
 
     function getTopicPinHelp(topicName, pinned) {
         return {
-            command: 'togglePinnedTopic(' + String(topicName || '') + ')',
+            command: getRosTopicEchoCommand(topicName),
             description: pinned ? buttonDescriptions.unpinTopic : buttonDescriptions.pinTopic,
         };
     }
@@ -284,18 +564,29 @@
         };
     }
 
-    function applyStaticButtonTooltips() {
-        applyButtonTooltip(dom.btnRefresh, commands.toHost.REFRESH, buttonDescriptions.refresh);
+    function updateCoreButtonTooltips() {
+        applyButtonTooltip(dom.btnRefresh, getRosRefreshCommandForScope(computeCurrentScope()), buttonDescriptions.refresh);
         applyButtonTooltip(dom.btnPublishTopic, 'openPublishTopicModal', buttonDescriptions.openPublishModal);
-        applyButtonTooltip(dom.btnRefetchSelected, 'refetchSelectedDetails', buttonDescriptions.refetchSelected);
+        applyButtonTooltip(dom.btnRefetchSelected, getRefetchRosCommandForSelection(getSelectedEntityRef()), buttonDescriptions.refetchSelected);
         applyButtonTooltip(dom.btnClosePublishTopic, 'closePublishTopicModal', buttonDescriptions.closePublishModal);
         applyButtonTooltip(dom.btnCancelPublishTopic, 'closePublishTopicModal', buttonDescriptions.cancelPublishModal);
-        applyButtonTooltip(dom.btnConfirmPublishTopic, commands.toHost.PUBLISH_TOPIC_MESSAGE, buttonDescriptions.publishOnce);
-        applyButtonTooltip(dom.btnToggleAllPinnedPause, 'toggleAllPinnedTopicsPause', buttonDescriptions.pauseAllPinned);
+        applyButtonTooltip(
+            dom.btnConfirmPublishTopic,
+            getRosPublishCommand(dom.publishTopicSelect.value, dom.publishTopicType.value),
+            buttonDescriptions.publishOnce,
+        );
+        applyButtonTooltip(
+            dom.btnToggleAllPinnedPause,
+            'toggleAllPinnedTopicsPause',
+            state.allPinnedTopicsPaused ? buttonDescriptions.resumeAllPinned : buttonDescriptions.pauseAllPinned,
+        );
 
         dom.tabs.forEach((tab) => {
             const view = String(tab.dataset.view || '');
-            const description = tabDescriptionsByView[view];
+            let description = tabDescriptionsByView[view];
+            if (view === viewKinds.ACTIONS && !isRos2Mode()) {
+                description = buttonDescriptions.tabActionsUnavailable;
+            }
             if (!description) {
                 return;
             }
@@ -337,6 +628,7 @@
     });
     dom.publishTopicSelect.addEventListener('change', () => {
         requestTopicPublishTemplate(dom.publishTopicSelect.value);
+        updateCoreButtonTooltips();
     });
     dom.btnConfirmPublishTopic.addEventListener('click', () => {
         publishTopicMessage();
@@ -411,7 +703,7 @@
             switchView(view);
         });
     });
-    applyStaticButtonTooltips();
+    updateCoreButtonTooltips();
 
     // Host -> webview bridge. Data updates are centralized here so every
     // render path consumes the same state shape.
@@ -577,11 +869,6 @@
 
         const ros2 = state.graphData.rosVersion === 2;
         actionsTab.disabled = !ros2;
-        applyButtonTooltip(
-            actionsTab,
-            getTabCommand(viewKinds.ACTIONS),
-            ros2 ? buttonDescriptions.tabActions : buttonDescriptions.tabActionsUnavailable,
-        );
         dom.toggleActions.disabled = !ros2;
 
         if (!ros2) {
@@ -762,7 +1049,11 @@
             button.classList.add('hidden');
             button.disabled = true;
             button.textContent = '↻ Refetch Selected';
-            applyButtonTooltip(button, 'refetchSelectedDetails', buttonDescriptions.refetchSelected);
+            applyButtonTooltip(
+                button,
+                getRosRefreshCommandForScope(computeCurrentScope()),
+                buttonDescriptions.refetchSelected,
+            );
             return;
         }
 
@@ -773,7 +1064,7 @@
         button.textContent = pending ? '↻ Refreshing ' + label + '...' : '↻ Refetch ' + label;
         applyButtonTooltip(
             button,
-            getRefetchCommandForKind(selected.kind),
+            getRefetchRosCommandForSelection(selected),
             pending ? buttonDescriptions.refetchSelectedPending : buttonDescriptions.refetchSelected,
         );
     }
@@ -1096,8 +1387,8 @@
                 '<div class="nv-pinned-head">' +
                 '<button class="pin-btn nv-topic-pin-btn nv-pinned-pin pinned" type="button" data-topic-name="' +
                 escapeHtml(topic.name) +
-                '" title="' + escapeHtml(buildButtonTooltip(pinHelp.command, pinHelp.description)) +
-                '" aria-label="' + escapeHtml(buildButtonAriaLabel(pinHelp.command, pinHelp.description)) + '">' +
+                '"' + buildTooltipDataAttrs(pinHelp.command, pinHelp.description) +
+                ' aria-label="' + escapeHtml(buildButtonAriaLabel(pinHelp.command, pinHelp.description)) + '">' +
                 '★' +
                 '</button>' +
                 '<span class="nv-pinned-topic-name" title="' + escapeHtml(topic.name) + '">' +
@@ -1105,7 +1396,7 @@
                 '</span>' +
                 '<button class="pin-btn nv-topic-freeze-btn' + (frozen ? ' frozen' : '') + '" type="button" ' +
                 'data-topic-name="' + escapeHtml(topic.name) + '" ' +
-                'title="' + escapeHtml(buildButtonTooltip(freezeHelp.command, freezeHelp.description)) + '" aria-label="' +
+                buildTooltipDataAttrs(freezeHelp.command, freezeHelp.description) + ' aria-label="' +
                 escapeHtml(buildButtonAriaLabel(freezeHelp.command, freezeHelp.description)) + '">' +
                 freezeIcon +
                 '</button>' +
@@ -1147,6 +1438,7 @@
         const isTopicsView = state.activeView === viewKinds.TOPICS;
         dom.btnPublishTopic.classList.toggle('hidden', !isTopicsView);
         dom.btnPublishTopic.disabled = !isTopicsView || state.graphData.topics.length === 0;
+        updateCoreButtonTooltips();
     }
 
     function setPublishTopicStatus(text, options = {}) {
@@ -1204,6 +1496,7 @@
         dom.publishTopicModal.classList.remove('hidden');
 
         requestTopicPublishTemplate(dom.publishTopicSelect.value);
+        updateCoreButtonTooltips();
         dom.publishTopicPayload.focus();
     }
 
@@ -1211,6 +1504,7 @@
         dom.publishTopicModal.classList.add('hidden');
         dom.btnConfirmPublishTopic.disabled = false;
         setPublishTopicStatus('', {});
+        updateCoreButtonTooltips();
     }
 
     function requestTopicPublishTemplate(topicName) {
@@ -1230,11 +1524,13 @@
             dom.publishTopicPayload.value = cached.template;
             dom.btnConfirmPublishTopic.disabled = false;
             setPublishTopicStatus('', {});
+            updateCoreButtonTooltips();
             return;
         }
 
         dom.btnConfirmPublishTopic.disabled = true;
         setPublishTopicStatus('Loading default payload...', { showSpinner: true });
+        updateCoreButtonTooltips();
         vscode.postMessage({
             command: commands.toHost.GET_TOPIC_PUBLISH_TEMPLATE,
             topicName: normalizedTopicName,
@@ -1261,6 +1557,7 @@
                 dom.publishTopicPayload.value = template;
                 dom.btnConfirmPublishTopic.disabled = false;
                 setPublishTopicStatus('', {});
+                updateCoreButtonTooltips();
             }
             return;
         }
@@ -1269,6 +1566,7 @@
             dom.btnConfirmPublishTopic.disabled = false;
             dom.publishTopicType.value = String(msg.topicType || dom.publishTopicType.value || '');
             setPublishTopicStatus(String(msg.error || 'Failed to build topic payload template.'), { isError: true });
+            updateCoreButtonTooltips();
         }
     }
 
@@ -1288,6 +1586,7 @@
 
         dom.btnConfirmPublishTopic.disabled = true;
         setPublishTopicStatus('Publishing message...', { showSpinner: true });
+        updateCoreButtonTooltips();
         vscode.postMessage({
             command: commands.toHost.PUBLISH_TOPIC_MESSAGE,
             topicName,
@@ -1305,6 +1604,7 @@
         }
 
         dom.btnConfirmPublishTopic.disabled = false;
+        updateCoreButtonTooltips();
         if (!success) {
             setPublishTopicStatus(String(msg.error || 'Failed to publish message.'), { isError: true });
             return;
@@ -1402,6 +1702,7 @@
         dom.tabs.forEach((tab) => tab.classList.toggle('active', tab.dataset.view === view));
         dom.overviewToggleBar?.classList.toggle('hidden', view !== viewKinds.OVERVIEW);
         renderPublishButtonState();
+        updateCoreButtonTooltips();
         const scope = sendViewScope();
 
         if (view === viewKinds.OVERVIEW) {
@@ -1439,6 +1740,7 @@
             renderListView();
         }
         updateRefetchSelectedButtonState();
+        updateCoreButtonTooltips();
     }
 
     function renderOverview() {
@@ -1621,7 +1923,7 @@
                 '<span class="' + effectiveMetaClass + '" title="' + escapeHtml(row.meta) + '">' +
                 escapeHtml(row.meta) +
                 '</span>';
-            applyButtonTooltip(selectButton, 'select:' + row.key, buttonDescriptions.selectRow);
+            applyButtonTooltip(selectButton, getRowSelectCommand(row), buttonDescriptions.selectRow);
             selectButton.addEventListener('click', () => onSelect(row));
 
             item.appendChild(selectButton);
@@ -1829,8 +2131,8 @@
         const headerHtml =
             '<div class="nv-topic-heading">' +
             '<button class="' + pinButtonClass + '" type="button" data-topic-name="' + escapeHtml(name) + '"' +
-            ' title="' + escapeHtml(buildButtonTooltip(pinHelp.command, pinHelp.description)) +
-            '" aria-label="' + escapeHtml(buildButtonAriaLabel(pinHelp.command, pinHelp.description)) + '">' +
+            buildTooltipDataAttrs(pinHelp.command, pinHelp.description) +
+            ' aria-label="' + escapeHtml(buildButtonAriaLabel(pinHelp.command, pinHelp.description)) + '">' +
             '★' +
             '</button>' +
             '<div class="nv-details-title"><strong>' + escapeHtml(name) + '</strong> <span class="text-muted">(topic)</span></div>' +
@@ -1944,7 +2246,7 @@
             '<div class="nv-details-card-head">' +
             '<div class="nv-details-card-head-main">' + headerHtml + '</div>' +
             '<button class="secondary nv-details-clear-btn" type="button" ' +
-            'title="' + escapeHtml(buildButtonTooltip(clearCommand, clearDescription)) + '" ' +
+            buildTooltipDataAttrs(clearCommand, clearDescription) + ' ' +
             'aria-label="' + escapeHtml(buildButtonAriaLabel(clearCommand, clearDescription)) + '" ' +
             (hasSelection ? '' : 'disabled') +
             '>' +
@@ -1962,5 +2264,6 @@
         );
     }
 
+    installRichTooltipHandlers();
     switchView(viewKinds.OVERVIEW);
 })();
