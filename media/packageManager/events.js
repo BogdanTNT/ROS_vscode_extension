@@ -12,8 +12,45 @@
     const defaultPackageDescription = 'TO DO: A very good package description';
 
     const getDefaultDeps = (buildType) => defaultDepsByBuildType[buildType] || '';
+    const bindRecursiveToggleTrigger = (element, onToggle, onRecursiveToggle) => {
+        if (!element) {
+            return;
+        }
+
+        if (uiInteractions?.bindRecursiveToggleClick) {
+            uiInteractions.bindRecursiveToggleClick(
+                element,
+                onToggle,
+                onRecursiveToggle,
+            );
+        } else {
+            element.addEventListener('click', (event) => {
+                event.preventDefault();
+                if (event?.altKey) {
+                    onRecursiveToggle();
+                    return;
+                }
+                onToggle();
+            });
+        }
+
+        if (element instanceof HTMLElement) {
+            element.addEventListener('keydown', (event) => {
+                if (event.key !== 'Enter' && event.key !== ' ') {
+                    return;
+                }
+                event.preventDefault();
+                onToggle();
+            });
+        }
+    };
 
     const normalizePackageName = (rawName) => String(rawName || '').trim().replace(/\s+/g, '_');
+    const normalizeNodeName = (rawName) => String(rawName || '').trim().replace(/\s+/g, '_');
+    const nodeTemplateTopicSuggestions = Object.freeze({
+        publisher: 'chatter',
+        subscriber: 'chatter',
+    });
 
     const updatePackageNamePreview = () => {
         if (!dom.pkgNameInput || !dom.pkgNameNormalizedHint) {
@@ -38,6 +75,55 @@
 
         dom.pkgNameNormalizedHint.textContent = 'Package will be created as: ' + normalizedName;
         dom.pkgNameNormalizedHint.classList.remove('hidden');
+    };
+
+    const updateNodeNamePreview = () => {
+        if (!dom.addNodeName || !dom.addNodeNameNormalizedHint) {
+            return;
+        }
+
+        const rawName = String(dom.addNodeName.value || '');
+        const normalizedName = normalizeNodeName(rawName);
+
+        if (!normalizedName) {
+            dom.addNodeNameNormalizedHint.textContent = 'Spaces are converted to "_" in node names.';
+            dom.addNodeNameNormalizedHint.classList.remove('hidden');
+            return;
+        }
+
+        if (rawName.trim() !== normalizedName) {
+            dom.addNodeNameNormalizedHint.textContent =
+                'Spaces are converted to "_". Node will be created as: ' + normalizedName;
+            dom.addNodeNameNormalizedHint.classList.remove('hidden');
+            return;
+        }
+
+        dom.addNodeNameNormalizedHint.textContent = 'Node will be created as: ' + normalizedName;
+        dom.addNodeNameNormalizedHint.classList.remove('hidden');
+    };
+
+    const updateNodeTemplateFields = (forceSuggestion = false) => {
+        const template = String(dom.addNodeTemplate?.value || 'none').toLowerCase();
+        const suggestedTopic = nodeTemplateTopicSuggestions[template] || '';
+        const requiresTopic = Boolean(suggestedTopic);
+        const rememberedTopic = String(state.lastNodeTopic || '').trim();
+
+        if (dom.addNodeTopicRow) {
+            dom.addNodeTopicRow.classList.toggle('hidden', !requiresTopic);
+        }
+        if (!dom.addNodeTopic) {
+            return;
+        }
+
+        dom.addNodeTopic.placeholder = suggestedTopic || 'chatter';
+        const currentValue = String(dom.addNodeTopic.value || '').trim();
+        if (requiresTopic) {
+            if (forceSuggestion || !currentValue) {
+                dom.addNodeTopic.value = rememberedTopic || suggestedTopic;
+            }
+        } else if (forceSuggestion) {
+            dom.addNodeTopic.value = '';
+        }
     };
 
     const applyDefaultDepsForBuildType = (force = false) => {
@@ -97,7 +183,7 @@
         dom.argsModal.classList.add('hidden');
     };
 
-    dom.btnCreate.addEventListener('click', () => {
+    const submitCreatePackage = () => {
         const rawName = dom.pkgNameInput ? dom.pkgNameInput.value : '';
         const name = normalizePackageName(rawName);
         const buildType = dom.buildTypeInput ? dom.buildTypeInput.value : 'ament_cmake';
@@ -123,7 +209,9 @@
             license || 'GPL-3.0',
             description || defaultPackageDescription,
         );
-    });
+    };
+
+    dom.btnCreate.addEventListener('click', submitCreatePackage);
 
     dom.btnOpenCreate.addEventListener('click', openCreate);
     dom.btnCloseCreate.addEventListener('click', closeCreate);
@@ -134,6 +222,12 @@
     }
     if (dom.buildTypeInput) {
         dom.buildTypeInput.addEventListener('change', () => applyDefaultDepsForBuildType(true));
+    }
+    if (uiInteractions?.bindModalEnterConfirm) {
+        uiInteractions.bindModalEnterConfirm({
+            modal: dom.createModal,
+            confirmButton: dom.btnCreate,
+        });
     }
 
     dom.btnRefresh.addEventListener('click', () => {
@@ -175,23 +269,16 @@
             // Unity-style behavior: Alt+click toggles all nested package sections.
             render.toggleWorkspacePackages(true);
         };
-
-        if (uiInteractions?.bindRecursiveToggleClick) {
-            uiInteractions.bindRecursiveToggleClick(
-                dom.btnToggleWorkspacePackages,
-                onToggleWorkspace,
-                onRecursiveToggleWorkspace,
-            );
-        } else {
-            dom.btnToggleWorkspacePackages.addEventListener('click', (event) => {
-                event.preventDefault();
-                if (event?.altKey) {
-                    onRecursiveToggleWorkspace();
-                    return;
-                }
-                onToggleWorkspace();
-            });
-        }
+        bindRecursiveToggleTrigger(
+            dom.btnToggleWorkspacePackages,
+            onToggleWorkspace,
+            onRecursiveToggleWorkspace,
+        );
+        bindRecursiveToggleTrigger(
+            dom.lblToggleWorkspacePackages,
+            onToggleWorkspace,
+            onRecursiveToggleWorkspace,
+        );
     }
 
     if (dom.btnToggleOtherPackages) {
@@ -201,23 +288,16 @@
         const onRecursiveToggleOther = () => {
             render.toggleOtherPackages(true);
         };
-
-        if (uiInteractions?.bindRecursiveToggleClick) {
-            uiInteractions.bindRecursiveToggleClick(
-                dom.btnToggleOtherPackages,
-                onToggleOther,
-                onRecursiveToggleOther,
-            );
-        } else {
-            dom.btnToggleOtherPackages.addEventListener('click', (event) => {
-                event.preventDefault();
-                if (event?.altKey) {
-                    onRecursiveToggleOther();
-                    return;
-                }
-                onToggleOther();
-            });
-        }
+        bindRecursiveToggleTrigger(
+            dom.btnToggleOtherPackages,
+            onToggleOther,
+            onRecursiveToggleOther,
+        );
+        bindRecursiveToggleTrigger(
+            dom.lblToggleOtherPackages,
+            onToggleOther,
+            onRecursiveToggleOther,
+        );
     }
 
     dom.toggleBuildCheck.addEventListener('change', () => {
@@ -280,37 +360,63 @@
     dom.argsBackdrop.addEventListener('click', closeArgsModal);
 
     // ── Add Node modal ─────────────────────────────────────────
-    const openAddNodeModal = (pkgName) => {
+    const openAddNodeModal = (pkgName, pkgPath) => {
         if (!pkgName) {
             return;
         }
         dom.addNodePkg.value = pkgName;
+        dom.addNodeModal.dataset.pkgPath = typeof pkgPath === 'string' ? pkgPath : '';
         dom.addNodeName.value = '';
+        if (dom.addNodeTemplate) {
+            dom.addNodeTemplate.value = 'none';
+        }
+        updateNodeTemplateFields(true);
         dom.addNodeStatus.className = 'mt hidden';
         dom.addNodeStatus.textContent = '';
+        updateNodeNamePreview();
         dom.addNodeModal.classList.remove('hidden');
         dom.addNodeName.focus();
     };
 
     const closeAddNodeModal = () => {
+        dom.addNodeModal.dataset.pkgPath = '';
         dom.addNodeModal.classList.add('hidden');
     };
 
-    dom.btnAddNode.addEventListener('click', () => {
+    const submitAddNode = () => {
         const pkg = dom.addNodePkg.value.trim();
-        const nodeName = dom.addNodeName.value.trim();
+        const nodeName = normalizeNodeName(dom.addNodeName.value);
+        const pkgPath = (dom.addNodeModal.dataset.pkgPath || '').trim();
+        const nodeTemplate = String(dom.addNodeTemplate?.value || 'none');
+        const nodeTopic = String(dom.addNodeTopic?.value || '').trim();
         if (!pkg || !nodeName) {
             return;
         }
+        dom.addNodeName.value = nodeName;
+        updateNodeNamePreview();
         dom.btnAddNode.disabled = true;
         dom.addNodeStatus.className = 'mt';
         dom.addNodeStatus.innerHTML = '<span class="spinner"></span> Adding node…';
-        actions.addNode(pkg, nodeName);
-    });
+        actions.addNode(pkg, nodeName, pkgPath, nodeTemplate, nodeTopic);
+    };
+
+    dom.btnAddNode.addEventListener('click', submitAddNode);
 
     dom.btnCancelAddNode.addEventListener('click', closeAddNodeModal);
     dom.btnCloseAddNode.addEventListener('click', closeAddNodeModal);
     dom.addNodeBackdrop.addEventListener('click', closeAddNodeModal);
+    if (dom.addNodeName) {
+        dom.addNodeName.addEventListener('input', updateNodeNamePreview);
+    }
+    if (dom.addNodeTemplate) {
+        dom.addNodeTemplate.addEventListener('change', () => updateNodeTemplateFields(true));
+    }
+    if (uiInteractions?.bindModalEnterConfirm) {
+        uiInteractions.bindModalEnterConfirm({
+            modal: dom.addNodeModal,
+            confirmButton: dom.btnAddNode,
+        });
+    }
 
     window.PM.handlers = {
         openArgsModal,

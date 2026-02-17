@@ -2,6 +2,11 @@ import * as vscode from 'vscode';
 import { RosWorkspace, RosWorkspacePackageDetails } from '../ros/rosWorkspace';
 import { getWebviewHtml } from './webviewHelper';
 import { PMToHostCommand, PMToWebviewCommand } from './packageManagerMessages';
+import {
+    UI_PREFERENCES_KEY,
+    WebviewUiPreferences,
+    normalizeWebviewUiPreferences,
+} from './uiPreferences';
 
 type LaunchArgConfig = { id: string; name: string; args: string };
 type LaunchArgConfigMap = Record<string, { configs: LaunchArgConfig[] }>;
@@ -93,7 +98,13 @@ export class PackageManagerViewProvider implements vscode.WebviewViewProvider {
                     await this._toggleBuildCheck(msg.enabled);
                     break;
                 case PMToHostCommand.ADD_NODE:
-                    await this._handleAddNode(msg.pkg, msg.nodeName);
+                    await this._handleAddNode(msg.pkg, msg.nodeName, msg.pkgPath, msg.nodeTemplate, msg.nodeTopic);
+                    break;
+                case 'requestUiPreferences':
+                    this._sendUiPreferences();
+                    break;
+                case 'setUiPreferences':
+                    await this._setUiPreferences(msg.preferences);
                     break;
             }
         });
@@ -108,6 +119,7 @@ export class PackageManagerViewProvider implements vscode.WebviewViewProvider {
         // Send the initial package list once the view is visible
         this._sendPackageList();
         this._sendBuildCheckState();
+        this._sendUiPreferences();
     }
 
     /** Called from the "ROS: Create Package" command. */
@@ -127,20 +139,60 @@ export class PackageManagerViewProvider implements vscode.WebviewViewProvider {
         });
     }
 
-    private async _handleAddNode(pkg: string, nodeName: string) {
+    private _getUiPreferences(): WebviewUiPreferences {
+        const stored = this._context.globalState.get<Partial<WebviewUiPreferences>>(UI_PREFERENCES_KEY, {});
+        return normalizeWebviewUiPreferences(stored);
+    }
+
+    private _sendUiPreferences() {
+        this._view?.webview.postMessage({
+            command: 'uiPreferencesState',
+            preferences: this._getUiPreferences(),
+        });
+    }
+
+    private async _setUiPreferences(preferences: unknown) {
+        const normalized = normalizeWebviewUiPreferences(preferences);
+        await this._context.globalState.update(UI_PREFERENCES_KEY, normalized);
+        this._view?.webview.postMessage({
+            command: 'uiPreferencesState',
+            preferences: normalized,
+        });
+    }
+
+    private async _handleAddNode(
+        pkg: string,
+        nodeName: string,
+        pkgPath?: string,
+        nodeTemplate?: string,
+        nodeTopic?: string,
+    ) {
         if (!pkg || !nodeName) {
+            this._view?.webview.postMessage({
+                command: PMToWebviewCommand.ADD_NODE_DONE,
+                success: false,
+            });
             return;
         }
-        const ok = await this._ros.addNodeToPackage(pkg, nodeName);
-        if (ok) {
-            vscode.window.showInformationMessage(
-                `Node "${nodeName}" added to package "${pkg}".`,
-            );
+
+        let ok = false;
+        try {
+            ok = await this._ros.addNodeToPackage(pkg, nodeName, pkgPath, nodeTemplate, nodeTopic);
+            if (ok) {
+                vscode.window.showInformationMessage(
+                    `Node "${nodeName}" added to package "${pkg}".`,
+                );
+            }
+        } catch (error) {
+            const message = error instanceof Error ? error.message : String(error);
+            vscode.window.showErrorMessage(`Failed to add node "${nodeName}": ${message}`);
+        } finally {
+            this._view?.webview.postMessage({
+                command: PMToWebviewCommand.ADD_NODE_DONE,
+                success: ok,
+            });
         }
-        this._view?.webview.postMessage({
-            command: PMToWebviewCommand.ADD_NODE_DONE,
-            success: ok,
-        });
+
         if (ok) {
             await this._sendPackageList();
         }
@@ -234,6 +286,7 @@ export class PackageManagerViewProvider implements vscode.WebviewViewProvider {
                 launchFiles: [],
                 nodes: [],
                 isPython: false,
+                isCmake: false,
             };
             this._cachedOtherPackageDetails.set(packageName, detail);
         }
@@ -440,7 +493,7 @@ export class PackageManagerViewProvider implements vscode.WebviewViewProvider {
         <div class="section-header">
             <div class="section-header-main">
                 <button class="secondary small" id="btnToggleWorkspacePackages" title="Collapse/expand workspace package list (Alt+click: expand/collapse all nested items)">▾</button>
-                <h3>Workspace Packages</h3>
+                <h3 id="lblToggleWorkspacePackages" class="section-toggle-label" tabindex="0" title="Collapse/expand workspace package list (Alt+click: expand/collapse all nested items)">Workspace Packages</h3>
             </div>
         </div>
         <ul class="item-list" id="pkgList">
@@ -452,7 +505,7 @@ export class PackageManagerViewProvider implements vscode.WebviewViewProvider {
         <div class="section-header">
             <div class="section-header-main">
                 <button class="secondary small" id="btnToggleOtherPackages" title="Collapse/expand other ROS package list (Alt+click: expand/collapse all nested items)">▾</button>
-                <h3>Other ROS Packages</h3>
+                <h3 id="lblToggleOtherPackages" class="section-toggle-label" tabindex="0" title="Collapse/expand other ROS package list (Alt+click: expand/collapse all nested items)">Other ROS Packages</h3>
             </div>
             <div class="section-header-actions">
                 <button class="secondary small" id="btnLoadOtherPackages">Load</button>
@@ -474,7 +527,7 @@ export class PackageManagerViewProvider implements vscode.WebviewViewProvider {
         <div class="modal-body">
             <label for="pkgName">Package name</label>
             <input type="text" id="pkgName" placeholder="my_robot_pkg" />
-            <div id="pkgNameNormalizedHint" class="text-muted text-sm mt hidden"></div>
+            <div id="pkgNameNormalizedHint" class="normalized-hint text-muted text-sm hidden"></div>
 
             <label for="buildType">Build type</label>
             <select id="buildType">
@@ -555,6 +608,22 @@ export class PackageManagerViewProvider implements vscode.WebviewViewProvider {
 
             <label for="addNodeName">Node name</label>
             <input type="text" id="addNodeName" placeholder="my_node" />
+            <div id="addNodeNameNormalizedHint" class="normalized-hint text-muted text-sm hidden"></div>
+
+            <label for="addNodeTemplate">Node template</label>
+            <select id="addNodeTemplate">
+                <option value="none" selected>None</option>
+                <option value="publisher">Publisher</option>
+                <option value="subscriber">Subscriber</option>
+                <option value="service">Service</option>
+                <option value="client">Client</option>
+                <option value="timer">Timer</option>
+            </select>
+
+            <div id="addNodeTopicRow" class="hidden">
+                <label for="addNodeTopic">Topic</label>
+                <input type="text" id="addNodeTopic" placeholder="chatter" />
+            </div>
         </div>
         <div class="modal-footer">
             <button class="secondary" id="btnCancelAddNode">Cancel</button>
@@ -566,6 +635,7 @@ export class PackageManagerViewProvider implements vscode.WebviewViewProvider {
 `;
         const scriptUris = [
             vscode.Uri.joinPath(this._extensionUri, 'media', 'shared', 'interactions.js'),
+            vscode.Uri.joinPath(this._extensionUri, 'media', 'shared', 'uiPreferences.js'),
             vscode.Uri.joinPath(this._extensionUri, 'media', 'packageManager', 'state.js'),
             vscode.Uri.joinPath(this._extensionUri, 'media', 'packageManager', 'dom.js'),
             vscode.Uri.joinPath(this._extensionUri, 'media', 'packageManager', 'messages.js'),

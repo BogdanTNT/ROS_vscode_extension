@@ -1,7 +1,7 @@
 /* Package Manager Webview Actions */
 (function () {
     window.PM = window.PM || {};
-    const vscode = acquireVsCodeApi();
+    const vscode = window.__rosVscodeApi || (window.__rosVscodeApi = acquireVsCodeApi());
     const { toHost } = window.PM.messages;
 
     window.PM.actions = {
@@ -51,7 +51,14 @@
             license,
             description,
         }),
-        addNode: (pkg, nodeName) => vscode.postMessage({ command: toHost.ADD_NODE, pkg, nodeName }),
+        addNode: (pkg, nodeName, pkgPath, nodeTemplate, nodeTopic) => vscode.postMessage({
+            command: toHost.ADD_NODE,
+            pkg,
+            nodeName,
+            pkgPath,
+            nodeTemplate,
+            nodeTopic,
+        }),
         setLaunchArgConfigs: (argsKey, configs) => vscode.postMessage({
             command: toHost.SET_LAUNCH_ARG_CONFIGS,
             path: argsKey,

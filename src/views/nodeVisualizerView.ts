@@ -7,6 +7,11 @@ import {
     RosWorkspace,
 } from '../ros/rosWorkspace';
 import { getWebviewHtml } from './webviewHelper';
+import {
+    UI_PREFERENCES_KEY,
+    WebviewUiPreferences,
+    normalizeWebviewUiPreferences,
+} from './uiPreferences';
 
 const DEFAULT_NODE_VISUALIZER_AUTO_REFRESH_INTERVAL_MS = 3000;
 const TOPIC_ECHO_RESTART_DELAY_MS = 1200;
@@ -146,6 +151,12 @@ export class NodeVisualizerViewProvider implements vscode.WebviewViewProvider {
                 case 'publishTopicMessage':
                     await this._publishTopicMessage(msg.topicName, msg.payload, msg.topicTypeHint);
                     break;
+                case 'requestUiPreferences':
+                    this._sendUiPreferences();
+                    break;
+                case 'setUiPreferences':
+                    await this._setUiPreferences(msg.preferences);
+                    break;
             }
         });
 
@@ -161,6 +172,7 @@ export class NodeVisualizerViewProvider implements vscode.WebviewViewProvider {
         // The webview will send a 'refresh' message once its JS has loaded
         // and its message listener is ready.  That triggers the first fetch
         // and bootstraps the auto-refresh cycle via _sendGraphData's finally block.
+        this._sendUiPreferences();
     }
 
     /** Externally triggered refresh (e.g. from command palette). */
@@ -690,6 +702,27 @@ export class NodeVisualizerViewProvider implements vscode.WebviewViewProvider {
         };
     }
 
+    private _getUiPreferences(): WebviewUiPreferences {
+        const stored = this._context.globalState.get<Partial<WebviewUiPreferences>>(UI_PREFERENCES_KEY, {});
+        return normalizeWebviewUiPreferences(stored);
+    }
+
+    private _sendUiPreferences() {
+        this._view?.webview.postMessage({
+            command: 'uiPreferencesState',
+            preferences: this._getUiPreferences(),
+        });
+    }
+
+    private async _setUiPreferences(preferences: unknown) {
+        const normalized = normalizeWebviewUiPreferences(preferences);
+        await this._context.globalState.update(UI_PREFERENCES_KEY, normalized);
+        this._view?.webview.postMessage({
+            command: 'uiPreferencesState',
+            preferences: normalized,
+        });
+    }
+
     private async _savePrefs() {
         await this._context.globalState.update(NODE_VISUALIZER_PREFS_KEY, this._prefs);
     }
@@ -856,6 +889,7 @@ export class NodeVisualizerViewProvider implements vscode.WebviewViewProvider {
 `;
         const scriptUris = [
             vscode.Uri.joinPath(this._extensionUri, 'media', 'shared', 'interactions.js'),
+            vscode.Uri.joinPath(this._extensionUri, 'media', 'shared', 'uiPreferences.js'),
             vscode.Uri.joinPath(this._extensionUri, 'media', 'nodeVisualizer', 'index.js'),
         ];
         return getWebviewHtml(webview, this._extensionUri, body, '', undefined, scriptUris);

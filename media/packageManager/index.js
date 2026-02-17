@@ -20,6 +20,7 @@
                 launchFiles: [],
                 nodes: [],
                 isPython: false,
+                isCmake: false,
                 detailsLoaded: false,
                 detailsLoading: false,
             };
@@ -49,6 +50,7 @@
             launchFiles,
             nodes,
             isPython: value.isPython === true,
+            isCmake: value.isCmake === true,
             detailsLoaded: true,
             detailsLoading: false,
         };
@@ -81,6 +83,7 @@
         launchFiles: Array.isArray(existing?.launchFiles) ? existing.launchFiles : [],
         nodes: Array.isArray(existing?.nodes) ? existing.nodes : [],
         isPython: existing?.isPython === true,
+        isCmake: existing?.isCmake === true,
         detailsLoaded: existing?.detailsLoaded === true,
         detailsLoading: false,
     });
@@ -201,6 +204,14 @@
                     ? '<span class="badge success">✓ Node added</span>'
                     : '<span class="badge error">✗ Failed</span>';
                 if (msg.success) {
+                    const currentTopic = String(d2.addNodeTopic?.value || '').trim();
+                    if (currentTopic) {
+                        if (typeof window.PM.setLastNodeTopic === 'function') {
+                            window.PM.setLastNodeTopic(currentTopic);
+                        } else {
+                            state.lastNodeTopic = currentTopic;
+                        }
+                    }
                     actions.refreshPackages();
                     window.PM.handlers.closeAddNodeModal();
                 }

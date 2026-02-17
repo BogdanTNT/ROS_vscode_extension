@@ -16,6 +16,7 @@
     --accent: var(--vscode-focusBorder, #007acc);
     --text: var(--vscode-foreground);
     --text-muted: var(--vscode-descriptionForeground);
+    --rdt-ui-font-size: var(--vscode-font-size);
 }
 
 * {
@@ -26,7 +27,7 @@
 
 body {
     font-family: var(--vscode-font-family);
-    font-size: var(--vscode-font-size);
+    font-size: var(--rdt-ui-font-size);
     color: var(--text);
     background: var(--panel-bg);
     padding: 12px;
@@ -100,6 +101,15 @@ textarea:focus {
 textarea {
     resize: vertical;
     min-height: 60px;
+}
+
+#pkgName,
+#addNodeName {
+    margin-bottom: 2px;
+}
+
+.normalized-hint {
+    margin-bottom: 10px;
 }
 
 /* ── Buttons ───────────────────────────────────────────────── */
@@ -237,6 +247,11 @@ button.small {
     margin: 0;
 }
 
+.section-toggle-label {
+    cursor: pointer;
+    user-select: none;
+}
+
 .section-header-main {
     display: flex;
     align-items: center;
@@ -274,6 +289,33 @@ button.small {
 .badge.info {
     background: var(--accent);
     color: #fff;
+}
+
+/* ── Copy feedback popup ───────────────────────────────────── */
+
+.copy-popup {
+    position: fixed;
+    z-index: 1000;
+    max-width: min(380px, calc(100vw - 20px));
+    padding: 6px 10px;
+    border-radius: 6px;
+    border: 1px solid var(--accent);
+    background: var(--input-bg);
+    color: var(--text);
+    font-size: 0.82em;
+    box-shadow: 0 6px 18px rgba(0, 0, 0, 0.28);
+    pointer-events: none;
+    opacity: 1;
+    transition: opacity 0.16s ease;
+    white-space: nowrap;
+}
+
+.copy-popup.error {
+    border-color: var(--danger);
+}
+
+.copy-popup.hide {
+    opacity: 0;
 }
 
 /* ── Lists ─────────────────────────────────────────────────── */
@@ -829,6 +871,40 @@ button.term-kill.is-pending {
     background: var(--panel-bg);
 }
 
+.nv-details-card-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    margin-bottom: 6px;
+}
+
+.nv-details-card-head-main {
+    flex: 1 1 auto;
+    min-width: 0;
+}
+
+.nv-details-title {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.nv-details-clear-btn {
+    width: 22px;
+    height: 22px;
+    min-width: 22px;
+    padding: 0;
+    line-height: 1;
+    align-items: center;
+    justify-content: center;
+}
+
+.nv-details-card-content {
+    min-height: 20px;
+}
+
 .nv-topic-msg-row {
     margin-top: 6px;
 }
@@ -838,6 +914,10 @@ button.term-kill.is-pending {
     align-items: center;
     gap: 8px;
     margin-bottom: 4px;
+}
+
+.nv-details-card-head .nv-topic-heading {
+    margin-bottom: 0;
 }
 
 .nv-topic-pin-icon {
@@ -1120,15 +1200,20 @@ button.term-kill.is-pending {
 }
 
 .toggle-switch input {
+    position: absolute;
+    inset: 0;
     opacity: 0;
-    width: 0;
-    height: 0;
+    width: 100%;
+    height: 100%;
+    margin: 0;
+    cursor: pointer;
+    z-index: 2;
 }
 
 .toggle-slider {
     position: absolute;
-    cursor: pointer;
     inset: 0;
+    pointer-events: none;
     background: var(--input-border);
     border-radius: 9px;
     transition: background 0.2s;
@@ -1161,3 +1246,223 @@ button.term-kill.is-pending {
 .hidden { display: none !important; }
 .text-muted { color: var(--text-muted); }
 .text-sm { font-size: 0.8em; }
+
+/* ── Shared UI settings button/panel ────────────────────────── */
+
+.rdt-ui-settings {
+    position: relative;
+    display: inline-flex;
+    align-items: center;
+    margin-left: auto;
+}
+
+.rdt-ui-settings-floating {
+    position: fixed;
+    top: 8px;
+    right: 8px;
+    z-index: 1200;
+}
+
+.rdt-ui-settings-btn {
+    white-space: nowrap;
+}
+
+.rdt-ui-settings-panel {
+    position: absolute;
+    top: calc(100% + 6px);
+    right: 0;
+    width: 220px;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background: var(--panel-bg);
+    padding: 10px;
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.28);
+    z-index: 1201;
+}
+
+.rdt-ui-settings-title {
+    margin: 0 0 8px;
+    font-size: 0.85em;
+    color: var(--text-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+}
+
+.rdt-ui-settings-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    margin-bottom: 6px;
+}
+
+.rdt-ui-settings-row label {
+    margin: 0;
+    color: var(--text);
+    font-size: 0.85em;
+}
+
+.rdt-ui-settings-value {
+    font-size: 0.82em;
+    color: var(--text-muted);
+    font-family: var(--vscode-editor-font-family, monospace);
+}
+
+.rdt-ui-settings-range {
+    width: 100%;
+    margin-bottom: 8px;
+}
+
+.rdt-ui-settings-check {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin: 0 0 10px;
+    color: var(--text);
+    font-size: 0.85em;
+}
+
+.rdt-ui-settings-check input {
+    margin: 0;
+}
+
+.rdt-ui-settings-actions {
+    display: flex;
+    justify-content: flex-end;
+}
+
+/* ── Compact layout mode ─────────────────────────────────────── */
+
+body.rdt-ui-compact {
+    padding: 7px;
+}
+
+body.rdt-ui-compact h2 {
+    margin-bottom: 6px;
+}
+
+body.rdt-ui-compact h3 {
+    margin: 6px 0 3px;
+}
+
+body.rdt-ui-compact .toolbar {
+    gap: 6px;
+    margin-bottom: 6px;
+}
+
+body.rdt-ui-compact .search-row {
+    gap: 6px;
+    margin-bottom: 4px;
+}
+
+body.rdt-ui-compact .card {
+    padding: 8px 10px;
+    margin-bottom: 8px;
+}
+
+body.rdt-ui-compact .section {
+    margin-bottom: 10px;
+}
+
+body.rdt-ui-compact .subsection {
+    margin-bottom: 4px;
+}
+
+body.rdt-ui-compact .subsection > h3 {
+    margin: 4px 0 2px;
+}
+
+body.rdt-ui-compact .section-header {
+    gap: 6px;
+    margin-bottom: 2px;
+}
+
+body.rdt-ui-compact .section-header-main {
+    gap: 4px;
+}
+
+body.rdt-ui-compact .section-header-actions {
+    gap: 4px;
+}
+
+body.rdt-ui-compact .item-list li {
+    padding: 3px 6px;
+}
+
+body.rdt-ui-compact .terminal-item {
+    padding: 4px 6px;
+    margin-bottom: 4px;
+}
+
+body.rdt-ui-compact .modal-card {
+    padding: 10px;
+}
+
+body.rdt-ui-compact .mt {
+    margin-top: 6px;
+}
+
+body.rdt-ui-compact .mb {
+    margin-bottom: 6px;
+}
+
+body.rdt-ui-compact .normalized-hint {
+    margin-bottom: 6px;
+}
+
+/* Node Visualizer: compact spacing parity with Package Manager */
+body.rdt-ui-compact .nv-tabs {
+    gap: 4px;
+}
+
+body.rdt-ui-compact .nv-tab {
+    padding: 3px 8px;
+    gap: 4px;
+}
+
+body.rdt-ui-compact .nv-layer-row {
+    gap: 6px;
+}
+
+body.rdt-ui-compact .nv-details-header {
+    gap: 6px;
+}
+
+body.rdt-ui-compact .nv-toolbar {
+    gap: 6px;
+}
+
+body.rdt-ui-compact .nv-overview-sections {
+    gap: 6px;
+}
+
+body.rdt-ui-compact .nv-overview-section {
+    gap: 2px;
+}
+
+body.rdt-ui-compact .nv-overview-header {
+    gap: 6px;
+}
+
+body.rdt-ui-compact .nv-details-card-head {
+    gap: 6px;
+    margin-bottom: 4px;
+}
+
+body.rdt-ui-compact .nv-topic-heading {
+    gap: 6px;
+    margin-bottom: 2px;
+}
+
+body.rdt-ui-compact .nv-topic-msg {
+    margin-top: 3px;
+    padding: 6px;
+}
+
+body.rdt-ui-compact .nv-pinned-list {
+    gap: 6px;
+}
+
+body.rdt-ui-compact .nv-pinned-item {
+    padding: 6px;
+}

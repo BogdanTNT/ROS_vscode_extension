@@ -1,6 +1,6 @@
 /* Build & Run Webview Script */
 (function () {
-    const vscode = acquireVsCodeApi();
+    const vscode = window.__rosVscodeApi || (window.__rosVscodeApi = acquireVsCodeApi());
     const uiInteractions = window.RosUi?.interactions;
 
     const commands = Object.freeze({

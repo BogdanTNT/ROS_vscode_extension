@@ -1,4 +1,5 @@
 import path from 'node:path';
+import fs from 'node:fs';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { __resetMockState, __setWorkspaceFolder } from '../../helpers/mocks/vscode';
 import { RosWorkspace } from '../../../src/ros/rosWorkspace';
@@ -21,8 +22,10 @@ describe('RosWorkspace package discovery', () => {
         __resetMockState();
     });
 
-    it('loads all workspace packages and launch files while skipping ignored folders', async () => {
+    it('loads workspace packages from the opened folder (not only src/) while skipping ignored folders', async () => {
         workspaceRoot = createTempWorkspace({
+            'tools_pkg/package.xml': '<package><name>tools_pkg</name></package>',
+            'tools_pkg/launch/tools.launch.py': '# launch file',
             'src/pkg_b/package.xml': '<package><name>pkg_b</name></package>',
             'src/pkg_b/CMakeLists.txt': `
 cmake_minimum_required(VERSION 3.8)
@@ -47,6 +50,8 @@ setup(
             'src/pkg_a/launch/main.launch.py': '# launch file',
             'src/pkg_a/launch/nested/extra.xml': '<launch/>',
             'src/pkg_a/launch/notes.txt': 'ignored by extension filter',
+            'build/ignored_pkg/package.xml': '<package><name>ignored_root_build</name></package>',
+            'install/ignored_pkg/package.xml': '<package><name>ignored_root_install</name></package>',
             'src/build/ignored_pkg/package.xml': '<package><name>ignored_pkg</name></package>',
             'src/install/ignored_pkg/package.xml': '<package><name>ignored_install</name></package>',
             'src/pkg_bad/package.xml': '<package><name></name></package>',
@@ -58,14 +63,16 @@ setup(
         const names = await ros.listWorkspacePackages();
         const details = await ros.listWorkspacePackageDetails();
 
-        expect(names).toEqual(['pkg_a', 'pkg_b']);
-        expect(details.map((pkg) => pkg.name)).toEqual(['pkg_a', 'pkg_b']);
+        expect(names).toEqual(['pkg_a', 'pkg_b', 'tools_pkg']);
+        expect(details.map((pkg) => pkg.name)).toEqual(['pkg_a', 'pkg_b', 'tools_pkg']);
 
         const pkgA = details.find((pkg) => pkg.name === 'pkg_a');
         expect(pkgA?.launchFiles).toEqual([
             path.join(workspaceRoot, 'src/pkg_a/launch/main.launch.py'),
             path.join(workspaceRoot, 'src/pkg_a/launch/nested/extra.xml'),
         ]);
+        expect(pkgA?.isPython).toBe(true);
+        expect(pkgA?.isCmake).toBe(false);
         expect(pkgA?.nodes).toEqual([
             {
                 name: 'talker',
@@ -75,12 +82,46 @@ setup(
 
         const pkgB = details.find((pkg) => pkg.name === 'pkg_b');
         expect(pkgB?.launchFiles).toEqual([]);
+        expect(pkgB?.isPython).toBe(false);
+        expect(pkgB?.isCmake).toBe(true);
         expect(pkgB?.nodes).toEqual([
             {
                 name: 'cpp_node',
                 sourcePath: path.join(workspaceRoot, 'src/pkg_b/src/cpp_node.cpp'),
             },
         ]);
+
+        const toolsPkg = details.find((pkg) => pkg.name === 'tools_pkg');
+        expect(toolsPkg?.launchFiles).toEqual([
+            path.join(workspaceRoot, 'tools_pkg/launch/tools.launch.py'),
+        ]);
+        expect(toolsPkg?.isPython).toBe(false);
+        expect(toolsPkg?.isCmake).toBe(false);
+        expect(toolsPkg?.nodes).toEqual([]);
+    });
+
+    it('discovers workspace packages even when the opened folder has no src/ directory', async () => {
+        workspaceRoot = createTempWorkspace({
+            'bringup/package.xml': '<package><name>bringup</name></package>',
+            'bringup/launch/demo.launch.xml': '<launch/>',
+        });
+
+        const srcPath = path.join(workspaceRoot, 'src');
+        expect(fs.existsSync(srcPath)).toBe(false);
+
+        __setWorkspaceFolder(workspaceRoot);
+        const ros = new RosWorkspace();
+
+        const names = await ros.listWorkspacePackages();
+        const details = await ros.listWorkspacePackageDetails();
+
+        expect(names).toEqual(['bringup']);
+        expect(details.map((pkg) => pkg.name)).toEqual(['bringup']);
+        expect(details[0].launchFiles).toEqual([
+            path.join(workspaceRoot, 'bringup/launch/demo.launch.xml'),
+        ]);
+        // Listing packages should not create src/ as a side effect.
+        expect(fs.existsSync(srcPath)).toBe(false);
     });
 
     it('loads non-workspace package details with launch files and ROS CLI executables', async () => {
@@ -117,7 +158,241 @@ setup(
                     { name: 'talker' },
                 ],
                 isPython: false,
+                isCmake: false,
             },
         ]);
+    });
+
+    it('adds a node to a workspace package outside root src/ using the provided package path hint', async () => {
+        workspaceRoot = createTempWorkspace({
+            'test_export/src/test_with_git_user/package.xml': '<package><name>test_with_git_user</name></package>',
+            'test_export/src/test_with_git_user/setup.py': `
+from setuptools import setup
+
+setup(
+    name='test_with_git_user',
+    entry_points={
+        'console_scripts': [
+        ],
+    },
+)
+`,
+            'test_export/src/test_with_git_user/test_with_git_user/__init__.py': '',
+        });
+
+        __setWorkspaceFolder(workspaceRoot);
+        const ros = new RosWorkspace();
+
+        const packagePath = path.join(workspaceRoot, 'test_export/src/test_with_git_user');
+        const created = await ros.addNodeToPackage(
+            'test_with_git_user',
+            'new_node',
+            packagePath,
+        );
+
+        expect(created).toBe(true);
+        expect(
+            fs.existsSync(path.join(packagePath, 'test_with_git_user/new_node.py')),
+        ).toBe(true);
+
+        const setupPy = fs.readFileSync(path.join(packagePath, 'setup.py'), 'utf8');
+        expect(setupPy).toContain("'new_node = test_with_git_user.new_node:main'");
+    });
+
+    it('adds a node to a workspace package outside root src/ by resolving package path from workspace scan', async () => {
+        workspaceRoot = createTempWorkspace({
+            'test_export/src/test_with_git_user/package.xml': '<package><name>test_with_git_user</name></package>',
+            'test_export/src/test_with_git_user/setup.py': `
+from setuptools import setup
+
+setup(
+    name='test_with_git_user',
+    entry_points={
+        'console_scripts': [
+        ],
+    },
+)
+`,
+            'test_export/src/test_with_git_user/test_with_git_user/__init__.py': '',
+        });
+
+        __setWorkspaceFolder(workspaceRoot);
+        const ros = new RosWorkspace();
+
+        const created = await ros.addNodeToPackage('test_with_git_user', 'scan_node');
+        expect(created).toBe(true);
+
+        const packagePath = path.join(workspaceRoot, 'test_export/src/test_with_git_user');
+        expect(
+            fs.existsSync(path.join(packagePath, 'test_with_git_user/scan_node.py')),
+        ).toBe(true);
+    });
+
+    it('uses the selected publisher template when creating a python node', async () => {
+        workspaceRoot = createTempWorkspace({
+            'src/pkg_a/package.xml': '<package><name>pkg_a</name></package>',
+            'src/pkg_a/setup.py': `
+from setuptools import setup
+
+setup(
+    name='pkg_a',
+    entry_points={
+        'console_scripts': [
+        ],
+    },
+)
+`,
+            'src/pkg_a/pkg_a/__init__.py': '',
+        });
+
+        __setWorkspaceFolder(workspaceRoot);
+        const ros = new RosWorkspace();
+
+        const created = await ros.addNodeToPackage('pkg_a', 'pub_node', undefined, 'publisher');
+        expect(created).toBe(true);
+
+        const nodeFilePath = path.join(workspaceRoot, 'src/pkg_a/pkg_a/pub_node.py');
+        const nodeFile = fs.readFileSync(nodeFilePath, 'utf8');
+        expect(nodeFile).toContain('from std_msgs.msg import String');
+        expect(nodeFile).toContain('self.create_publisher(String, \'chatter\', 10)');
+    });
+
+    it('uses the provided topic suggestion when creating a subscriber template node', async () => {
+        workspaceRoot = createTempWorkspace({
+            'src/pkg_a/package.xml': '<package><name>pkg_a</name></package>',
+            'src/pkg_a/setup.py': `
+from setuptools import setup
+
+setup(
+    name='pkg_a',
+    entry_points={
+        'console_scripts': [
+        ],
+    },
+)
+`,
+            'src/pkg_a/pkg_a/__init__.py': '',
+        });
+
+        __setWorkspaceFolder(workspaceRoot);
+        const ros = new RosWorkspace();
+
+        const created = await ros.addNodeToPackage('pkg_a', 'sub_node', undefined, 'subscriber', '/scan');
+        expect(created).toBe(true);
+
+        const nodeFilePath = path.join(workspaceRoot, 'src/pkg_a/pkg_a/sub_node.py');
+        const nodeFile = fs.readFileSync(nodeFilePath, 'utf8');
+        expect(nodeFile).toContain('self.create_subscription(');
+        expect(nodeFile).toContain('\'/scan\'');
+    });
+
+    it('uses publisher template for C++ node and adds std_msgs dependency', async () => {
+        workspaceRoot = createTempWorkspace({
+            'test_export/src/test_cpp_pkg/package.xml': '<package><name>test_cpp_pkg</name></package>',
+            'test_export/src/test_cpp_pkg/CMakeLists.txt': `
+cmake_minimum_required(VERSION 3.8)
+project(test_cpp_pkg)
+
+find_package(ament_cmake REQUIRED)
+
+ament_package()
+`,
+        });
+
+        __setWorkspaceFolder(workspaceRoot);
+        const ros = new RosWorkspace();
+
+        const packagePath = path.join(workspaceRoot, 'test_export/src/test_cpp_pkg');
+        const created = await ros.addNodeToPackage(
+            'test_cpp_pkg',
+            'cpp_pub',
+            packagePath,
+            'publisher',
+            '/scan',
+        );
+
+        expect(created).toBe(true);
+        const cppFile = fs.readFileSync(path.join(packagePath, 'src/cpp_pub.cpp'), 'utf8');
+        expect(cppFile).toContain('#include "std_msgs/msg/string.hpp"');
+        expect(cppFile).toContain('create_publisher<std_msgs::msg::String>("/scan", 10)');
+        expect(cppFile).toContain('msg.data = "hello world my name is cpp_pub"');
+        expect(cppFile).toContain('timer_->cancel()');
+
+        const cmake = fs.readFileSync(path.join(packagePath, 'CMakeLists.txt'), 'utf8');
+        expect(cmake).toContain('find_package(std_msgs REQUIRED)');
+        expect(cmake).toContain('ament_target_dependencies(cpp_pub rclcpp std_msgs)');
+    });
+
+    it('uses subscriber template for C++ node and prints received messages', async () => {
+        workspaceRoot = createTempWorkspace({
+            'test_export/src/test_cpp_pkg/package.xml': '<package><name>test_cpp_pkg</name></package>',
+            'test_export/src/test_cpp_pkg/CMakeLists.txt': `
+cmake_minimum_required(VERSION 3.8)
+project(test_cpp_pkg)
+
+find_package(ament_cmake REQUIRED)
+
+ament_package()
+`,
+        });
+
+        __setWorkspaceFolder(workspaceRoot);
+        const ros = new RosWorkspace();
+
+        const packagePath = path.join(workspaceRoot, 'test_export/src/test_cpp_pkg');
+        const created = await ros.addNodeToPackage(
+            'test_cpp_pkg',
+            'cpp_sub',
+            packagePath,
+            'subscriber',
+            '/scan',
+        );
+
+        expect(created).toBe(true);
+        const cppFile = fs.readFileSync(path.join(packagePath, 'src/cpp_sub.cpp'), 'utf8');
+        expect(cppFile).toContain('create_subscription<std_msgs::msg::String>(');
+        expect(cppFile).toContain('"/scan"');
+        expect(cppFile).toContain('Received: %s');
+    });
+
+    it('adds a C++ node and updates CMakeLists.txt for a workspace ament_cmake package', async () => {
+        workspaceRoot = createTempWorkspace({
+            'test_export/src/test_cpp_pkg/package.xml': '<package><name>test_cpp_pkg</name></package>',
+            'test_export/src/test_cpp_pkg/CMakeLists.txt': `
+cmake_minimum_required(VERSION 3.8)
+project(test_cpp_pkg)
+
+find_package(ament_cmake REQUIRED)
+
+ament_package()
+`,
+        });
+
+        __setWorkspaceFolder(workspaceRoot);
+        const ros = new RosWorkspace();
+
+        const packagePath = path.join(workspaceRoot, 'test_export/src/test_cpp_pkg');
+        const createdFirst = await ros.addNodeToPackage(
+            'test_cpp_pkg',
+            'new_cpp_node',
+            packagePath,
+        );
+        const createdSecond = await ros.addNodeToPackage(
+            'test_cpp_pkg',
+            'new_cpp_node',
+            packagePath,
+        );
+
+        expect(createdFirst).toBe(true);
+        expect(createdSecond).toBe(true);
+        expect(fs.existsSync(path.join(packagePath, 'src/new_cpp_node.cpp'))).toBe(true);
+
+        const cmake = fs.readFileSync(path.join(packagePath, 'CMakeLists.txt'), 'utf8');
+        expect(cmake).toContain('find_package(rclcpp REQUIRED)');
+        expect(cmake).toContain('add_executable(new_cpp_node src/new_cpp_node.cpp)');
+        expect(cmake).toContain('ament_target_dependencies(new_cpp_node rclcpp)');
+        expect(cmake).toContain('install(TARGETS');
+        expect(cmake).toContain('DESTINATION lib/${PROJECT_NAME}');
+        expect((cmake.match(/add_executable\(new_cpp_node\s+src\/new_cpp_node\.cpp\)/g) || []).length).toBe(1);
     });
 });

@@ -1,6 +1,6 @@
 /* Node Visualizer Webview Script */
 (function () {
-    const vscode = acquireVsCodeApi();
+    const vscode = window.__rosVscodeApi || (window.__rosVscodeApi = acquireVsCodeApi());
 
     const commands = Object.freeze({
         toHost: Object.freeze({
@@ -185,6 +185,124 @@
     const renderDetailLine = (label, values) =>
         '<div><span class="text-muted">' + escapeHtml(label) + ':</span> ' + renderNameList(values) + '</div>';
 
+    const buttonDescriptions = Object.freeze({
+        refresh: 'Refresh currently visible graph data',
+        openPublishModal: 'Open topic message publish dialog',
+        refetchSelected: 'Refetch selected entity details now',
+        refetchSelectedPending: 'Refreshing selected entity details now',
+        closePublishModal: 'Close topic publish modal window',
+        cancelPublishModal: 'Cancel topic publish modal action',
+        publishOnce: 'Publish one message to topic',
+        clearSelection: 'Clear selected details card item',
+        selectRow: 'Select item and show details',
+        pinTopic: 'Pin this topic for monitoring',
+        unpinTopic: 'Unpin this topic from monitor',
+        pauseTopic: 'Pause pinned topic live updates',
+        resumeTopic: 'Resume pinned topic live updates',
+        pauseAllPinned: 'Pause all pinned topic streams',
+        resumeAllPinned: 'Resume all pinned topic streams',
+        tabOverview: 'Switch to overview tab view',
+        tabNodes: 'Switch to nodes tab view',
+        tabTopics: 'Switch to topics tab view',
+        tabServices: 'Switch to services tab view',
+        tabActions: 'Switch to actions tab view',
+        tabActionsUnavailable: 'Actions require ROS 2 runtime',
+        tabParameters: 'Switch to parameters tab view',
+    });
+
+    const tabDescriptionsByView = Object.freeze({
+        [viewKinds.OVERVIEW]: buttonDescriptions.tabOverview,
+        [viewKinds.NODES]: buttonDescriptions.tabNodes,
+        [viewKinds.TOPICS]: buttonDescriptions.tabTopics,
+        [viewKinds.SERVICES]: buttonDescriptions.tabServices,
+        [viewKinds.ACTIONS]: buttonDescriptions.tabActions,
+        [viewKinds.PARAMETERS]: buttonDescriptions.tabParameters,
+    });
+
+    function wordCount(text) {
+        return String(text || '')
+            .trim()
+            .split(/\s+/)
+            .filter(Boolean)
+            .length;
+    }
+
+    function buildButtonTooltip(commandName, description) {
+        const command = String(commandName || '').trim() || 'unknown';
+        const summary = String(description || '').trim().replace(/\s+/g, ' ');
+        if (wordCount(summary) !== 5) {
+            console.warn('[NodeVisualizer] Tooltip description should be five words:', summary);
+        }
+        return 'Command: ' + command + ' | ' + summary;
+    }
+
+    function buildButtonAriaLabel(commandName, description) {
+        const command = String(commandName || '').trim() || 'unknown';
+        const summary = String(description || '').trim().replace(/\s+/g, ' ');
+        return summary + '. Command ' + command + '.';
+    }
+
+    function applyButtonTooltip(button, commandName, description) {
+        if (!(button instanceof HTMLElement)) {
+            return;
+        }
+        button.title = buildButtonTooltip(commandName, description);
+        button.setAttribute('aria-label', buildButtonAriaLabel(commandName, description));
+    }
+
+    function getRefetchCommandForKind(kind) {
+        if (kind === viewKinds.NODES) {
+            return commands.toHost.FETCH_NODE_INFO;
+        }
+        if (kind === viewKinds.TOPICS) {
+            return commands.toHost.GET_TOPIC_ROLES;
+        }
+        if (kind === viewKinds.SERVICES || kind === viewKinds.ACTIONS) {
+            return commands.toHost.REFRESH_CONNECTIONS;
+        }
+        if (kind === viewKinds.PARAMETERS) {
+            return commands.toHost.REFRESH;
+        }
+        return 'refetchSelectedDetails';
+    }
+
+    function getTabCommand(view) {
+        return 'switchView:' + String(view || 'overview');
+    }
+
+    function getTopicPinHelp(topicName, pinned) {
+        return {
+            command: 'togglePinnedTopic(' + String(topicName || '') + ')',
+            description: pinned ? buttonDescriptions.unpinTopic : buttonDescriptions.pinTopic,
+        };
+    }
+
+    function getTopicFreezeHelp(topicName, frozen) {
+        return {
+            command: 'togglePinnedTopicFreeze(' + String(topicName || '') + ')',
+            description: frozen ? buttonDescriptions.resumeTopic : buttonDescriptions.pauseTopic,
+        };
+    }
+
+    function applyStaticButtonTooltips() {
+        applyButtonTooltip(dom.btnRefresh, commands.toHost.REFRESH, buttonDescriptions.refresh);
+        applyButtonTooltip(dom.btnPublishTopic, 'openPublishTopicModal', buttonDescriptions.openPublishModal);
+        applyButtonTooltip(dom.btnRefetchSelected, 'refetchSelectedDetails', buttonDescriptions.refetchSelected);
+        applyButtonTooltip(dom.btnClosePublishTopic, 'closePublishTopicModal', buttonDescriptions.closePublishModal);
+        applyButtonTooltip(dom.btnCancelPublishTopic, 'closePublishTopicModal', buttonDescriptions.cancelPublishModal);
+        applyButtonTooltip(dom.btnConfirmPublishTopic, commands.toHost.PUBLISH_TOPIC_MESSAGE, buttonDescriptions.publishOnce);
+        applyButtonTooltip(dom.btnToggleAllPinnedPause, 'toggleAllPinnedTopicsPause', buttonDescriptions.pauseAllPinned);
+
+        dom.tabs.forEach((tab) => {
+            const view = String(tab.dataset.view || '');
+            const description = tabDescriptionsByView[view];
+            if (!description) {
+                return;
+            }
+            applyButtonTooltip(tab, getTabCommand(view), description);
+        });
+    }
+
     dom.btnRefresh.addEventListener('click', () => {
         requestGraphRefresh({
             showGlobalLoading: true,
@@ -231,6 +349,12 @@
     dom.detailsCard?.addEventListener('click', (event) => {
         const target = event.target;
         if (!(target instanceof Element)) {
+            return;
+        }
+
+        const clearBtn = target.closest('.nv-details-clear-btn');
+        if (clearBtn) {
+            clearSelectedDetails();
             return;
         }
 
@@ -287,6 +411,7 @@
             switchView(view);
         });
     });
+    applyStaticButtonTooltips();
 
     // Host -> webview bridge. Data updates are centralized here so every
     // render path consumes the same state shape.
@@ -452,7 +577,11 @@
 
         const ros2 = state.graphData.rosVersion === 2;
         actionsTab.disabled = !ros2;
-        actionsTab.title = ros2 ? '' : 'Actions are available in ROS 2 only';
+        applyButtonTooltip(
+            actionsTab,
+            getTabCommand(viewKinds.ACTIONS),
+            ros2 ? buttonDescriptions.tabActions : buttonDescriptions.tabActionsUnavailable,
+        );
         dom.toggleActions.disabled = !ros2;
 
         if (!ros2) {
@@ -633,8 +762,7 @@
             button.classList.add('hidden');
             button.disabled = true;
             button.textContent = '↻ Refetch Selected';
-            button.title = 'Select an item to refetch details.';
-            button.setAttribute('aria-label', 'Select an item to refetch details.');
+            applyButtonTooltip(button, 'refetchSelectedDetails', buttonDescriptions.refetchSelected);
             return;
         }
 
@@ -643,14 +771,10 @@
         const pending = state.selectedRefetchPendingByKind[selected.kind] === true;
         button.disabled = false;
         button.textContent = pending ? '↻ Refreshing ' + label + '...' : '↻ Refetch ' + label;
-        button.title = pending
-            ? 'Refreshing ' + label.toLowerCase() + ' details...'
-            : 'Refetch ' + label.toLowerCase() + ' details';
-        button.setAttribute(
-            'aria-label',
-            pending
-                ? 'Refreshing ' + label.toLowerCase() + ' details'
-                : 'Refetch ' + label.toLowerCase() + ' details',
+        applyButtonTooltip(
+            button,
+            getRefetchCommandForKind(selected.kind),
+            pending ? buttonDescriptions.refetchSelectedPending : buttonDescriptions.refetchSelected,
         );
     }
 
@@ -689,6 +813,14 @@
             vscode.postMessage({ command: commands.toHost.REFRESH });
             renderCurrentView();
         }
+    }
+
+    function clearSelectedDetails() {
+        if (!state.selectedKey) {
+            return;
+        }
+        state.selectedKey = '';
+        renderCurrentView();
     }
 
     function persistTopicMonitorState() {
@@ -862,9 +994,11 @@
         pauseAllBtn.disabled = state.pinnedTopics.length === 0;
         pauseAllBtn.textContent = paused ? '▶' : '⏸';
         pauseAllBtn.classList.toggle('frozen', paused);
-        const label = paused ? 'Resume all pinned topic reading' : 'Pause all pinned topic reading';
-        pauseAllBtn.title = label;
-        pauseAllBtn.setAttribute('aria-label', label);
+        applyButtonTooltip(
+            pauseAllBtn,
+            'toggleAllPinnedTopicsPause',
+            paused ? buttonDescriptions.resumeAllPinned : buttonDescriptions.pauseAllPinned,
+        );
     }
 
     function getTrackedTopicNames() {
@@ -949,8 +1083,9 @@
             item.className = 'nv-pinned-item';
             const topicType = topic.type || 'unknown';
             const frozen = isPinnedTopicFrozen(topic.name);
-            const freezeLabel = frozen ? 'Resume' : 'Pause';
             const freezeIcon = frozen ? '▶' : '⏸';
+            const pinHelp = getTopicPinHelp(topic.name, true);
+            const freezeHelp = getTopicFreezeHelp(topic.name, frozen);
             const effectivelyPaused = isPinnedTopicEffectivelyPaused(topic.name);
             const displayedMessage = getPinnedTopicDisplayMessage(topic.name);
             const emptyMessage = state.allPinnedTopicsPaused
@@ -961,7 +1096,8 @@
                 '<div class="nv-pinned-head">' +
                 '<button class="pin-btn nv-topic-pin-btn nv-pinned-pin pinned" type="button" data-topic-name="' +
                 escapeHtml(topic.name) +
-                '" title="Unpin topic" aria-label="Unpin topic">' +
+                '" title="' + escapeHtml(buildButtonTooltip(pinHelp.command, pinHelp.description)) +
+                '" aria-label="' + escapeHtml(buildButtonAriaLabel(pinHelp.command, pinHelp.description)) + '">' +
                 '★' +
                 '</button>' +
                 '<span class="nv-pinned-topic-name" title="' + escapeHtml(topic.name) + '">' +
@@ -969,8 +1105,8 @@
                 '</span>' +
                 '<button class="pin-btn nv-topic-freeze-btn' + (frozen ? ' frozen' : '') + '" type="button" ' +
                 'data-topic-name="' + escapeHtml(topic.name) + '" ' +
-                'title="' + escapeHtml(freezeLabel + ' reading') + '" aria-label="' +
-                escapeHtml(freezeLabel + ' reading') + '">' +
+                'title="' + escapeHtml(buildButtonTooltip(freezeHelp.command, freezeHelp.description)) + '" aria-label="' +
+                escapeHtml(buildButtonAriaLabel(freezeHelp.command, freezeHelp.description)) + '">' +
                 freezeIcon +
                 '</button>' +
                 '<span class="nv-pinned-topic-type-inline" title="' + escapeHtml(topicType) + '">' +
@@ -1462,13 +1598,13 @@
 
                 const pinButton = document.createElement('button');
                 pinButton.type = 'button';
-                pinButton.className = isTopicPinned(row.pinTopicName)
+                const pinned = isTopicPinned(row.pinTopicName);
+                pinButton.className = pinned
                     ? 'pin-btn nv-topic-row-pin pinned'
                     : 'pin-btn nv-topic-row-pin';
                 pinButton.textContent = '★';
-                const pinLabel = isTopicPinned(row.pinTopicName) ? 'Unpin topic' : 'Pin topic';
-                pinButton.title = pinLabel;
-                pinButton.setAttribute('aria-label', pinLabel);
+                const pinHelp = getTopicPinHelp(row.pinTopicName, pinned);
+                applyButtonTooltip(pinButton, pinHelp.command, pinHelp.description);
                 pinButton.addEventListener('click', (event) => {
                     event.preventDefault();
                     event.stopPropagation();
@@ -1485,6 +1621,7 @@
                 '<span class="' + effectiveMetaClass + '" title="' + escapeHtml(row.meta) + '">' +
                 escapeHtml(row.meta) +
                 '</span>';
+            applyButtonTooltip(selectButton, 'select:' + row.key, buttonDescriptions.selectRow);
             selectButton.addEventListener('click', () => onSelect(row));
 
             item.appendChild(selectButton);
@@ -1590,18 +1727,25 @@
             .filter((parameter) => parameter.node === name)
             .map((parameter) => parameter.name);
         const isRefreshing = state.nodeInfoLoadingByName[name] === true;
+        const headerHtml =
+            '<div class="nv-details-title">' +
+            '<strong>' + escapeHtml(name) + '</strong> <span class="text-muted">(node)</span>' +
+            '</div>';
 
         if (!info) {
             // Info not yet fetched — request it lazily.
             requestNodeInfo(name);
-            targetEl.innerHTML =
-                '<strong>' + escapeHtml(name) + '</strong> <span class="text-muted">(node)</span>' +
-                '<div class="text-muted"><span class="spinner"></span> Loading node info…</div>';
+            renderDetailsBody(
+                targetEl,
+                headerHtml,
+                '<div class="text-muted"><span class="spinner"></span> Loading node info…</div>',
+            );
             return;
         }
 
-        targetEl.innerHTML =
-            '<strong>' + escapeHtml(name) + '</strong> <span class="text-muted">(node)</span>' +
+        renderDetailsBody(
+            targetEl,
+            headerHtml,
             renderDetailLine('Publishes', info.publishers || []) +
             renderDetailLine('Subscribes', info.subscribers || []) +
             renderDetailLine('Service servers', info.serviceServers || []) +
@@ -1611,19 +1755,26 @@
             renderDetailLine('Parameters', nodeParameters) +
             (isRefreshing
                 ? '<div class="text-muted text-sm"><span class="spinner"></span> Refreshing node info...</div>'
-                : '');
+                : ''),
+        );
     }
 
     function showParameterDetails(parameter, targetEl) {
         const nodeLabel = parameter.node || 'global';
         const isRefreshing = state.selectedRefetchPendingByKind[viewKinds.PARAMETERS] === true;
-        targetEl.innerHTML =
+        const headerHtml =
+            '<div class="nv-details-title">' +
             '<strong>' + escapeHtml(parameter.name || '') + '</strong> <span class="text-muted">(parameter)</span>' +
+            '</div>';
+        renderDetailsBody(
+            targetEl,
+            headerHtml,
             renderDetailLine('Node', [nodeLabel]) +
             renderDetailLine('Name', [parameter.name || '']) +
             (isRefreshing
                 ? '<div class="text-muted text-sm"><span class="spinner"></span> Refreshing parameter list...</div>'
-                : '');
+                : ''),
+        );
     }
 
     function showEntityDetails(kind, name, targetEl) {
@@ -1640,15 +1791,21 @@
         const isRefreshing = kind === viewKinds.SERVICES
             ? state.selectedRefetchPendingByKind[viewKinds.SERVICES] === true
             : (kind === viewKinds.ACTIONS && state.selectedRefetchPendingByKind[viewKinds.ACTIONS] === true);
-
-        targetEl.innerHTML =
+        const headerHtml =
+            '<div class="nv-details-title">' +
             '<strong>' + escapeHtml(name) + '</strong> <span class="text-muted">(' + escapeHtml(kind.slice(0, -1)) + ')</span>' +
+            '</div>';
+
+        renderDetailsBody(
+            targetEl,
+            headerHtml,
             renderDetailLine('Type', [entity ? entity.type : 'unknown']) +
             renderDetailLine(primaryLabel, roles.primary) +
             renderDetailLine(secondaryLabel, roles.secondary) +
             (isRefreshing
                 ? '<div class="text-muted text-sm"><span class="spinner"></span> Refreshing relation data...</div>'
-                : '');
+                : ''),
+        );
     }
 
     function showTopicDetails(name, targetEl) {
@@ -1665,26 +1822,31 @@
         const isRefreshing = state.selectedRefetchPendingByKind[viewKinds.TOPICS] === true;
         const pinned = isTopicPinned(name);
         const messageBlock = renderTopicMessageBlock(name);
-        const pinButtonLabel = pinned ? 'Unpin topic' : 'Pin topic';
         const pinButtonClass = pinned
             ? 'pin-btn nv-topic-pin-btn nv-topic-pin-icon pinned'
             : 'pin-btn nv-topic-pin-btn nv-topic-pin-icon';
-
-        targetEl.innerHTML =
+        const pinHelp = getTopicPinHelp(name, pinned);
+        const headerHtml =
             '<div class="nv-topic-heading">' +
             '<button class="' + pinButtonClass + '" type="button" data-topic-name="' + escapeHtml(name) + '"' +
-            ' title="' + escapeHtml(pinButtonLabel) + '" aria-label="' + escapeHtml(pinButtonLabel) + '">' +
+            ' title="' + escapeHtml(buildButtonTooltip(pinHelp.command, pinHelp.description)) +
+            '" aria-label="' + escapeHtml(buildButtonAriaLabel(pinHelp.command, pinHelp.description)) + '">' +
             '★' +
             '</button>' +
-            '<div><strong>' + escapeHtml(name) + '</strong> <span class="text-muted">(topic)</span></div>' +
-            '</div>' +
+            '<div class="nv-details-title"><strong>' + escapeHtml(name) + '</strong> <span class="text-muted">(topic)</span></div>' +
+            '</div>';
+
+        renderDetailsBody(
+            targetEl,
+            headerHtml,
             renderDetailLine('Type', [entity ? entity.type : 'unknown']) +
             renderDetailLine('Publishers', roles.primary) +
             renderDetailLine('Subscribers', roles.secondary) +
             (loadingRoles || isRefreshing
                 ? '<div class="text-muted text-sm"><span class="spinner"></span> Refreshing topic details...</div>'
                 : '') +
-            messageBlock;
+            messageBlock,
+        );
     }
 
     function renderTopicMessageBlock(topicName, options = {}) {
@@ -1774,8 +1936,30 @@
         return { primary, secondary };
     }
 
+    function renderDetailsBody(targetEl, headerHtml, bodyHtml) {
+        const hasSelection = !!state.selectedKey;
+        const clearCommand = 'clearSelectedDetails';
+        const clearDescription = buttonDescriptions.clearSelection;
+        targetEl.innerHTML =
+            '<div class="nv-details-card-head">' +
+            '<div class="nv-details-card-head-main">' + headerHtml + '</div>' +
+            '<button class="secondary nv-details-clear-btn" type="button" ' +
+            'title="' + escapeHtml(buildButtonTooltip(clearCommand, clearDescription)) + '" ' +
+            'aria-label="' + escapeHtml(buildButtonAriaLabel(clearCommand, clearDescription)) + '" ' +
+            (hasSelection ? '' : 'disabled') +
+            '>' +
+            'X' +
+            '</button>' +
+            '</div>' +
+            '<div class="nv-details-card-content">' + bodyHtml + '</div>';
+    }
+
     function setDetailsPlaceholder() {
-        dom.detailsCard.innerHTML = '<span class="text-muted">Select an item to see details.</span>';
+        renderDetailsBody(
+            dom.detailsCard,
+            '<div class="text-muted">No selection</div>',
+            '<span class="text-muted">Select an item to see details.</span>',
+        );
     }
 
     switchView(viewKinds.OVERVIEW);

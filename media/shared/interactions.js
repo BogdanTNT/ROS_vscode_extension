@@ -202,6 +202,68 @@
         };
     };
 
+    /**
+     * Bind Enter-key submission for a modal confirm action.
+     * - Ignores textarea/contenteditable targets to preserve multiline editing.
+     * - Ignores controls where Enter already has native action semantics.
+     */
+    interactions.bindModalEnterConfirm = (options) => {
+        const modal = options?.modal;
+        const confirmButton = options?.confirmButton;
+        const allowTextarea = options?.allowTextarea === true;
+        const shouldSubmit = typeof options?.shouldSubmit === 'function'
+            ? options.shouldSubmit
+            : () => true;
+
+        if (!(modal instanceof Element) || !(confirmButton instanceof HTMLElement)) {
+            return () => {};
+        }
+
+        const onKeyDown = (event) => {
+            if (!(event instanceof KeyboardEvent)) {
+                return;
+            }
+            if (event.key !== 'Enter' || event.defaultPrevented || event.isComposing) {
+                return;
+            }
+            if (event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) {
+                return;
+            }
+            if (modal.classList.contains('hidden')) {
+                return;
+            }
+
+            const target = event.target;
+            if (!(target instanceof Element)) {
+                return;
+            }
+            if (!modal.contains(target)) {
+                return;
+            }
+            if (!allowTextarea && target.closest('textarea, [contenteditable="true"]')) {
+                return;
+            }
+            if (target.closest('button, a[href], summary, select, input[type="button"], input[type="submit"], input[type="checkbox"], input[type="radio"]')) {
+                return;
+            }
+            if (confirmButton.hasAttribute('disabled') || confirmButton.getAttribute('aria-disabled') === 'true') {
+                return;
+            }
+            if (!shouldSubmit(event)) {
+                return;
+            }
+
+            event.preventDefault();
+            event.stopPropagation();
+            confirmButton.click();
+        };
+
+        modal.addEventListener('keydown', onKeyDown);
+        return () => {
+            modal.removeEventListener('keydown', onKeyDown);
+        };
+    };
+
     // Install globally once per webview document.
     if (!window.__rosSingleClickActivationInstalled) {
         window.__rosSingleClickActivationInstalled = true;

@@ -28,6 +28,7 @@ export interface RosWorkspacePackageDetails {
     launchFiles: string[];
     nodes: RosRunnableNodeInfo[];
     isPython: boolean;
+    isCmake: boolean;
 }
 
 export interface RosRunnableNodeInfo {
@@ -108,6 +109,14 @@ interface TrackedTerminal extends TrackedTerminalInfo {
     /** Set after a Ctrl+C has been sent so the next kill force-closes. */
     ctrlCSent?: boolean;
 }
+
+type RosNodeTemplateKind =
+    | 'none'
+    | 'publisher'
+    | 'subscriber'
+    | 'service'
+    | 'client'
+    | 'timer';
 
 const DEFAULT_ROS_GRAPH_LIST_TIMEOUT_SECONDS = 6;
 const DEFAULT_ROS_NODE_INFO_TIMEOUT_SECONDS = 3;
@@ -327,23 +336,18 @@ export class RosWorkspace {
     }
 
     async listWorkspacePackages(): Promise<string[]> {
-        const srcDir = this.getSrcDir();
-        if (!srcDir) {
+        const workspacePath = this.getWorkspacePath();
+        if (!workspacePath || !fs.existsSync(workspacePath)) {
             return [];
         }
 
-        const packageXmlFiles = this.findPackageXmlFiles(srcDir, 4);
+        const packageXmlFiles = this.findPackageXmlFiles(workspacePath, 6);
         const names = new Set<string>();
 
         for (const file of packageXmlFiles) {
-            try {
-                const xml = fs.readFileSync(file, 'utf8');
-                const match = xml.match(/<name>\s*([^<\s]+)\s*<\/name>/);
-                if (match?.[1]) {
-                    names.add(match[1]);
-                }
-            } catch {
-                // ignore malformed package.xml
+            const packageName = this.readPackageNameFromPackageXml(file);
+            if (packageName) {
+                names.add(packageName);
             }
         }
 
@@ -351,42 +355,34 @@ export class RosWorkspace {
     }
 
     async listWorkspacePackageDetails(): Promise<RosWorkspacePackageDetails[]> {
-        const srcDir = this.getSrcDir();
-        if (!srcDir) {
+        const workspacePath = this.getWorkspacePath();
+        if (!workspacePath || !fs.existsSync(workspacePath)) {
             return [];
         }
 
-        const packageXmlFiles = this.findPackageXmlFiles(srcDir, 4);
+        const packageXmlFiles = this.findPackageXmlFiles(workspacePath, 6);
         const packages: RosWorkspacePackageDetails[] = [];
         const seen = new Set<string>();
 
         for (const file of packageXmlFiles) {
-            try {
-                const xml = fs.readFileSync(file, 'utf8');
-                const match = xml.match(/<name>\s*([^<\s]+)\s*<\/name>/);
-                if (!match?.[1]) {
-                    continue;
-                }
-                const name = match[1];
-                if (seen.has(name)) {
-                    continue;
-                }
-                const packagePath = path.dirname(file);
-                const launchFiles = this.findLaunchFiles(packagePath, 3);
-                const nodes = this.findRunnableNodes(packagePath);
-
-                const isPython = fs.existsSync(path.join(packagePath, 'setup.py'));
-                packages.push({
-                    name,
-                    packagePath,
-                    launchFiles,
-                    nodes,
-                    isPython,
-                });
-                seen.add(name);
-            } catch {
-                // ignore malformed package.xml
+            const name = this.readPackageNameFromPackageXml(file);
+            if (!name || seen.has(name)) {
+                continue;
             }
+            const packagePath = path.dirname(file);
+            const launchFiles = this.findLaunchFiles(packagePath, 3);
+            const nodes = this.findRunnableNodes(packagePath);
+            const isPython = fs.existsSync(path.join(packagePath, 'setup.py'));
+            const isCmake = fs.existsSync(path.join(packagePath, 'CMakeLists.txt'));
+            packages.push({
+                name,
+                packagePath,
+                launchFiles,
+                nodes,
+                isPython,
+                isCmake,
+            });
+            seen.add(name);
         }
 
         return packages.sort((a, b) => a.name.localeCompare(b.name));
@@ -422,6 +418,7 @@ export class RosWorkspace {
 
             const nodes = Array.from(mergedNodes.values()).sort((a, b) => a.name.localeCompare(b.name));
             const isPython = packagePath ? fs.existsSync(path.join(packagePath, 'setup.py')) : false;
+            const isCmake = packagePath ? fs.existsSync(path.join(packagePath, 'CMakeLists.txt')) : false;
 
             return {
                 name: packageName,
@@ -429,6 +426,7 @@ export class RosWorkspace {
                 launchFiles,
                 nodes,
                 isPython,
+                isCmake,
             };
         }));
     }
@@ -590,60 +588,88 @@ export class RosWorkspace {
     }
 
     /**
-     * Add a new Python node to an existing ament_python package.
-     * Creates the .py source file and registers it in setup.py console_scripts.
+     * Add a new node to an existing workspace package.
+     * Supports both ament_python (setup.py) and ament_cmake (CMakeLists.txt).
      */
-    async addNodeToPackage(packageName: string, nodeName: string): Promise<boolean> {
-        const srcDir = this.getSrcDir();
-        if (!srcDir) {
-            vscode.window.showErrorMessage('Could not determine workspace src directory.');
+    async addNodeToPackage(
+        packageName: string,
+        nodeName: string,
+        packagePathHint?: string,
+        nodeTemplate?: string,
+        nodeTopic?: string,
+    ): Promise<boolean> {
+        const safePackageName = this.sanitizeRosPackageName(packageName);
+        if (!safePackageName) {
+            vscode.window.showErrorMessage(
+                'Invalid package name. Use only letters, numbers, and underscores, and start with a letter.',
+            );
             return false;
         }
 
-        const pkgDir = path.join(srcDir, packageName);
-        const pyDir = path.join(pkgDir, packageName);
+        const safeNodeName = this.sanitizeRosNodeName(nodeName);
+        if (!safeNodeName) {
+            vscode.window.showErrorMessage(
+                'Invalid node name. Use only letters, numbers, and underscores, and start with a letter.',
+            );
+            return false;
+        }
+        const templateKind = this.normalizeNodeTemplateKind(nodeTemplate);
+        const normalizedTemplateTopic = this.normalizeNodeTemplateTopic(nodeTopic);
+
+        const pkgDir = this.resolveWorkspacePackagePath(safePackageName, packagePathHint);
+        if (!pkgDir) {
+            vscode.window.showErrorMessage(`Package folder not found for "${safePackageName}" in this workspace.`);
+            return false;
+        }
+
         const setupPyPath = path.join(pkgDir, 'setup.py');
-        const nodeFilePath = path.join(pyDir, `${nodeName}.py`);
+        if (fs.existsSync(setupPyPath)) {
+            return this.addPythonNodeToPackage(
+                pkgDir,
+                safePackageName,
+                safeNodeName,
+                setupPyPath,
+                templateKind,
+                normalizedTemplateTopic,
+            );
+        }
+
+        const cmakePath = path.join(pkgDir, 'CMakeLists.txt');
+        if (fs.existsSync(cmakePath)) {
+            return this.addCppNodeToPackage(
+                pkgDir,
+                safeNodeName,
+                cmakePath,
+                templateKind,
+                normalizedTemplateTopic,
+            );
+        }
+
+        vscode.window.showErrorMessage(
+            `Package "${safePackageName}" is not supported for add-node (missing setup.py or CMakeLists.txt).`,
+        );
+        return false;
+    }
+
+    private async addPythonNodeToPackage(
+        pkgDir: string,
+        safePackageName: string,
+        safeNodeName: string,
+        setupPyPath: string,
+        templateKind: RosNodeTemplateKind,
+        templateTopic: string,
+    ): Promise<boolean> {
+        const pyDir = path.join(pkgDir, safePackageName);
+        const nodeFilePath = path.join(pyDir, `${safeNodeName}.py`);
 
         if (!fs.existsSync(pyDir)) {
             vscode.window.showErrorMessage(`Package folder not found: ${pyDir}`);
             return false;
         }
 
-        if (!fs.existsSync(setupPyPath)) {
-            vscode.window.showErrorMessage(`setup.py not found for package "${packageName}".`);
-            return false;
-        }
-
         // 1. Create the node .py file if it doesn't exist
         if (!fs.existsSync(nodeFilePath)) {
-            const template =
-`#!/usr/bin/env python3
-import rclpy
-from rclpy.node import Node
-
-
-class ${this.toPascalCase(nodeName)}Node(Node):
-    def __init__(self):
-        super().__init__('${nodeName}')
-        self.get_logger().info('${nodeName} node started')
-
-
-def main(args=None):
-    rclpy.init(args=args)
-    node = ${this.toPascalCase(nodeName)}Node()
-    try:
-        rclpy.spin(node)
-    except KeyboardInterrupt:
-        pass
-    finally:
-        node.destroy_node()
-        rclpy.shutdown()
-
-
-if __name__ == '__main__':
-    main()
-`;
+            const template = this.buildPythonNodeTemplate(safeNodeName, templateKind, templateTopic);
             try {
                 fs.writeFileSync(nodeFilePath, template, { mode: 0o755 });
             } catch (err) {
@@ -655,7 +681,7 @@ if __name__ == '__main__':
         // 2. Register the entry point in setup.py console_scripts
         try {
             let setupPy = fs.readFileSync(setupPyPath, 'utf8');
-            const entry = `'${nodeName} = ${packageName}.${nodeName}:main'`;
+            const entry = `'${safeNodeName} = ${safePackageName}.${safeNodeName}:main'`;
 
             if (setupPy.includes(entry)) {
                 // Already registered, just open the file
@@ -698,6 +724,577 @@ if __name__ == '__main__':
         await vscode.window.showTextDocument(uri, { preview: false });
 
         return true;
+    }
+
+    private normalizeNodeTemplateKind(rawKind?: string): RosNodeTemplateKind {
+        const normalized = String(rawKind || 'none').trim().toLowerCase();
+        switch (normalized) {
+            case 'publisher':
+            case 'subscriber':
+            case 'service':
+            case 'client':
+            case 'timer':
+                return normalized;
+            default:
+                return 'none';
+        }
+    }
+
+    private normalizeNodeTemplateTopic(rawTopic?: string): string {
+        const trimmed = String(rawTopic || '').trim();
+        if (!trimmed) {
+            return 'chatter';
+        }
+        return trimmed;
+    }
+
+    private escapePythonSingleQuotedString(value: string): string {
+        return String(value || '').replace(/\\/g, '\\\\').replace(/'/g, '\\\'');
+    }
+
+    private escapeCppDoubleQuotedString(value: string): string {
+        return String(value || '').replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+    }
+
+    private buildPythonNodeTemplate(
+        safeNodeName: string,
+        templateKind: RosNodeTemplateKind,
+        templateTopic: string,
+    ): string {
+        const className = `${this.toPascalCase(safeNodeName)}Node`;
+        const escapedTopicName = this.escapePythonSingleQuotedString(templateTopic);
+
+        if (templateKind === 'publisher') {
+            return `#!/usr/bin/env python3
+import rclpy
+from rclpy.node import Node
+from std_msgs.msg import String
+
+
+class ${className}(Node):
+    def __init__(self):
+        super().__init__('${safeNodeName}')
+        self.publisher_ = self.create_publisher(String, '${escapedTopicName}', 10)
+        self.timer_ = self.create_timer(0.5, self.publish_once)
+        self.published_ = False
+        self.get_logger().info('${safeNodeName} publisher node started on topic ${escapedTopicName}')
+
+    def publish_once(self):
+        if self.published_:
+            return
+        msg = String()
+        msg.data = 'hello world my name is ${safeNodeName}'
+        self.publisher_.publish(msg)
+        self.get_logger().info(f'Publishing: {msg.data}')
+        self.published_ = True
+        self.timer_.cancel()
+
+
+def main(args=None):
+    rclpy.init(args=args)
+    node = ${className}()
+    try:
+        rclpy.spin(node)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        node.destroy_node()
+        rclpy.shutdown()
+
+
+if __name__ == '__main__':
+    main()
+`;
+        }
+
+        if (templateKind === 'subscriber') {
+            return `#!/usr/bin/env python3
+import rclpy
+from rclpy.node import Node
+from std_msgs.msg import String
+
+
+class ${className}(Node):
+    def __init__(self):
+        super().__init__('${safeNodeName}')
+        self.subscription = self.create_subscription(
+            String,
+            '${escapedTopicName}',
+            self.listener_callback,
+            10,
+        )
+        self.subscription
+        self.get_logger().info('${safeNodeName} subscriber node listening on ${escapedTopicName}')
+
+    def listener_callback(self, msg):
+        self.get_logger().info(f'Received: {msg.data}')
+
+
+def main(args=None):
+    rclpy.init(args=args)
+    node = ${className}()
+    try:
+        rclpy.spin(node)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        node.destroy_node()
+        rclpy.shutdown()
+
+
+if __name__ == '__main__':
+    main()
+`;
+        }
+
+        if (templateKind === 'service') {
+            return `#!/usr/bin/env python3
+import rclpy
+from rclpy.node import Node
+from std_srvs.srv import Trigger
+
+
+class ${className}(Node):
+    def __init__(self):
+        super().__init__('${safeNodeName}')
+        self.service_ = self.create_service(Trigger, '${safeNodeName}_service', self.handle_request)
+        self.get_logger().info('${safeNodeName} service node started')
+
+    def handle_request(self, request, response):
+        del request
+        response.success = True
+        response.message = 'Service request handled by ${safeNodeName}'
+        self.get_logger().info('Handled service request')
+        return response
+
+
+def main(args=None):
+    rclpy.init(args=args)
+    node = ${className}()
+    try:
+        rclpy.spin(node)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        node.destroy_node()
+        rclpy.shutdown()
+
+
+if __name__ == '__main__':
+    main()
+`;
+        }
+
+        if (templateKind === 'client') {
+            return `#!/usr/bin/env python3
+import rclpy
+from rclpy.node import Node
+from std_srvs.srv import Trigger
+
+
+class ${className}(Node):
+    def __init__(self):
+        super().__init__('${safeNodeName}')
+        self.client_ = self.create_client(Trigger, '${safeNodeName}_service')
+        while not self.client_.wait_for_service(timeout_sec=1.0):
+            self.get_logger().info('Waiting for service...')
+        self.request_count_ = 0
+        self.timer_ = self.create_timer(5.0, self.send_request)
+        self.get_logger().info('${safeNodeName} client node started')
+
+    def send_request(self):
+        request = Trigger.Request()
+        future = self.client_.call_async(request)
+        future.add_done_callback(self.handle_response)
+        self.request_count_ += 1
+        self.get_logger().info(f'Sent request #{self.request_count_}')
+
+    def handle_response(self, future):
+        try:
+            response = future.result()
+            self.get_logger().info(f'Response: success={response.success}, message={response.message}')
+        except Exception as err:
+            self.get_logger().error(f'Service call failed: {err}')
+
+
+def main(args=None):
+    rclpy.init(args=args)
+    node = ${className}()
+    try:
+        rclpy.spin(node)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        node.destroy_node()
+        rclpy.shutdown()
+
+
+if __name__ == '__main__':
+    main()
+`;
+        }
+
+        if (templateKind === 'timer') {
+            return `#!/usr/bin/env python3
+import rclpy
+from rclpy.node import Node
+
+
+class ${className}(Node):
+    def __init__(self):
+        super().__init__('${safeNodeName}')
+        self.counter_ = 0
+        self.timer_ = self.create_timer(1.0, self.on_timer)
+        self.get_logger().info('${safeNodeName} timer node started')
+
+    def on_timer(self):
+        self.counter_ += 1
+        self.get_logger().info(f'Tick {self.counter_}')
+
+
+def main(args=None):
+    rclpy.init(args=args)
+    node = ${className}()
+    try:
+        rclpy.spin(node)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        node.destroy_node()
+        rclpy.shutdown()
+
+
+if __name__ == '__main__':
+    main()
+`;
+        }
+
+        return `#!/usr/bin/env python3
+import rclpy
+from rclpy.node import Node
+
+
+class ${className}(Node):
+    def __init__(self):
+        super().__init__('${safeNodeName}')
+        self.get_logger().info('${safeNodeName} node started')
+
+
+def main(args=None):
+    rclpy.init(args=args)
+    node = ${className}()
+    try:
+        rclpy.spin(node)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        node.destroy_node()
+        rclpy.shutdown()
+
+
+if __name__ == '__main__':
+    main()
+`;
+    }
+
+    private async addCppNodeToPackage(
+        pkgDir: string,
+        safeNodeName: string,
+        cmakePath: string,
+        templateKind: RosNodeTemplateKind,
+        templateTopic: string,
+    ): Promise<boolean> {
+        const cppSrcDir = path.join(pkgDir, 'src');
+        const nodeFilePath = path.join(cppSrcDir, `${safeNodeName}.cpp`);
+        const relativeSourcePath = path.posix.join('src', `${safeNodeName}.cpp`);
+        const template = this.buildCppNodeTemplate(safeNodeName, templateKind, templateTopic);
+        const templateDependencies = this.getCppTemplateDependencies(templateKind);
+
+        try {
+            fs.mkdirSync(cppSrcDir, { recursive: true });
+        } catch (err) {
+            vscode.window.showErrorMessage(`Failed to create C++ source directory: ${err}`);
+            return false;
+        }
+
+        if (!fs.existsSync(nodeFilePath)) {
+            try {
+                fs.writeFileSync(nodeFilePath, template, { encoding: 'utf8' });
+            } catch (err) {
+                vscode.window.showErrorMessage(`Failed to create C++ node source file: ${err}`);
+                return false;
+            }
+        }
+
+        try {
+            const cmake = fs.readFileSync(cmakePath, 'utf8');
+            const updated = this.ensureCppNodeRegisteredInCmake(
+                cmake,
+                safeNodeName,
+                relativeSourcePath,
+                templateDependencies,
+            );
+            if (updated !== cmake) {
+                fs.writeFileSync(cmakePath, updated, 'utf8');
+            }
+        } catch (err) {
+            vscode.window.showErrorMessage(`Failed to update CMakeLists.txt: ${err}`);
+            return false;
+        }
+
+        const uri = vscode.Uri.file(nodeFilePath);
+        await vscode.window.showTextDocument(uri, { preview: false });
+        return true;
+    }
+
+    private ensureCppNodeRegisteredInCmake(
+        cmake: string,
+        nodeName: string,
+        relativeSourcePath: string,
+        extraDependencies: string[] = [],
+    ): string {
+        let updated = cmake;
+        const dependencies = Array.from(new Set(['rclcpp', ...extraDependencies]));
+        dependencies.forEach((dependency) => {
+            updated = this.ensureFindPackageDependency(updated, dependency);
+        });
+
+        const escapedNode = this.escapeRegex(nodeName);
+        const hasExecutable = new RegExp(
+            `add_executable\\s*\\(\\s*${escapedNode}\\b`,
+            'm',
+        ).test(updated);
+        if (!hasExecutable) {
+            const block = [
+                `add_executable(${nodeName} ${relativeSourcePath})`,
+                `ament_target_dependencies(${nodeName} ${dependencies.join(' ')})`,
+                'install(TARGETS',
+                `  ${nodeName}`,
+                '  DESTINATION lib/${PROJECT_NAME}',
+                ')',
+            ].join('\n');
+            updated = this.insertBeforeAmentPackage(updated, block);
+        }
+
+        dependencies.forEach((dependency) => {
+            updated = this.ensureTargetDependency(updated, nodeName, dependency);
+        });
+        updated = this.ensureInstallTarget(updated, nodeName);
+        return updated;
+    }
+
+    private getCppTemplateDependencies(templateKind: RosNodeTemplateKind): string[] {
+        if (templateKind === 'publisher' || templateKind === 'subscriber') {
+            return ['std_msgs'];
+        }
+        return [];
+    }
+
+    private buildCppNodeTemplate(
+        safeNodeName: string,
+        templateKind: RosNodeTemplateKind,
+        templateTopic: string,
+    ): string {
+        const className = `${this.toPascalCase(safeNodeName)}Node`;
+        const escapedNodeName = this.escapeCppDoubleQuotedString(safeNodeName);
+        const escapedTopicName = this.escapeCppDoubleQuotedString(templateTopic);
+
+        if (templateKind === 'publisher') {
+            return `#include <chrono>
+#include <functional>
+#include <memory>
+#include <string>
+
+#include "rclcpp/rclcpp.hpp"
+#include "std_msgs/msg/string.hpp"
+
+class ${className} : public rclcpp::Node {
+public:
+  ${className}()
+  : Node("${escapedNodeName}"), published_(false) {
+    publisher_ = this->create_publisher<std_msgs::msg::String>("${escapedTopicName}", 10);
+    timer_ = this->create_wall_timer(
+      std::chrono::milliseconds(500),
+      std::bind(&${className}::publish_once, this)
+    );
+    RCLCPP_INFO(this->get_logger(), "${escapedNodeName} publisher node started on topic ${escapedTopicName}");
+  }
+
+private:
+  void publish_once() {
+    if (published_) {
+      return;
+    }
+    auto msg = std_msgs::msg::String();
+    msg.data = "hello world my name is ${escapedNodeName}";
+    publisher_->publish(msg);
+    RCLCPP_INFO(this->get_logger(), "Publishing: %s", msg.data.c_str());
+    published_ = true;
+    timer_->cancel();
+  }
+
+  rclcpp::Publisher<std_msgs::msg::String>::SharedPtr publisher_;
+  rclcpp::TimerBase::SharedPtr timer_;
+  bool published_;
+};
+
+int main(int argc, char * argv[]) {
+  rclcpp::init(argc, argv);
+  rclcpp::spin(std::make_shared<${className}>());
+  rclcpp::shutdown();
+  return 0;
+}
+`;
+        }
+
+        if (templateKind === 'subscriber') {
+            return `#include <functional>
+#include <memory>
+
+#include "rclcpp/rclcpp.hpp"
+#include "std_msgs/msg/string.hpp"
+
+class ${className} : public rclcpp::Node {
+public:
+  ${className}()
+  : Node("${escapedNodeName}") {
+    subscription_ = this->create_subscription<std_msgs::msg::String>(
+      "${escapedTopicName}",
+      10,
+      std::bind(&${className}::on_message, this, std::placeholders::_1)
+    );
+    RCLCPP_INFO(this->get_logger(), "${escapedNodeName} subscriber node listening on ${escapedTopicName}");
+  }
+
+private:
+  void on_message(const std_msgs::msg::String::SharedPtr msg) const {
+    RCLCPP_INFO(this->get_logger(), "Received: %s", msg->data.c_str());
+  }
+
+  rclcpp::Subscription<std_msgs::msg::String>::SharedPtr subscription_;
+};
+
+int main(int argc, char * argv[]) {
+  rclcpp::init(argc, argv);
+  rclcpp::spin(std::make_shared<${className}>());
+  rclcpp::shutdown();
+  return 0;
+}
+`;
+        }
+
+        return `#include <memory>
+
+#include "rclcpp/rclcpp.hpp"
+
+class ${className} : public rclcpp::Node {
+public:
+  ${className}()
+  : Node("${escapedNodeName}") {
+    RCLCPP_INFO(this->get_logger(), "${escapedNodeName} node started");
+  }
+};
+
+int main(int argc, char * argv[]) {
+  rclcpp::init(argc, argv);
+  rclcpp::spin(std::make_shared<${className}>());
+  rclcpp::shutdown();
+  return 0;
+}
+`;
+    }
+
+    private ensureFindPackageDependency(cmake: string, dependency: string): string {
+        const escapedDep = this.escapeRegex(dependency);
+        if (new RegExp(`find_package\\s*\\(\\s*${escapedDep}\\b`, 'i').test(cmake)) {
+            return cmake;
+        }
+
+        const findAmentPattern = /find_package\s*\(\s*ament_cmake\s+REQUIRED\s*\)\s*\n?/i;
+        if (findAmentPattern.test(cmake)) {
+            return cmake.replace(
+                findAmentPattern,
+                (match) => `${match}find_package(${dependency} REQUIRED)\n`,
+            );
+        }
+
+        const projectPattern = /project\s*\([^\)]*\)\s*\n?/i;
+        if (projectPattern.test(cmake)) {
+            return cmake.replace(
+                projectPattern,
+                (match) => `${match}find_package(${dependency} REQUIRED)\n`,
+            );
+        }
+
+        return `find_package(${dependency} REQUIRED)\n${cmake}`;
+    }
+
+    private ensureTargetDependency(cmake: string, targetName: string, dependency: string): string {
+        const escapedTarget = this.escapeRegex(targetName);
+        const targetDepPattern = new RegExp(
+            `ament_target_dependencies\\s*\\(\\s*${escapedTarget}[\\s\\S]*?\\)`,
+            'm',
+        );
+        const existingCall = cmake.match(targetDepPattern)?.[0];
+        if (existingCall) {
+            const hasDependency = new RegExp(`\\b${this.escapeRegex(dependency)}\\b`, 'm').test(existingCall);
+            if (hasDependency) {
+                return cmake;
+            }
+            return cmake.replace(
+                targetDepPattern,
+                existingCall.replace(/\)\s*$/, ` ${dependency})`),
+            );
+        }
+
+        const executablePattern = new RegExp(
+            `add_executable\\s*\\(\\s*${escapedTarget}[\\s\\S]*?\\)`,
+            'm',
+        );
+        if (executablePattern.test(cmake)) {
+            return cmake.replace(
+                executablePattern,
+                (match) => `${match}\nament_target_dependencies(${targetName} ${dependency})`,
+            );
+        }
+
+        return this.insertBeforeAmentPackage(
+            cmake,
+            `ament_target_dependencies(${targetName} ${dependency})`,
+        );
+    }
+
+    private ensureInstallTarget(cmake: string, targetName: string): string {
+        const escapedTarget = this.escapeRegex(targetName);
+        const installTargetPattern = new RegExp(
+            `install\\s*\\(\\s*TARGETS[\\s\\S]*?\\b${escapedTarget}\\b[\\s\\S]*?\\)`,
+            'm',
+        );
+        if (installTargetPattern.test(cmake)) {
+            return cmake;
+        }
+
+        const installBlock = [
+            'install(TARGETS',
+            `  ${targetName}`,
+            '  DESTINATION lib/${PROJECT_NAME}',
+            ')',
+        ].join('\n');
+        return this.insertBeforeAmentPackage(cmake, installBlock);
+    }
+
+    private insertBeforeAmentPackage(cmake: string, block: string): string {
+        const normalizedBlock = block.trim();
+        const amentPackagePattern = /^\s*ament_package\s*\(\s*\)\s*$/m;
+        if (amentPackagePattern.test(cmake)) {
+            return cmake.replace(
+                amentPackagePattern,
+                `${normalizedBlock}\n\nament_package()`,
+            );
+        }
+
+        const trailingNewline = cmake.endsWith('\n') ? '' : '\n';
+        return `${cmake}${trailingNewline}\n${normalizedBlock}\n`;
     }
 
     private toPascalCase(name: string): string {
@@ -2665,8 +3262,58 @@ if __name__ == '__main__':
         return undefined;
     }
 
+    private readPackageNameFromPackageXml(packageXmlPath: string): string | undefined {
+        try {
+            const xml = fs.readFileSync(packageXmlPath, 'utf8');
+            const match = xml.match(/<name>\s*([^<\s]+)\s*<\/name>/);
+            return match?.[1];
+        } catch {
+            return undefined;
+        }
+    }
+
+    private resolveWorkspacePackagePath(packageName: string, packagePathHint?: string): string | undefined {
+        const hintedPath = String(packagePathHint || '').trim();
+        if (hintedPath) {
+            const resolvedHint = path.resolve(hintedPath);
+            const hintedPackageXml = path.join(resolvedHint, 'package.xml');
+            if (fs.existsSync(hintedPackageXml)) {
+                const hintedName = this.readPackageNameFromPackageXml(hintedPackageXml);
+                if (hintedName === packageName) {
+                    return resolvedHint;
+                }
+            }
+        }
+
+        const workspacePath = this.getWorkspacePath();
+        if (!workspacePath || !fs.existsSync(workspacePath)) {
+            return undefined;
+        }
+
+        const packageXmlFiles = this.findPackageXmlFiles(workspacePath, 6);
+        for (const packageXmlFile of packageXmlFiles) {
+            const candidateName = this.readPackageNameFromPackageXml(packageXmlFile);
+            if (candidateName === packageName) {
+                return path.dirname(packageXmlFile);
+            }
+        }
+
+        return undefined;
+    }
+
     private sanitizeRosPackageName(name: string): string | undefined {
         const trimmed = name.trim();
+        if (!trimmed) {
+            return undefined;
+        }
+        if (!/^[A-Za-z][A-Za-z0-9_]*$/.test(trimmed)) {
+            return undefined;
+        }
+        return trimmed;
+    }
+
+    private sanitizeRosNodeName(name: string): string | undefined {
+        const trimmed = String(name || '').trim();
         if (!trimmed) {
             return undefined;
         }

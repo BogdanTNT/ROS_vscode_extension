@@ -9,9 +9,86 @@
     let terminalEventsBound = false;
     const killFeedbackUntil = new Map();
     const KILL_FEEDBACK_MS = 1200;
+    const COPY_FEEDBACK_MS = 2400;
+    let copyPopupEl = null;
+    let copyPopupTimeout = null;
 
     const getPkgList = () => document.getElementById('pkgList');
     const getOtherPkgList = () => document.getElementById('otherPkgList');
+    const clearCopyPopup = () => {
+        if (copyPopupTimeout) {
+            clearTimeout(copyPopupTimeout);
+            copyPopupTimeout = null;
+        }
+        if (copyPopupEl?.parentElement) {
+            copyPopupEl.parentElement.removeChild(copyPopupEl);
+        }
+        copyPopupEl = null;
+    };
+    const resolveCopyPopupAnchor = (anchorSource) => {
+        if (anchorSource && typeof anchorSource.clientX === 'number' && typeof anchorSource.clientY === 'number') {
+            if (anchorSource.clientX > 0 || anchorSource.clientY > 0) {
+                return { x: anchorSource.clientX, y: anchorSource.clientY };
+            }
+        }
+
+        const targetEl = anchorSource instanceof Element
+            ? anchorSource
+            : (anchorSource?.target instanceof Element ? anchorSource.target : null);
+        if (targetEl) {
+            const rect = targetEl.getBoundingClientRect();
+            return {
+                x: rect.left + (rect.width / 2),
+                y: rect.top + 8,
+            };
+        }
+
+        return { x: 24, y: 24 };
+    };
+    const showCopyPopup = (message, anchorSource, variant = 'ok') => {
+        clearCopyPopup();
+
+        const anchor = resolveCopyPopupAnchor(anchorSource);
+        const popup = document.createElement('div');
+        popup.className = `copy-popup ${variant === 'error' ? 'error' : ''}`;
+        popup.textContent = message;
+        document.body.appendChild(popup);
+
+        const viewportWidth = window.innerWidth || document.documentElement.clientWidth || 0;
+        const viewportHeight = window.innerHeight || document.documentElement.clientHeight || 0;
+        const popupWidth = popup.offsetWidth || 220;
+        const popupHeight = popup.offsetHeight || 36;
+        const margin = 10;
+        const left = Math.max(
+            margin,
+            Math.min(viewportWidth - popupWidth - margin, anchor.x + 10),
+        );
+        const top = Math.max(
+            margin,
+            Math.min(viewportHeight - popupHeight - margin, anchor.y + 10),
+        );
+
+        popup.style.left = `${Math.round(left)}px`;
+        popup.style.top = `${Math.round(top)}px`;
+
+        copyPopupEl = popup;
+        copyPopupTimeout = setTimeout(() => {
+            if (!copyPopupEl) {
+                return;
+            }
+            copyPopupEl.classList.add('hide');
+            const popRef = copyPopupEl;
+            copyPopupTimeout = setTimeout(() => {
+                if (popRef?.parentElement) {
+                    popRef.parentElement.removeChild(popRef);
+                }
+                if (copyPopupEl === popRef) {
+                    copyPopupEl = null;
+                }
+                copyPopupTimeout = null;
+            }, 180);
+        }, COPY_FEEDBACK_MS);
+    };
     const renderPackageSections = () => {
         renderPackages();
         renderOtherPackages();
@@ -353,8 +430,9 @@
         const addNodeBtn = target.closest('.add-node-btn');
         if (addNodeBtn) {
             const pkgName = addNodeBtn.dataset.pkg;
+            const pkgPath = addNodeBtn.dataset.pkgPath || '';
             if (pkgName && window.PM.handlers?.openAddNodeModal) {
-                window.PM.handlers.openAddNodeModal(pkgName);
+                window.PM.handlers.openAddNodeModal(pkgName, pkgPath);
             }
             return;
         }
@@ -400,7 +478,7 @@
 
         const pkgNameEl = target.closest('.pkg-name');
         if (pkgNameEl) {
-            copyPackage(pkgNameEl.dataset.name);
+            copyPackage(pkgNameEl.dataset.name, event);
             return;
         }
 
@@ -477,7 +555,7 @@
         const pkgNameEl = target.closest('.pkg-name');
         if (pkgNameEl) {
             event.preventDefault();
-            copyPackage(pkgNameEl.dataset.name);
+            copyPackage(pkgNameEl.dataset.name, pkgNameEl);
             return;
         }
 
@@ -1017,8 +1095,8 @@
             const summaryLabel = detailsReady
                 ? `${launchCount} ${launchLabel} / ${nodeCount} ${nodeLabel}`
                 : (pkg.detailsLoading ? 'loading details…' : 'details on expand');
-            const addNodeBtn = canAddNode && pkg.isPython
-                ? '<button class="secondary small add-node-btn" data-pkg="' + escapeAttr(pkg.name) + '">＋ Node</button>'
+            const addNodeBtn = canAddNode && (pkg.isPython || pkg.isCmake)
+                ? '<button class="secondary small add-node-btn" data-pkg="' + escapeAttr(pkg.name) + '" data-pkg-path="' + escapeAttr(pkg.packagePath || '') + '">＋ Node</button>'
                 : '';
             const packagePinKey = getPackagePinKey(pkg.name);
             const packagePinned = state.pinnedPaths.includes(packagePinKey);
@@ -1232,15 +1310,13 @@
             : '<li class="text-muted">No pinned items</li>';
     };
 
-    const copyPackage = async (name) => {
+    const copyPackage = async (name, anchorSource) => {
+        const anchor = resolveCopyPopupAnchor(anchorSource);
         try {
             await navigator.clipboard.writeText(name);
-            dom.pkgStatusEl.textContent = 'Copied "' + name + '"';
-            setTimeout(() => {
-                dom.pkgStatusEl.textContent = '';
-            }, 1200);
+            showCopyPopup(`Copied "${name}"`, anchor, 'ok');
         } catch {
-            dom.pkgStatusEl.textContent = 'Failed to copy "' + name + '"';
+            showCopyPopup(`Failed to copy "${name}"`, anchor, 'error');
         }
     };
 
