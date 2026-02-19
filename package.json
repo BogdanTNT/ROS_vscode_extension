@@ -2,7 +2,7 @@
   "name": "ros-dev-toolkit",
   "displayName": "ROS Dev Toolkit",
   "description": "A VS Code extension for ROS development – create packages, build & run nodes, and visualize the ROS graph.",
-  "version": "0.1.1",
+  "version": "0.1.3",
   "publisher": "BogdanRosca",
   "repository": {
     "type": "git",

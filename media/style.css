@@ -885,6 +885,17 @@ button.term-kill.is-pending {
     min-width: 0;
 }
 
+.nv-details-card-head-actions {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    flex-wrap: wrap;
+}
+
+.nv-details-action-btn {
+    white-space: nowrap;
+}
+
 .nv-details-title {
     min-width: 0;
     overflow: hidden;

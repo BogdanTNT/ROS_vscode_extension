@@ -292,6 +292,68 @@ setup(
         expect(nodeFile).toContain('\'/scan_lidar\'');
     });
 
+    it('uses tutorial-style AddTwoInts service template for python nodes', async () => {
+        workspaceRoot = createTempWorkspace({
+            'src/pkg_a/package.xml': '<package><name>pkg_a</name></package>',
+            'src/pkg_a/setup.py': `
+from setuptools import setup
+
+setup(
+    name='pkg_a',
+    entry_points={
+        'console_scripts': [
+        ],
+    },
+)
+`,
+            'src/pkg_a/pkg_a/__init__.py': '',
+        });
+
+        __setWorkspaceFolder(workspaceRoot);
+        const ros = new RosWorkspace();
+
+        const created = await ros.addNodeToPackage('pkg_a', 'srv_node', undefined, 'service');
+        expect(created).toBe(true);
+
+        const nodeFilePath = path.join(workspaceRoot, 'src/pkg_a/pkg_a/srv_node.py');
+        const nodeFile = fs.readFileSync(nodeFilePath, 'utf8');
+        expect(nodeFile).toContain('from example_interfaces.srv import AddTwoInts');
+        expect(nodeFile).toContain("self.service_ = self.create_service(AddTwoInts, 'add_two_ints'");
+        expect(nodeFile).toContain('response.sum = request.a + request.b');
+        expect(nodeFile).toContain('def add_two_ints_callback(');
+    });
+
+    it('uses tutorial-style AddTwoInts client template for python nodes', async () => {
+        workspaceRoot = createTempWorkspace({
+            'src/pkg_a/package.xml': '<package><name>pkg_a</name></package>',
+            'src/pkg_a/setup.py': `
+from setuptools import setup
+
+setup(
+    name='pkg_a',
+    entry_points={
+        'console_scripts': [
+        ],
+    },
+)
+`,
+            'src/pkg_a/pkg_a/__init__.py': '',
+        });
+
+        __setWorkspaceFolder(workspaceRoot);
+        const ros = new RosWorkspace();
+
+        const created = await ros.addNodeToPackage('pkg_a', 'cli_node', undefined, 'client');
+        expect(created).toBe(true);
+
+        const nodeFilePath = path.join(workspaceRoot, 'src/pkg_a/pkg_a/cli_node.py');
+        const nodeFile = fs.readFileSync(nodeFilePath, 'utf8');
+        expect(nodeFile).toContain('from example_interfaces.srv import AddTwoInts');
+        expect(nodeFile).toContain("self.client_ = self.create_client(AddTwoInts, 'add_two_ints')");
+        expect(nodeFile).toContain('future = node.send_request(2, 3)');
+        expect(nodeFile).toContain('rclpy.spin_until_future_complete(node, future)');
+    });
+
     it('uses publisher template for C++ node and adds std_msgs dependency', async () => {
         workspaceRoot = createTempWorkspace({
             'test_export/src/test_cpp_pkg/package.xml': '<package><name>test_cpp_pkg</name></package>',
@@ -359,6 +421,72 @@ ament_package()
         expect(cppFile).toContain('create_subscription<std_msgs::msg::String>(');
         expect(cppFile).toContain('"/scan"');
         expect(cppFile).toContain('Received: %s');
+    });
+
+    it('uses AddTwoInts service template for C++ nodes and adds example_interfaces dependency', async () => {
+        workspaceRoot = createTempWorkspace({
+            'test_export/src/test_cpp_pkg/package.xml': '<package><name>test_cpp_pkg</name></package>',
+            'test_export/src/test_cpp_pkg/CMakeLists.txt': `
+cmake_minimum_required(VERSION 3.8)
+project(test_cpp_pkg)
+
+find_package(ament_cmake REQUIRED)
+
+ament_package()
+`,
+        });
+
+        __setWorkspaceFolder(workspaceRoot);
+        const ros = new RosWorkspace();
+
+        const packagePath = path.join(workspaceRoot, 'test_export/src/test_cpp_pkg');
+        const created = await ros.addNodeToPackage(
+            'test_cpp_pkg',
+            'cpp_service',
+            packagePath,
+            'service',
+        );
+        expect(created).toBe(true);
+
+        const cppFile = fs.readFileSync(path.join(packagePath, 'src/cpp_service.cpp'), 'utf8');
+        expect(cppFile).toContain('#include "example_interfaces/srv/add_two_ints.hpp"');
+        expect(cppFile).toContain('create_service<example_interfaces::srv::AddTwoInts>(');
+        expect(cppFile).toContain('response->sum = request->a + request->b;');
+
+        const cmake = fs.readFileSync(path.join(packagePath, 'CMakeLists.txt'), 'utf8');
+        expect(cmake).toContain('find_package(example_interfaces REQUIRED)');
+        expect(cmake).toContain('ament_target_dependencies(cpp_service rclcpp example_interfaces)');
+    });
+
+    it('uses AddTwoInts client template for C++ nodes', async () => {
+        workspaceRoot = createTempWorkspace({
+            'test_export/src/test_cpp_pkg/package.xml': '<package><name>test_cpp_pkg</name></package>',
+            'test_export/src/test_cpp_pkg/CMakeLists.txt': `
+cmake_minimum_required(VERSION 3.8)
+project(test_cpp_pkg)
+
+find_package(ament_cmake REQUIRED)
+
+ament_package()
+`,
+        });
+
+        __setWorkspaceFolder(workspaceRoot);
+        const ros = new RosWorkspace();
+
+        const packagePath = path.join(workspaceRoot, 'test_export/src/test_cpp_pkg');
+        const created = await ros.addNodeToPackage(
+            'test_cpp_pkg',
+            'cpp_client',
+            packagePath,
+            'client',
+        );
+        expect(created).toBe(true);
+
+        const cppFile = fs.readFileSync(path.join(packagePath, 'src/cpp_client.cpp'), 'utf8');
+        expect(cppFile).toContain('#include "example_interfaces/srv/add_two_ints.hpp"');
+        expect(cppFile).toContain('create_client<example_interfaces::srv::AddTwoInts>("add_two_ints")');
+        expect(cppFile).toContain('rclcpp::spin_until_future_complete(node, future)');
     });
 
     it('adds a C++ node and updates CMakeLists.txt for a workspace ament_cmake package', async () => {

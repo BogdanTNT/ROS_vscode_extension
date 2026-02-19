@@ -66,6 +66,21 @@ export interface RosTopicPublishResult {
     error?: string;
 }
 
+export interface RosActionGoalTemplateResult {
+    success: boolean;
+    actionName: string;
+    actionType?: string;
+    template?: string;
+    error?: string;
+}
+
+export interface RosActionGoalResult {
+    success: boolean;
+    actionName: string;
+    actionType?: string;
+    error?: string;
+}
+
 export interface RosTopicMessageSubscription extends vscode.Disposable {
     topicName: string;
 }
@@ -1206,33 +1221,32 @@ from std_msgs.msg import String
 
 class ${className}(Node):
     def __init__(self):
+        # Give this node a unique runtime name.
         super().__init__('${safeNodeName}')
+        # 1) Publisher: sends String messages to this topic.
         self.publisher_ = self.create_publisher(String, '${escapedTopicName}', 10)
-        self.timer_ = self.create_timer(0.5, self.publish_once)
-        self.published_ = False
+        # 2) Timer: calls timer_callback every 0.5s.
+        self.timer_ = self.create_timer(0.5, self.timer_callback)
+        self.counter_ = 0
         self.get_logger().info('${safeNodeName} publisher node started on topic ${escapedTopicName}')
 
-    def publish_once(self):
-        if self.published_:
-            return
+    def timer_callback(self):
+        # This function runs repeatedly from the timer.
         msg = String()
-        msg.data = 'hello world my name is ${safeNodeName}'
+        msg.data = f'Hello from ${safeNodeName}: {self.counter_}'
         self.publisher_.publish(msg)
         self.get_logger().info(f'Publishing: {msg.data}')
-        self.published_ = True
-        self.timer_.cancel()
+        self.counter_ += 1
 
 
 def main(args=None):
+    # rclpy setup.
     rclpy.init(args=args)
     node = ${className}()
-    try:
-        rclpy.spin(node)
-    except KeyboardInterrupt:
-        pass
-    finally:
-        node.destroy_node()
-        rclpy.shutdown()
+    # Keep node alive so callbacks continue running.
+    rclpy.spin(node)
+    node.destroy_node()
+    rclpy.shutdown()
 
 
 if __name__ == '__main__':
@@ -1249,30 +1263,30 @@ from std_msgs.msg import String
 
 class ${className}(Node):
     def __init__(self):
+        # Give this node a unique runtime name.
         super().__init__('${safeNodeName}')
+        # Create subscriber for String messages on this topic.
         self.subscription = self.create_subscription(
             String,
             '${escapedTopicName}',
             self.listener_callback,
             10,
         )
-        self.subscription
         self.get_logger().info('${safeNodeName} subscriber node listening on ${escapedTopicName}')
 
     def listener_callback(self, msg):
+        # Called each time a new message is received.
         self.get_logger().info(f'Received: {msg.data}')
 
 
 def main(args=None):
+    # rclpy setup.
     rclpy.init(args=args)
     node = ${className}()
-    try:
-        rclpy.spin(node)
-    except KeyboardInterrupt:
-        pass
-    finally:
-        node.destroy_node()
-        rclpy.shutdown()
+    # Keep node alive so callbacks continue running.
+    rclpy.spin(node)
+    node.destroy_node()
+    rclpy.shutdown()
 
 
 if __name__ == '__main__':
@@ -1284,33 +1298,33 @@ if __name__ == '__main__':
             return `#!/usr/bin/env python3
 import rclpy
 from rclpy.node import Node
-from std_srvs.srv import Trigger
+from example_interfaces.srv import AddTwoInts
 
 
 class ${className}(Node):
     def __init__(self):
+        # Give this node a unique runtime name.
         super().__init__('${safeNodeName}')
-        self.service_ = self.create_service(Trigger, '${safeNodeName}_service', self.handle_request)
-        self.get_logger().info('${safeNodeName} service node started')
+        # Create a very simple service server.
+        # Rename "add_two_ints" later if you want.
+        self.service_ = self.create_service(AddTwoInts, 'add_two_ints', self.add_two_ints_callback)
+        self.get_logger().info('Service ready: add_two_ints')
 
-    def handle_request(self, request, response):
-        del request
-        response.success = True
-        response.message = 'Service request handled by ${safeNodeName}'
-        self.get_logger().info('Handled service request')
+    def add_two_ints_callback(self, request, response):
+        # request has "a" and "b"; fill response.sum.
+        response.sum = request.a + request.b
+        self.get_logger().info(f'Incoming request: a={request.a}, b={request.b}')
         return response
 
 
 def main(args=None):
+    # rclpy setup.
     rclpy.init(args=args)
     node = ${className}()
-    try:
-        rclpy.spin(node)
-    except KeyboardInterrupt:
-        pass
-    finally:
-        node.destroy_node()
-        rclpy.shutdown()
+    # Keep node alive so it can answer service calls.
+    rclpy.spin(node)
+    node.destroy_node()
+    rclpy.shutdown()
 
 
 if __name__ == '__main__':
@@ -1322,44 +1336,42 @@ if __name__ == '__main__':
             return `#!/usr/bin/env python3
 import rclpy
 from rclpy.node import Node
-from std_srvs.srv import Trigger
+from example_interfaces.srv import AddTwoInts
 
 
 class ${className}(Node):
     def __init__(self):
+        # Give this node a unique runtime name.
         super().__init__('${safeNodeName}')
-        self.client_ = self.create_client(Trigger, '${safeNodeName}_service')
+        # Create a client for the "add_two_ints" service.
+        self.client_ = self.create_client(AddTwoInts, 'add_two_ints')
         while not self.client_.wait_for_service(timeout_sec=1.0):
-            self.get_logger().info('Waiting for service...')
-        self.request_count_ = 0
-        self.timer_ = self.create_timer(5.0, self.send_request)
-        self.get_logger().info('${safeNodeName} client node started')
+            self.get_logger().info('Service not available, waiting...')
+        self.request_ = AddTwoInts.Request()
+        self.get_logger().info('Client ready for service: add_two_ints')
 
-    def send_request(self):
-        request = Trigger.Request()
-        future = self.client_.call_async(request)
-        future.add_done_callback(self.handle_response)
-        self.request_count_ += 1
-        self.get_logger().info(f'Sent request #{self.request_count_}')
-
-    def handle_response(self, future):
-        try:
-            response = future.result()
-            self.get_logger().info(f'Response: success={response.success}, message={response.message}')
-        except Exception as err:
-            self.get_logger().error(f'Service call failed: {err}')
+    def send_request(self, a, b):
+        # Fill request and send it asynchronously.
+        self.request_.a = a
+        self.request_.b = b
+        return self.client_.call_async(self.request_)
 
 
 def main(args=None):
+    # rclpy setup.
     rclpy.init(args=args)
     node = ${className}()
-    try:
-        rclpy.spin(node)
-    except KeyboardInterrupt:
-        pass
-    finally:
-        node.destroy_node()
-        rclpy.shutdown()
+    # Change these numbers to test different requests.
+    future = node.send_request(2, 3)
+    rclpy.spin_until_future_complete(node, future)
+
+    if future.result() is not None:
+        node.get_logger().info(f'Result: {future.result().sum}')
+    else:
+        node.get_logger().error('Service call failed')
+
+    node.destroy_node()
+    rclpy.shutdown()
 
 
 if __name__ == '__main__':
@@ -1520,6 +1532,9 @@ if __name__ == '__main__':
         if (templateKind === 'publisher' || templateKind === 'subscriber') {
             return ['std_msgs'];
         }
+        if (templateKind === 'service' || templateKind === 'client') {
+            return ['example_interfaces'];
+        }
         return [];
     }
 
@@ -1545,7 +1560,9 @@ class ${className} : public rclcpp::Node {
 public:
   ${className}()
   : Node("${escapedNodeName}"), published_(false) {
+    // 1) Publisher: sends String messages to this topic.
     publisher_ = this->create_publisher<std_msgs::msg::String>("${escapedTopicName}", 10);
+    // 2) Timer: calls publish_once every 0.5s.
     timer_ = this->create_wall_timer(
       std::chrono::milliseconds(500),
       std::bind(&${className}::publish_once, this)
@@ -1555,6 +1572,7 @@ public:
 
 private:
   void publish_once() {
+    // This function runs repeatedly from the timer.
     if (published_) {
       return;
     }
@@ -1591,6 +1609,7 @@ class ${className} : public rclcpp::Node {
 public:
   ${className}()
   : Node("${escapedNodeName}") {
+    // Create subscriber for String messages on this topic.
     subscription_ = this->create_subscription<std_msgs::msg::String>(
       "${escapedTopicName}",
       10,
@@ -1601,6 +1620,7 @@ public:
 
 private:
   void on_message(const std_msgs::msg::String::SharedPtr msg) const {
+    // Called each time a new message is received.
     RCLCPP_INFO(this->get_logger(), "Received: %s", msg->data.c_str());
   }
 
@@ -1610,6 +1630,97 @@ private:
 int main(int argc, char * argv[]) {
   rclcpp::init(argc, argv);
   rclcpp::spin(std::make_shared<${className}>());
+  rclcpp::shutdown();
+  return 0;
+}
+`;
+        }
+
+        if (templateKind === 'service') {
+            return `#include <functional>
+#include <memory>
+
+#include "example_interfaces/srv/add_two_ints.hpp"
+#include "rclcpp/rclcpp.hpp"
+
+using std::placeholders::_1;
+using std::placeholders::_2;
+
+class ${className} : public rclcpp::Node {
+public:
+  ${className}()
+  : Node("${escapedNodeName}") {
+    // Create a very simple service server.
+    // Rename "add_two_ints" later if you want.
+    service_ = this->create_service<example_interfaces::srv::AddTwoInts>(
+      "add_two_ints",
+      std::bind(&${className}::add_two_ints, this, _1, _2)
+    );
+    RCLCPP_INFO(this->get_logger(), "Service ready: add_two_ints");
+  }
+
+private:
+  void add_two_ints(
+    const std::shared_ptr<example_interfaces::srv::AddTwoInts::Request> request,
+    std::shared_ptr<example_interfaces::srv::AddTwoInts::Response> response
+  ) {
+    // request has "a" and "b"; fill response->sum.
+    response->sum = request->a + request->b;
+    RCLCPP_INFO(
+      this->get_logger(),
+      "Incoming request: a=%ld, b=%ld",
+      static_cast<long>(request->a),
+      static_cast<long>(request->b)
+    );
+  }
+
+  rclcpp::Service<example_interfaces::srv::AddTwoInts>::SharedPtr service_;
+};
+
+int main(int argc, char * argv[]) {
+  rclcpp::init(argc, argv);
+  rclcpp::spin(std::make_shared<${className}>());
+  rclcpp::shutdown();
+  return 0;
+}
+`;
+        }
+
+        if (templateKind === 'client') {
+            return `#include <chrono>
+#include <memory>
+
+#include "example_interfaces/srv/add_two_ints.hpp"
+#include "rclcpp/rclcpp.hpp"
+
+using namespace std::chrono_literals;
+
+int main(int argc, char * argv[]) {
+  rclcpp::init(argc, argv);
+  auto node = rclcpp::Node::make_shared("${escapedNodeName}");
+
+  // Create a client for the "add_two_ints" service.
+  auto client = node->create_client<example_interfaces::srv::AddTwoInts>("add_two_ints");
+  while (!client->wait_for_service(1s)) {
+    RCLCPP_INFO(node->get_logger(), "Service not available, waiting...");
+  }
+
+  auto request = std::make_shared<example_interfaces::srv::AddTwoInts::Request>();
+  request->a = 2;
+  request->b = 3;
+
+  // Send request and wait for result.
+  auto future = client->async_send_request(request);
+  if (rclcpp::spin_until_future_complete(node, future) == rclcpp::FutureReturnCode::SUCCESS) {
+    RCLCPP_INFO(
+      node->get_logger(),
+      "Result: %ld",
+      static_cast<long>(future.get()->sum)
+    );
+  } else {
+    RCLCPP_ERROR(node->get_logger(), "Service call failed");
+  }
+
   rclcpp::shutdown();
   return 0;
 }
@@ -2919,6 +3030,115 @@ int main(int argc, char * argv[]) {
         }
     }
 
+    async getActionGoalTemplate(
+        actionName: string,
+        actionTypeHint?: string,
+    ): Promise<RosActionGoalTemplateResult> {
+        if (!this.isRos2()) {
+            return {
+                success: false,
+                actionName,
+                error: 'Action goals are only available in ROS 2.',
+            };
+        }
+
+        if (!this.isValidRosResourceName(actionName)) {
+            return {
+                success: false,
+                actionName,
+                error: 'Invalid action name.',
+            };
+        }
+
+        const actionType = await this.resolveActionType(actionName, actionTypeHint);
+        if (!actionType) {
+            return {
+                success: false,
+                actionName,
+                error: 'Could not resolve action type for this action.',
+            };
+        }
+
+        try {
+            const rawDefinition = await this.exec(`ros2 interface show ${actionType}`);
+            const goalDefinition = this.extractFirstInterfaceSection(rawDefinition);
+            const defaults = this.buildMessageDefaultsFromInterface(goalDefinition);
+            const template = JSON.stringify(defaults, null, 2);
+            return {
+                success: true,
+                actionName,
+                actionType,
+                template,
+            };
+        } catch (err) {
+            return {
+                success: false,
+                actionName,
+                actionType,
+                error: this.normalizeCliError(err, 'Failed to fetch action interface.'),
+            };
+        }
+    }
+
+    async sendActionGoal(
+        actionName: string,
+        payload: string,
+        actionTypeHint?: string,
+    ): Promise<RosActionGoalResult> {
+        if (!this.isRos2()) {
+            return {
+                success: false,
+                actionName,
+                error: 'Action goals are only available in ROS 2.',
+            };
+        }
+
+        if (!this.isValidRosResourceName(actionName)) {
+            return {
+                success: false,
+                actionName,
+                error: 'Invalid action name.',
+            };
+        }
+
+        const payloadText = String(payload ?? '').trim();
+        if (!payloadText) {
+            return {
+                success: false,
+                actionName,
+                error: 'Goal payload is empty.',
+            };
+        }
+
+        const actionType = await this.resolveActionType(actionName, actionTypeHint);
+        if (!actionType) {
+            return {
+                success: false,
+                actionName,
+                error: 'Could not resolve action type for this action.',
+            };
+        }
+
+        try {
+            // `ros2 action send_goal` may wait for action completion; enforce
+            // a bounded runtime so the webview stays responsive.
+            const command = `timeout 12s ros2 action send_goal ${actionName} ${actionType} '${payloadText}'`;
+            await this.exec(command);
+            return {
+                success: true,
+                actionName,
+                actionType,
+            };
+        } catch (err) {
+            return {
+                success: false,
+                actionName,
+                actionType,
+                error: this.normalizeCliError(err, 'Failed to send action goal.'),
+            };
+        }
+    }
+
     async getNodeGraphInfo(nodeName: string): Promise<RosNodeGraphInfo> {
         try {
             const timeoutSeconds = this.getNodeInfoTimeoutSeconds();
@@ -3337,6 +3557,32 @@ int main(int argc, char * argv[]) {
         }
     }
 
+    private async resolveActionType(actionName: string, actionTypeHint?: string): Promise<string | undefined> {
+        if (!this.isRos2()) {
+            return undefined;
+        }
+
+        const hinted = String(actionTypeHint ?? '').trim();
+        if (hinted && hinted !== 'unknown' && this.isValidRosTypeName(hinted)) {
+            return hinted;
+        }
+
+        try {
+            const raw = await this.exec(`ros2 action type ${actionName}`);
+            const resolved = raw
+                .split('\n')
+                .map((line) => line.trim())
+                .find(Boolean);
+
+            if (!resolved || !this.isValidRosTypeName(resolved)) {
+                return undefined;
+            }
+            return resolved;
+        } catch {
+            return undefined;
+        }
+    }
+
     private normalizeCliError(err: unknown, fallback: string): string {
         const text = String(err ?? '').trim();
         if (!text) {
@@ -3427,6 +3673,17 @@ int main(int argc, char * argv[]) {
         }
 
         return root;
+    }
+
+    private extractFirstInterfaceSection(rawInterface: string): string {
+        const lines: string[] = [];
+        for (const line of String(rawInterface || '').split('\n')) {
+            if (line.trim() === '---') {
+                break;
+            }
+            lines.push(line);
+        }
+        return lines.join('\n');
     }
 
     private parseInterfaceTypeDescriptor(typeToken: string): {

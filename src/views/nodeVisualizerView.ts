@@ -1,5 +1,7 @@
 import * as vscode from 'vscode';
 import {
+    RosActionGoalResult,
+    RosActionGoalTemplateResult,
     RosNodeGraphInfo,
     RosTopicMessageSubscription,
     RosTopicPublishResult,
@@ -150,6 +152,12 @@ export class NodeVisualizerViewProvider implements vscode.WebviewViewProvider {
                     break;
                 case 'publishTopicMessage':
                     await this._publishTopicMessage(msg.topicName, msg.payload, msg.topicTypeHint);
+                    break;
+                case 'getActionGoalTemplate':
+                    await this._sendActionGoalTemplate(msg.actionName, msg.actionTypeHint);
+                    break;
+                case 'sendActionGoal':
+                    await this._sendActionGoal(msg.actionName, msg.payload, msg.actionTypeHint);
                     break;
                 case 'requestUiPreferences':
                     this._sendUiPreferences();
@@ -690,6 +698,45 @@ export class NodeVisualizerViewProvider implements vscode.WebviewViewProvider {
         }
     }
 
+    private async _sendActionGoalTemplate(actionName: string, actionTypeHint?: string) {
+        const view = this._view;
+        if (!view || typeof actionName !== 'string' || !actionName) {
+            return;
+        }
+
+        const result: RosActionGoalTemplateResult = await this._ros.getActionGoalTemplate(
+            actionName,
+            typeof actionTypeHint === 'string' ? actionTypeHint : undefined,
+        );
+
+        if (this._view === view) {
+            view.webview.postMessage({
+                command: 'actionGoalTemplate',
+                ...result,
+            });
+        }
+    }
+
+    private async _sendActionGoal(actionName: string, payload: string, actionTypeHint?: string) {
+        const view = this._view;
+        if (!view || typeof actionName !== 'string' || !actionName) {
+            return;
+        }
+
+        const result: RosActionGoalResult = await this._ros.sendActionGoal(
+            actionName,
+            String(payload ?? ''),
+            typeof actionTypeHint === 'string' ? actionTypeHint : undefined,
+        );
+
+        if (this._view === view) {
+            view.webview.postMessage({
+                command: 'actionGoalResult',
+                ...result,
+            });
+        }
+    }
+
     private _loadPrefs(): NodeVisualizerPrefs {
         const stored = this._context.globalState.get<Partial<NodeVisualizerPrefs>>(NODE_VISUALIZER_PREFS_KEY, {});
         return {
@@ -813,6 +860,9 @@ export class NodeVisualizerViewProvider implements vscode.WebviewViewProvider {
         <button class="secondary hidden" id="btnPublishTopic" title="Publish a debug message to a topic">
             ✉ Publish
         </button>
+        <button class="secondary hidden" id="btnSendActionGoal" title="Send goal to selected action">
+            ▶ Send Goal
+        </button>
         <button id="btnRefresh" title="Refresh all graph data">↻ Refresh All</button>
         <label class="nv-layer">
             <input type="checkbox" id="toggleAutoRefresh" />
@@ -883,6 +933,35 @@ export class NodeVisualizerViewProvider implements vscode.WebviewViewProvider {
         <div class="modal-footer">
             <button class="secondary" id="btnCancelPublishTopic">Cancel</button>
             <button id="btnConfirmPublishTopic">Publish once</button>
+        </div>
+    </div>
+</div>
+
+<div class="modal hidden" id="actionGoalModal" role="dialog" aria-modal="true">
+    <div class="modal-backdrop" id="actionGoalBackdrop"></div>
+    <div class="modal-card nv-publish-modal-card">
+        <div class="modal-header">
+            <h3>Send Action Goal</h3>
+            <button class="secondary small" id="btnCloseActionGoal">✕</button>
+        </div>
+        <div class="modal-body">
+            <label for="actionGoalSelect">Action</label>
+            <select id="actionGoalSelect"></select>
+
+            <label for="actionGoalType">Action type</label>
+            <input type="text" id="actionGoalType" readonly />
+
+            <label for="actionGoalPayload">Goal (JSON / YAML)</label>
+            <textarea id="actionGoalPayload" class="nv-publish-payload" spellcheck="false"></textarea>
+
+            <div class="text-muted text-sm">
+                Auto-generated defaults are loaded from the action goal interface.
+            </div>
+            <div id="actionGoalStatus" class="mt text-sm hidden"></div>
+        </div>
+        <div class="modal-footer">
+            <button class="secondary" id="btnCancelActionGoal">Cancel</button>
+            <button id="btnConfirmActionGoal">Send goal</button>
         </div>
     </div>
 </div>

@@ -14,6 +14,8 @@
             SET_TRACKED_TOPICS: 'setTrackedTopics',
             GET_TOPIC_PUBLISH_TEMPLATE: 'getTopicPublishTemplate',
             PUBLISH_TOPIC_MESSAGE: 'publishTopicMessage',
+            GET_ACTION_GOAL_TEMPLATE: 'getActionGoalTemplate',
+            SEND_ACTION_GOAL: 'sendActionGoal',
         }),
         toWebview: Object.freeze({
             LOADING: 'loading',
@@ -24,6 +26,8 @@
             TOPIC_LATEST_MESSAGE: 'topicLatestMessage',
             TOPIC_PUBLISH_TEMPLATE: 'topicPublishTemplate',
             TOPIC_PUBLISH_RESULT: 'topicPublishResult',
+            ACTION_GOAL_TEMPLATE: 'actionGoalTemplate',
+            ACTION_GOAL_RESULT: 'actionGoalResult',
         }),
     });
 
@@ -49,6 +53,7 @@
     const dom = {
         btnRefresh: document.getElementById('btnRefresh'),
         btnPublishTopic: document.getElementById('btnPublishTopic'),
+        btnSendActionGoal: document.getElementById('btnSendActionGoal'),
         btnRefetchSelected: document.getElementById('btnRefetchSelected'),
         toggleAutoRefresh: document.getElementById('toggleAutoRefresh'),
         status: document.getElementById('status'),
@@ -82,6 +87,15 @@
         publishTopicType: document.getElementById('publishTopicType'),
         publishTopicPayload: document.getElementById('publishTopicPayload'),
         publishTopicStatus: document.getElementById('publishTopicStatus'),
+        actionGoalModal: document.getElementById('actionGoalModal'),
+        actionGoalBackdrop: document.getElementById('actionGoalBackdrop'),
+        btnCloseActionGoal: document.getElementById('btnCloseActionGoal'),
+        btnCancelActionGoal: document.getElementById('btnCancelActionGoal'),
+        btnConfirmActionGoal: document.getElementById('btnConfirmActionGoal'),
+        actionGoalSelect: document.getElementById('actionGoalSelect'),
+        actionGoalType: document.getElementById('actionGoalType'),
+        actionGoalPayload: document.getElementById('actionGoalPayload'),
+        actionGoalStatus: document.getElementById('actionGoalStatus'),
     };
 
     const emptyNodeInfo = Object.freeze({
@@ -125,6 +139,7 @@
         allPinnedTopicsPaused: false,
         allPinnedTopicMessages: {},
         publishTemplateByTopic: {},
+        goalTemplateByAction: {},
         graphData: {
             rosVersion: 2,
             nodes: [],
@@ -188,12 +203,18 @@
     const buttonDescriptions = Object.freeze({
         refresh: 'Refresh currently visible graph data',
         openPublishModal: 'Open topic message publish dialog',
+        openGoalModal: 'Open action goal sending dialog',
         refetchSelected: 'Refetch selected entity details now',
         refetchSelectedPending: 'Refreshing selected entity details now',
         closePublishModal: 'Close topic publish modal window',
         cancelPublishModal: 'Cancel topic publish modal action',
         publishOnce: 'Publish one message to topic',
+        closeGoalModal: 'Close action goal modal window',
+        cancelGoalModal: 'Cancel action goal modal action',
+        sendGoal: 'Send one goal to action',
         clearSelection: 'Clear selected details card item',
+        detailsPublish: 'Open publish dialog for topic',
+        detailsSendGoal: 'Open send goal for action',
         selectRow: 'Select item and show details',
         pinTopic: 'Pin this topic for monitoring',
         unpinTopic: 'Unpin this topic from monitor',
@@ -460,12 +481,27 @@
             : ('rostopic info ' + target);
     }
 
+    function getRosActionInfoCommand(actionName) {
+        const target = String(actionName || '<action>');
+        return isRos2Mode()
+            ? ('ros2 action info ' + target)
+            : 'Unavailable in ROS 1 mode';
+    }
+
     function getRosPublishCommand(topicName, topicType) {
         const safeTopic = String(topicName || '<topic>');
         const safeType = String(topicType || '<type>');
         return isRos2Mode()
             ? ("ros2 topic pub --once " + safeTopic + ' ' + safeType + " '<payload>'")
             : ("rostopic pub -1 " + safeTopic + ' ' + safeType + " '<payload>'");
+    }
+
+    function getRosSendGoalCommand(actionName, actionType) {
+        const safeAction = String(actionName || '<action>');
+        const safeType = String(actionType || '<type>');
+        return isRos2Mode()
+            ? ("ros2 action send_goal " + safeAction + ' ' + safeType + " '<goal>'")
+            : 'Unavailable in ROS 1 mode';
     }
 
     function getRosTopicEchoCommand(topicName) {
@@ -521,8 +557,11 @@
         if (selected.kind === viewKinds.TOPICS) {
             return getRosTopicInfoCommand(selected.name);
         }
-        if (selected.kind === viewKinds.SERVICES || selected.kind === viewKinds.ACTIONS) {
+        if (selected.kind === viewKinds.SERVICES) {
             return getRosNodeInfoCommand('<node>') + ' (for discovered nodes)';
+        }
+        if (selected.kind === viewKinds.ACTIONS) {
+            return getRosActionInfoCommand(selected.name);
         }
         if (selected.kind === viewKinds.PARAMETERS) {
             return getRosListCommandForKind(viewKinds.PARAMETERS);
@@ -539,6 +578,9 @@
         }
         if (row.key.startsWith(viewKinds.TOPICS + ':')) {
             return getRosTopicInfoCommand(row.name);
+        }
+        if (row.key.startsWith(viewKinds.ACTIONS + ':')) {
+            return getRosActionInfoCommand(row.name);
         }
         if (row.key.startsWith(viewKinds.PARAMETERS + ':')) {
             return getRosListCommandForKind(viewKinds.PARAMETERS);
@@ -565,8 +607,22 @@
     }
 
     function updateCoreButtonTooltips() {
+        const selectedTopicName = getSelectedTopicName();
+        const selectedTopic = getTopicByName(selectedTopicName) || state.graphData.topics[0];
+        const selectedActionName = getSelectedActionName();
+        const selectedAction = getActionByName(selectedActionName) || state.graphData.actions[0];
+
         applyButtonTooltip(dom.btnRefresh, getRosRefreshCommandForScope(computeCurrentScope()), buttonDescriptions.refresh);
-        applyButtonTooltip(dom.btnPublishTopic, 'openPublishTopicModal', buttonDescriptions.openPublishModal);
+        applyButtonTooltip(
+            dom.btnPublishTopic,
+            getRosPublishCommand(selectedTopic?.name, selectedTopic?.type),
+            buttonDescriptions.openPublishModal,
+        );
+        applyButtonTooltip(
+            dom.btnSendActionGoal,
+            getRosSendGoalCommand(selectedAction?.name, selectedAction?.type),
+            buttonDescriptions.openGoalModal,
+        );
         applyButtonTooltip(dom.btnRefetchSelected, getRefetchRosCommandForSelection(getSelectedEntityRef()), buttonDescriptions.refetchSelected);
         applyButtonTooltip(dom.btnClosePublishTopic, 'closePublishTopicModal', buttonDescriptions.closePublishModal);
         applyButtonTooltip(dom.btnCancelPublishTopic, 'closePublishTopicModal', buttonDescriptions.cancelPublishModal);
@@ -574,6 +630,13 @@
             dom.btnConfirmPublishTopic,
             getRosPublishCommand(dom.publishTopicSelect.value, dom.publishTopicType.value),
             buttonDescriptions.publishOnce,
+        );
+        applyButtonTooltip(dom.btnCloseActionGoal, 'closeActionGoalModal', buttonDescriptions.closeGoalModal);
+        applyButtonTooltip(dom.btnCancelActionGoal, 'closeActionGoalModal', buttonDescriptions.cancelGoalModal);
+        applyButtonTooltip(
+            dom.btnConfirmActionGoal,
+            getRosSendGoalCommand(dom.actionGoalSelect.value, dom.actionGoalType.value),
+            buttonDescriptions.sendGoal,
         );
         applyButtonTooltip(
             dom.btnToggleAllPinnedPause,
@@ -605,6 +668,9 @@
     dom.btnPublishTopic.addEventListener('click', () => {
         openPublishTopicModal();
     });
+    dom.btnSendActionGoal.addEventListener('click', () => {
+        openActionGoalModal();
+    });
     dom.btnRefetchSelected?.addEventListener('click', () => {
         refetchSelectedDetails();
     });
@@ -633,14 +699,51 @@
     dom.btnConfirmPublishTopic.addEventListener('click', () => {
         publishTopicMessage();
     });
+    dom.btnCloseActionGoal.addEventListener('click', () => {
+        closeActionGoalModal();
+    });
+    dom.btnCancelActionGoal.addEventListener('click', () => {
+        closeActionGoalModal();
+    });
+    dom.actionGoalBackdrop.addEventListener('click', () => {
+        closeActionGoalModal();
+    });
+    dom.actionGoalSelect.addEventListener('change', () => {
+        requestActionGoalTemplate(dom.actionGoalSelect.value);
+        updateCoreButtonTooltips();
+    });
+    dom.btnConfirmActionGoal.addEventListener('click', () => {
+        sendActionGoal();
+    });
     document.addEventListener('keydown', (event) => {
-        if (event.key === 'Escape' && !dom.publishTopicModal.classList.contains('hidden')) {
+        if (event.key !== 'Escape') {
+            return;
+        }
+        if (!dom.publishTopicModal.classList.contains('hidden')) {
             closePublishTopicModal();
+            return;
+        }
+        if (!dom.actionGoalModal.classList.contains('hidden')) {
+            closeActionGoalModal();
         }
     });
     dom.detailsCard?.addEventListener('click', (event) => {
         const target = event.target;
         if (!(target instanceof Element)) {
+            return;
+        }
+
+        const publishBtn = target.closest('.nv-details-publish-btn');
+        if (publishBtn) {
+            const selectedTopicName = publishBtn.getAttribute('data-topic-name') || getSelectedTopicName();
+            openPublishTopicModal(selectedTopicName);
+            return;
+        }
+
+        const sendGoalBtn = target.closest('.nv-details-send-goal-btn');
+        if (sendGoalBtn) {
+            const actionName = sendGoalBtn.getAttribute('data-action-name') || getSelectedActionName();
+            openActionGoalModal(actionName);
             return;
         }
 
@@ -733,10 +836,11 @@
             prunePinnedTopicsByGraph();
             state.selectedRefetchPendingByKind[viewKinds.PARAMETERS] = false;
             state.publishTemplateByTopic = {};
+            state.goalTemplateByAction = {};
             renderStatus();
             renderTabCounts();
             updateActionAvailability();
-            renderPublishButtonState();
+            renderToolbarActionButtons();
             renderPinnedTopics();
             syncTrackedTopicSubscriptions({ force: true });
             renderCurrentView();
@@ -793,10 +897,14 @@
             } else {
                 state.topicMessageReceivedAt[topicName] = Date.now();
             }
-            renderPinnedTopics();
+            if (!updatePinnedTopicMessagePanel(topicName)) {
+                renderPinnedTopics();
+            }
 
             if (state.selectedKey === (viewKinds.TOPICS + ':' + topicName)) {
-                showTopicDetails(topicName, dom.detailsCard);
+                if (!updateSelectedTopicMessagePanel(topicName)) {
+                    showTopicDetails(topicName, dom.detailsCard);
+                }
             }
             return;
         }
@@ -836,6 +944,16 @@
 
         if (msg.command === commands.toWebview.TOPIC_PUBLISH_RESULT) {
             handleTopicPublishResultMessage(msg);
+            return;
+        }
+
+        if (msg.command === commands.toWebview.ACTION_GOAL_TEMPLATE) {
+            handleActionGoalTemplateMessage(msg);
+            return;
+        }
+
+        if (msg.command === commands.toWebview.ACTION_GOAL_RESULT) {
+            handleActionGoalResultMessage(msg);
         }
     });
 
@@ -873,6 +991,7 @@
 
         if (!ros2) {
             dom.toggleActions.checked = false;
+            closeActionGoalModal();
         }
 
         if (!ros2 && state.activeView === viewKinds.ACTIONS) {
@@ -1351,6 +1470,111 @@
         return 'Updated ' + ageSeconds + 's ago (' + stamp + ')' + staleSuffix;
     }
 
+    function getPinnedTopicEmptyMessage(topicName) {
+        if (state.allPinnedTopicsPaused) {
+            return 'Reading paused for all pinned topics.';
+        }
+        return isPinnedTopicFrozen(topicName)
+            ? 'Reading paused.'
+            : 'No cached message yet.';
+    }
+
+    function getPinnedTopicCardElement(topicName) {
+        if (!(dom.pinnedTopicList instanceof HTMLElement)) {
+            return null;
+        }
+        const normalizedTopicName = normalizeTopicName(topicName);
+        if (!normalizedTopicName) {
+            return null;
+        }
+
+        const pinnedCards = Array.from(dom.pinnedTopicList.querySelectorAll('.nv-pinned-item'));
+        for (const card of pinnedCards) {
+            if (!(card instanceof HTMLElement)) {
+                continue;
+            }
+            const cardTopicName = normalizeTopicName(card.dataset.topicName || '');
+            if (cardTopicName === normalizedTopicName) {
+                return card;
+            }
+        }
+
+        return null;
+    }
+
+    function buildPinnedTopicCard(topic) {
+        const item = document.createElement('article');
+        const normalizedTopicName = normalizeTopicName(topic.name);
+        item.className = 'nv-pinned-item';
+        item.dataset.topicName = normalizedTopicName;
+
+        const topicType = topic.type || 'unknown';
+        const frozen = isPinnedTopicFrozen(topic.name);
+        const freezeIcon = frozen ? '▶' : '⏸';
+        const pinHelp = getTopicPinHelp(topic.name, true);
+        const freezeHelp = getTopicFreezeHelp(topic.name, frozen);
+        const effectivelyPaused = isPinnedTopicEffectivelyPaused(topic.name);
+        const displayedMessage = getPinnedTopicDisplayMessage(topic.name);
+        const emptyMessage = getPinnedTopicEmptyMessage(topic.name);
+
+        item.innerHTML =
+            '<div class="nv-pinned-head">' +
+            '<button class="pin-btn nv-topic-pin-btn nv-pinned-pin pinned" type="button" data-topic-name="' +
+            escapeHtml(topic.name) +
+            '"' + buildTooltipDataAttrs(pinHelp.command, pinHelp.description) +
+            ' aria-label="' + escapeHtml(buildButtonAriaLabel(pinHelp.command, pinHelp.description)) + '">' +
+            '★' +
+            '</button>' +
+            '<span class="nv-pinned-topic-name" title="' + escapeHtml(topic.name) + '">' +
+            escapeHtml(topic.name) +
+            '</span>' +
+            '<button class="pin-btn nv-topic-freeze-btn' + (frozen ? ' frozen' : '') + '" type="button" ' +
+            'data-topic-name="' + escapeHtml(topic.name) + '" ' +
+            buildTooltipDataAttrs(freezeHelp.command, freezeHelp.description) + ' aria-label="' +
+            escapeHtml(buildButtonAriaLabel(freezeHelp.command, freezeHelp.description)) + '">' +
+            freezeIcon +
+            '</button>' +
+            '<span class="nv-pinned-topic-type-inline" title="' + escapeHtml(topicType) + '">' +
+            escapeHtml(topicType) +
+            '</span>' +
+            '</div>' +
+            renderTopicMessageBlock(topic.name, {
+                compact: true,
+                messageOverride: displayedMessage,
+                emptyMessage,
+            });
+
+        if (effectivelyPaused) {
+            item.classList.add('is-paused');
+        }
+
+        return item;
+    }
+
+    function updatePinnedTopicMessagePanel(topicName) {
+        const normalizedTopicName = normalizeTopicName(topicName);
+        if (!normalizedTopicName || !isTopicPinned(normalizedTopicName)) {
+            return true;
+        }
+
+        const pinnedCard = getPinnedTopicCardElement(normalizedTopicName);
+        if (!pinnedCard) {
+            return false;
+        }
+
+        const displayedMessage = getPinnedTopicDisplayMessage(normalizedTopicName);
+        if (!displayedMessage) {
+            return false;
+        }
+
+        return updateTopicMessagePanelInContainer(
+            pinnedCard,
+            normalizedTopicName,
+            displayedMessage,
+            formatTopicMessageAge(normalizedTopicName),
+        );
+    }
+
     function renderPinnedTopics() {
         if (!dom.pinnedTopicList) {
             return;
@@ -1369,52 +1593,7 @@
             if (!topic) {
                 return;
             }
-
-            const item = document.createElement('article');
-            item.className = 'nv-pinned-item';
-            const topicType = topic.type || 'unknown';
-            const frozen = isPinnedTopicFrozen(topic.name);
-            const freezeIcon = frozen ? '▶' : '⏸';
-            const pinHelp = getTopicPinHelp(topic.name, true);
-            const freezeHelp = getTopicFreezeHelp(topic.name, frozen);
-            const effectivelyPaused = isPinnedTopicEffectivelyPaused(topic.name);
-            const displayedMessage = getPinnedTopicDisplayMessage(topic.name);
-            const emptyMessage = state.allPinnedTopicsPaused
-                ? 'Reading paused for all pinned topics.'
-                : (frozen ? 'Reading paused.' : 'No cached message yet.');
-
-            item.innerHTML =
-                '<div class="nv-pinned-head">' +
-                '<button class="pin-btn nv-topic-pin-btn nv-pinned-pin pinned" type="button" data-topic-name="' +
-                escapeHtml(topic.name) +
-                '"' + buildTooltipDataAttrs(pinHelp.command, pinHelp.description) +
-                ' aria-label="' + escapeHtml(buildButtonAriaLabel(pinHelp.command, pinHelp.description)) + '">' +
-                '★' +
-                '</button>' +
-                '<span class="nv-pinned-topic-name" title="' + escapeHtml(topic.name) + '">' +
-                escapeHtml(topic.name) +
-                '</span>' +
-                '<button class="pin-btn nv-topic-freeze-btn' + (frozen ? ' frozen' : '') + '" type="button" ' +
-                'data-topic-name="' + escapeHtml(topic.name) + '" ' +
-                buildTooltipDataAttrs(freezeHelp.command, freezeHelp.description) + ' aria-label="' +
-                escapeHtml(buildButtonAriaLabel(freezeHelp.command, freezeHelp.description)) + '">' +
-                freezeIcon +
-                '</button>' +
-                '<span class="nv-pinned-topic-type-inline" title="' + escapeHtml(topicType) + '">' +
-                escapeHtml(topicType) +
-                '</span>' +
-                '</div>' +
-                renderTopicMessageBlock(topic.name, {
-                    compact: true,
-                    messageOverride: displayedMessage,
-                    emptyMessage,
-                });
-
-            if (effectivelyPaused) {
-                item.classList.add('is-paused');
-            }
-
-            dom.pinnedTopicList.appendChild(item);
+            dom.pinnedTopicList.appendChild(buildPinnedTopicCard(topic));
         });
 
         if (!dom.pinnedTopicList.children.length) {
@@ -1430,14 +1609,29 @@
         return state.selectedKey.slice(prefix.length);
     }
 
+    function getSelectedActionName() {
+        const prefix = viewKinds.ACTIONS + ':';
+        if (!state.selectedKey.startsWith(prefix)) {
+            return '';
+        }
+        return state.selectedKey.slice(prefix.length);
+    }
+
     function getTopicByName(topicName) {
         return state.graphData.topics.find((topic) => topic.name === topicName);
     }
 
-    function renderPublishButtonState() {
+    function getActionByName(actionName) {
+        return state.graphData.actions.find((action) => action.name === actionName);
+    }
+
+    function renderToolbarActionButtons() {
         const isTopicsView = state.activeView === viewKinds.TOPICS;
+        const isActionsView = state.activeView === viewKinds.ACTIONS;
         dom.btnPublishTopic.classList.toggle('hidden', !isTopicsView);
         dom.btnPublishTopic.disabled = !isTopicsView || state.graphData.topics.length === 0;
+        dom.btnSendActionGoal.classList.toggle('hidden', !isActionsView);
+        dom.btnSendActionGoal.disabled = !isActionsView || !isRos2Mode() || state.graphData.actions.length === 0;
         updateCoreButtonTooltips();
     }
 
@@ -1472,17 +1666,14 @@
         });
     }
 
-    function openPublishTopicModal() {
-        if (state.activeView !== viewKinds.TOPICS) {
-            return;
-        }
-
+    function openPublishTopicModal(topicNameHint) {
         populatePublishTopicOptions();
         if (!dom.publishTopicSelect.options.length) {
             return;
         }
 
-        const selectedTopicName = getSelectedTopicName();
+        const requestedTopicName = normalizeTopicName(topicNameHint);
+        const selectedTopicName = requestedTopicName || getSelectedTopicName();
         const hasSelectedTopic = selectedTopicName
             && Array.from(dom.publishTopicSelect.options).some((option) => option.value === selectedTopicName);
         dom.publishTopicSelect.value = hasSelectedTopic
@@ -1629,6 +1820,179 @@
         });
     }
 
+    function setActionGoalStatus(text, options = {}) {
+        const message = String(text || '').trim();
+        dom.actionGoalStatus.className = 'mt text-sm';
+        dom.actionGoalStatus.style.color = options.isError ? 'var(--danger)' : '';
+
+        if (!message) {
+            dom.actionGoalStatus.textContent = '';
+            dom.actionGoalStatus.classList.add('hidden');
+            return;
+        }
+
+        if (options.showSpinner) {
+            dom.actionGoalStatus.innerHTML = '<span class="spinner"></span> ' + escapeHtml(message);
+        } else {
+            dom.actionGoalStatus.textContent = message;
+        }
+        dom.actionGoalStatus.classList.remove('hidden');
+    }
+
+    function populateActionGoalOptions() {
+        const actions = state.graphData.actions.slice().sort((a, b) => a.name.localeCompare(b.name));
+        dom.actionGoalSelect.innerHTML = '';
+
+        actions.forEach((action) => {
+            const option = document.createElement('option');
+            option.value = action.name;
+            option.textContent = action.name;
+            dom.actionGoalSelect.appendChild(option);
+        });
+    }
+
+    function openActionGoalModal(actionNameHint) {
+        if (!isRos2Mode()) {
+            return;
+        }
+
+        populateActionGoalOptions();
+        if (!dom.actionGoalSelect.options.length) {
+            return;
+        }
+
+        const requestedActionName = String(actionNameHint || '').trim();
+        const selectedActionName = requestedActionName || getSelectedActionName();
+        const hasSelectedAction = selectedActionName
+            && Array.from(dom.actionGoalSelect.options).some((option) => option.value === selectedActionName);
+        dom.actionGoalSelect.value = hasSelectedAction
+            ? selectedActionName
+            : dom.actionGoalSelect.options[0].value;
+
+        dom.actionGoalPayload.value = '';
+        dom.actionGoalType.value = '';
+        dom.btnConfirmActionGoal.disabled = true;
+        setActionGoalStatus('', {});
+        dom.actionGoalModal.classList.remove('hidden');
+
+        requestActionGoalTemplate(dom.actionGoalSelect.value);
+        updateCoreButtonTooltips();
+        dom.actionGoalPayload.focus();
+    }
+
+    function closeActionGoalModal() {
+        dom.actionGoalModal.classList.add('hidden');
+        dom.btnConfirmActionGoal.disabled = false;
+        setActionGoalStatus('', {});
+        updateCoreButtonTooltips();
+    }
+
+    function requestActionGoalTemplate(actionName) {
+        const normalizedActionName = String(actionName || '').trim();
+        if (!normalizedActionName) {
+            return;
+        }
+
+        const action = getActionByName(normalizedActionName);
+        const actionTypeHint = action?.type || '';
+        dom.actionGoalType.value = actionTypeHint && actionTypeHint !== 'unknown' ? actionTypeHint : 'Resolving...';
+        dom.actionGoalPayload.value = '';
+
+        const cached = state.goalTemplateByAction[normalizedActionName];
+        if (cached?.template) {
+            dom.actionGoalType.value = cached.actionType || actionTypeHint || '';
+            dom.actionGoalPayload.value = cached.template;
+            dom.btnConfirmActionGoal.disabled = false;
+            setActionGoalStatus('', {});
+            updateCoreButtonTooltips();
+            return;
+        }
+
+        dom.btnConfirmActionGoal.disabled = true;
+        setActionGoalStatus('Loading default goal...', { showSpinner: true });
+        updateCoreButtonTooltips();
+        vscode.postMessage({
+            command: commands.toHost.GET_ACTION_GOAL_TEMPLATE,
+            actionName: normalizedActionName,
+            actionTypeHint: actionTypeHint || '',
+        });
+    }
+
+    function handleActionGoalTemplateMessage(msg) {
+        const actionName = String(msg.actionName || '');
+        if (!actionName) {
+            return;
+        }
+
+        if (msg.success) {
+            const actionType = String(msg.actionType || '');
+            const template = String(msg.template || '{}');
+            state.goalTemplateByAction[actionName] = {
+                actionType,
+                template,
+            };
+
+            if (!dom.actionGoalModal.classList.contains('hidden') && dom.actionGoalSelect.value === actionName) {
+                dom.actionGoalType.value = actionType || '';
+                dom.actionGoalPayload.value = template;
+                dom.btnConfirmActionGoal.disabled = false;
+                setActionGoalStatus('', {});
+                updateCoreButtonTooltips();
+            }
+            return;
+        }
+
+        if (!dom.actionGoalModal.classList.contains('hidden') && dom.actionGoalSelect.value === actionName) {
+            dom.btnConfirmActionGoal.disabled = false;
+            dom.actionGoalType.value = String(msg.actionType || dom.actionGoalType.value || '');
+            setActionGoalStatus(String(msg.error || 'Failed to build action goal template.'), { isError: true });
+            updateCoreButtonTooltips();
+        }
+    }
+
+    function sendActionGoal() {
+        const actionName = String(dom.actionGoalSelect.value || '').trim();
+        const payload = String(dom.actionGoalPayload.value || '').trim();
+        const actionTypeHint = String(dom.actionGoalType.value || '').trim();
+
+        if (!actionName) {
+            setActionGoalStatus('Select an action first.', { isError: true });
+            return;
+        }
+        if (!payload) {
+            setActionGoalStatus('Goal cannot be empty.', { isError: true });
+            return;
+        }
+
+        dom.btnConfirmActionGoal.disabled = true;
+        setActionGoalStatus('Sending goal...', { showSpinner: true });
+        updateCoreButtonTooltips();
+        vscode.postMessage({
+            command: commands.toHost.SEND_ACTION_GOAL,
+            actionName,
+            payload,
+            actionTypeHint,
+        });
+    }
+
+    function handleActionGoalResultMessage(msg) {
+        const actionName = String(msg.actionName || '');
+        const success = msg.success === true;
+
+        if (dom.actionGoalModal.classList.contains('hidden')) {
+            return;
+        }
+
+        dom.btnConfirmActionGoal.disabled = false;
+        updateCoreButtonTooltips();
+        if (!success) {
+            setActionGoalStatus(String(msg.error || 'Failed to send action goal.'), { isError: true });
+            return;
+        }
+
+        setActionGoalStatus('Goal sent to ' + actionName + '.', {});
+    }
+
     function computeCurrentScope() {
         const view = state.activeView;
         if (view === viewKinds.OVERVIEW) {
@@ -1701,12 +2065,13 @@
         updateRefetchSelectedButtonState();
         dom.tabs.forEach((tab) => tab.classList.toggle('active', tab.dataset.view === view));
         dom.overviewToggleBar?.classList.toggle('hidden', view !== viewKinds.OVERVIEW);
-        renderPublishButtonState();
+        renderToolbarActionButtons();
         updateCoreButtonTooltips();
         const scope = sendViewScope();
 
         if (view === viewKinds.OVERVIEW) {
             closePublishTopicModal();
+            closeActionGoalModal();
             dom.overviewView.classList.remove('hidden');
             dom.listView.classList.add('hidden');
             requestGraphRefresh({
@@ -1720,6 +2085,9 @@
 
         if (view !== viewKinds.TOPICS) {
             closePublishTopicModal();
+        }
+        if (view !== viewKinds.ACTIONS) {
+            closeActionGoalModal();
         }
 
         dom.overviewView.classList.add('hidden');
@@ -2079,6 +2447,32 @@
         );
     }
 
+    function buildDetailsTopicActionButton(topicName, topicType) {
+        const command = getRosPublishCommand(topicName, topicType);
+        const description = buttonDescriptions.detailsPublish;
+        return (
+            '<button class="secondary small nv-details-action-btn nv-details-publish-btn" type="button" ' +
+            'data-topic-name="' + escapeHtml(topicName || '') + '"' +
+            buildTooltipDataAttrs(command, description) +
+            ' aria-label="' + escapeHtml(buildButtonAriaLabel(command, description)) + '">' +
+            '✉ Publish' +
+            '</button>'
+        );
+    }
+
+    function buildDetailsActionGoalButton(actionName, actionType) {
+        const command = getRosSendGoalCommand(actionName, actionType);
+        const description = buttonDescriptions.detailsSendGoal;
+        return (
+            '<button class="secondary small nv-details-action-btn nv-details-send-goal-btn" type="button" ' +
+            'data-action-name="' + escapeHtml(actionName || '') + '"' +
+            buildTooltipDataAttrs(command, description) +
+            ' aria-label="' + escapeHtml(buildButtonAriaLabel(command, description)) + '">' +
+            '▶ Send Goal' +
+            '</button>'
+        );
+    }
+
     function showEntityDetails(kind, name, targetEl) {
         if (kind === viewKinds.TOPICS) {
             showTopicDetails(name, targetEl);
@@ -2097,6 +2491,10 @@
             '<div class="nv-details-title">' +
             '<strong>' + escapeHtml(name) + '</strong> <span class="text-muted">(' + escapeHtml(kind.slice(0, -1)) + ')</span>' +
             '</div>';
+        const detailsActionButtons = [];
+        if (kind === viewKinds.ACTIONS && isRos2Mode()) {
+            detailsActionButtons.push(buildDetailsActionGoalButton(name, entity ? entity.type : ''));
+        }
 
         renderDetailsBody(
             targetEl,
@@ -2107,6 +2505,7 @@
             (isRefreshing
                 ? '<div class="text-muted text-sm"><span class="spinner"></span> Refreshing relation data...</div>'
                 : ''),
+            { headerActionsHtml: detailsActionButtons.join('') },
         );
     }
 
@@ -2117,6 +2516,7 @@
         const roles = cachedRoles
             ? { primary: cachedRoles.publishers, secondary: cachedRoles.subscribers }
             : fallbackRoles;
+        const topicMessageScrollState = captureTopicMessageScrollState(name, targetEl);
         const loadingRoles = state.topicRolesLoadingByName[name] === true;
         if (!cachedRoles && !loadingRoles) {
             requestTopicRoles(name);
@@ -2148,7 +2548,141 @@
                 ? '<div class="text-muted text-sm"><span class="spinner"></span> Refreshing topic details...</div>'
                 : '') +
             messageBlock,
+            { headerActionsHtml: buildDetailsTopicActionButton(name, entity ? entity.type : '') },
         );
+        restoreTopicMessageScrollState(name, targetEl, topicMessageScrollState);
+    }
+
+    function getTopicMessageElement(topicName, targetEl) {
+        if (!(targetEl instanceof HTMLElement)) {
+            return null;
+        }
+        const messageEl = targetEl.querySelector('.nv-topic-msg');
+        if (!(messageEl instanceof HTMLElement)) {
+            return null;
+        }
+
+        const normalizedTopicName = normalizeTopicName(topicName);
+        const currentTopicName = normalizeTopicName(messageEl.dataset.topicName || '');
+        if (currentTopicName && normalizedTopicName && currentTopicName !== normalizedTopicName) {
+            return null;
+        }
+
+        return messageEl;
+    }
+
+    function getTopicMessageAgeElement(topicName, targetEl) {
+        if (!(targetEl instanceof HTMLElement)) {
+            return null;
+        }
+        const ageCandidates = Array.from(targetEl.querySelectorAll('.nv-topic-msg-age'));
+        const normalizedTopicName = normalizeTopicName(topicName);
+        for (const ageEl of ageCandidates) {
+            if (!(ageEl instanceof HTMLElement)) {
+                continue;
+            }
+            const elementTopicName = normalizeTopicName(ageEl.dataset.topicName || '');
+            if (!elementTopicName || elementTopicName === normalizedTopicName) {
+                return ageEl;
+            }
+        }
+        return null;
+    }
+
+    function captureScrollSnapshot(scrollableEl) {
+        if (!(scrollableEl instanceof HTMLElement)) {
+            return null;
+        }
+        const maxScrollTop = Math.max(0, scrollableEl.scrollHeight - scrollableEl.clientHeight);
+        const scrollTop = Math.max(0, scrollableEl.scrollTop);
+        return {
+            scrollTop,
+            distanceFromBottom: Math.max(0, maxScrollTop - scrollTop),
+        };
+    }
+
+    function restoreScrollSnapshot(scrollableEl, snapshot) {
+        if (!(scrollableEl instanceof HTMLElement) || !snapshot) {
+            return;
+        }
+
+        const maxScrollTop = Math.max(0, scrollableEl.scrollHeight - scrollableEl.clientHeight);
+        if (maxScrollTop <= 0) {
+            scrollableEl.scrollTop = 0;
+            return;
+        }
+
+        if (snapshot.distanceFromBottom <= 2) {
+            scrollableEl.scrollTop = maxScrollTop;
+            return;
+        }
+
+        scrollableEl.scrollTop = Math.min(snapshot.scrollTop, maxScrollTop);
+    }
+
+    function upsertTopicMessageAgeElement(topicName, targetEl, messageEl, ageText) {
+        if (!(targetEl instanceof HTMLElement) || !(messageEl instanceof HTMLElement)) {
+            return;
+        }
+        const ageEl = getTopicMessageAgeElement(topicName, targetEl);
+        if (!ageText) {
+            if (ageEl) {
+                ageEl.remove();
+            }
+            return;
+        }
+
+        if (ageEl) {
+            ageEl.textContent = ageText;
+            ageEl.dataset.topicName = normalizeTopicName(topicName);
+            return;
+        }
+
+        const newAgeEl = document.createElement('div');
+        newAgeEl.className = 'text-muted text-sm nv-topic-msg-age';
+        newAgeEl.dataset.topicName = normalizeTopicName(topicName);
+        newAgeEl.textContent = ageText;
+        messageEl.insertAdjacentElement('afterend', newAgeEl);
+    }
+
+    function updateTopicMessagePanelInContainer(targetEl, topicName, message, ageText) {
+        if (!(targetEl instanceof HTMLElement)) {
+            return false;
+        }
+        const normalizedMessage = String(message || '').trim();
+        if (!normalizedMessage) {
+            return false;
+        }
+
+        const messageEl = getTopicMessageElement(topicName, targetEl);
+        if (!(messageEl instanceof HTMLElement)) {
+            return false;
+        }
+
+        const scrollSnapshot = captureScrollSnapshot(messageEl);
+        messageEl.textContent = normalizedMessage;
+        upsertTopicMessageAgeElement(topicName, targetEl, messageEl, String(ageText || '').trim());
+        restoreScrollSnapshot(messageEl, scrollSnapshot);
+        return true;
+    }
+
+    function updateSelectedTopicMessagePanel(topicName) {
+        return updateTopicMessagePanelInContainer(
+            dom.detailsCard,
+            topicName,
+            getTopicCachedMessage(topicName),
+            formatTopicMessageAge(topicName),
+        );
+    }
+
+    function captureTopicMessageScrollState(topicName, targetEl) {
+        const messageEl = getTopicMessageElement(topicName, targetEl);
+        return captureScrollSnapshot(messageEl);
+    }
+
+    function restoreTopicMessageScrollState(topicName, targetEl, snapshot) {
+        const messageEl = getTopicMessageElement(topicName, targetEl);
+        restoreScrollSnapshot(messageEl, snapshot);
     }
 
     function renderTopicMessageBlock(topicName, options = {}) {
@@ -2156,13 +2690,14 @@
         const label = compact ? 'Latest message' : 'Latest cached message';
         const rowClass = compact ? 'nv-topic-msg-row nv-topic-msg-row-compact' : 'nv-topic-msg-row';
         const contentClass = compact ? 'nv-topic-msg nv-topic-msg-compact' : 'nv-topic-msg';
+        const topicDataAttr = ' data-topic-name="' + escapeHtml(normalizeTopicName(topicName)) + '"';
         const cached = typeof options.messageOverride === 'string'
             ? String(options.messageOverride).trim()
             : getTopicCachedMessage(topicName);
         const emptyMessage = String(options.emptyMessage || 'No cached message yet.');
         if (!cached) {
             return (
-                '<div class="' + rowClass + '">' +
+                '<div class="' + rowClass + '"' + topicDataAttr + '>' +
                 '<span class="text-muted">' + escapeHtml(label) + ':</span> <em>' + escapeHtml(emptyMessage) + '</em>' +
                 '</div>'
             );
@@ -2170,12 +2705,12 @@
 
         const ageText = formatTopicMessageAge(topicName);
         const ageLine = ageText
-            ? '<div class="text-muted text-sm">' + escapeHtml(ageText) + '</div>'
+            ? '<div class="text-muted text-sm nv-topic-msg-age"' + topicDataAttr + '>' + escapeHtml(ageText) + '</div>'
             : '';
 
         return (
-            '<div class="' + rowClass + '"><span class="text-muted">' + escapeHtml(label) + ':</span></div>' +
-            '<pre class="' + contentClass + '">' + escapeHtml(cached) + '</pre>' +
+            '<div class="' + rowClass + '"' + topicDataAttr + '><span class="text-muted">' + escapeHtml(label) + ':</span></div>' +
+            '<pre class="' + contentClass + '"' + topicDataAttr + '>' + escapeHtml(cached) + '</pre>' +
             ageLine
         );
     }
@@ -2238,13 +2773,17 @@
         return { primary, secondary };
     }
 
-    function renderDetailsBody(targetEl, headerHtml, bodyHtml) {
+    function renderDetailsBody(targetEl, headerHtml, bodyHtml, options = {}) {
         const hasSelection = !!state.selectedKey;
+        const headerActionsHtml = String(options.headerActionsHtml || '');
         const clearCommand = 'clearSelectedDetails';
         const clearDescription = buttonDescriptions.clearSelection;
         targetEl.innerHTML =
             '<div class="nv-details-card-head">' +
             '<div class="nv-details-card-head-main">' + headerHtml + '</div>' +
+            (headerActionsHtml
+                ? ('<div class="nv-details-card-head-actions">' + headerActionsHtml + '</div>')
+                : '') +
             '<button class="secondary nv-details-clear-btn" type="button" ' +
             buildTooltipDataAttrs(clearCommand, clearDescription) + ' ' +
             'aria-label="' + escapeHtml(buildButtonAriaLabel(clearCommand, clearDescription)) + '" ' +
