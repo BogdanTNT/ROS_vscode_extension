@@ -3,3 +3,13 @@ out/
 .vscode-test/
 *.vsix
 .vscode/
+e2e/results/*
+!e2e/results/.gitkeep
+!e2e/results/README.md
+tests/integration/uiClick/
+tests/helpers/webview/
+tests/integration/extensionHost/runtimeMatrix.spec.ts
+tests/integration/extensionHost/packageManagerUserFlow.spec.ts
+tests/integration/extensionHost/nodeVisualizerUserFlow.spec.ts
+tests/helpers/mocks/webview.ts
+tests/fixtures/workspaces/exampleProjects/
