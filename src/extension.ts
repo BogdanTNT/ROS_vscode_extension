@@ -2,6 +2,7 @@ import * as vscode from 'vscode';
 import { PackageManagerViewProvider } from './views/packageManagerView';
 import { NodeVisualizerViewProvider } from './views/nodeVisualizerView';
 import { RosWorkspace } from './ros/rosWorkspace';
+import { WebviewUiPreferences } from './views/uiPreferences';
 
 export function activate(context: vscode.ExtensionContext) {
     console.log('ROS Dev Toolkit is now active');
@@ -17,8 +18,31 @@ export function activate(context: vscode.ExtensionContext) {
     cmakeConfig.update('configureOnEdit', false, vscode.ConfigurationTarget.Workspace);
 
     // ── Sidebar Webview Providers ──────────────────────────────
-    const packageManagerProvider = new PackageManagerViewProvider(context.extensionUri, rosWorkspace, context);
-    const nodeVisualizerProvider = new NodeVisualizerViewProvider(context.extensionUri, rosWorkspace, context);
+    const providers: {
+        packageManager?: PackageManagerViewProvider;
+        nodeVisualizer?: NodeVisualizerViewProvider;
+    } = {};
+
+    const broadcastUiPreferences = (preferences: WebviewUiPreferences) => {
+        providers.packageManager?.applyUiPreferences(preferences);
+        providers.nodeVisualizer?.applyUiPreferences(preferences);
+    };
+
+    const packageManagerProvider = new PackageManagerViewProvider(
+        context.extensionUri,
+        rosWorkspace,
+        context,
+        broadcastUiPreferences,
+    );
+    const nodeVisualizerProvider = new NodeVisualizerViewProvider(
+        context.extensionUri,
+        rosWorkspace,
+        context,
+        broadcastUiPreferences,
+    );
+
+    providers.packageManager = packageManagerProvider;
+    providers.nodeVisualizer = nodeVisualizerProvider;
 
     context.subscriptions.push(
         vscode.window.registerWebviewViewProvider('rosPackageManager', packageManagerProvider),

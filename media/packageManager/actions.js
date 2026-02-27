@@ -34,6 +34,11 @@
             sourcePath,
         }),
         refreshPackages: () => vscode.postMessage({ command: toHost.REFRESH_PACKAGES }),
+        showEnvironmentInfo: () => vscode.postMessage({ command: toHost.SHOW_ENV_INFO }),
+        setRunTerminalTarget: (target) => vscode.postMessage({
+            command: toHost.SET_RUN_TERMINAL_TARGET,
+            target,
+        }),
         loadOtherPackages: (force) => vscode.postMessage({
             command: toHost.LOAD_OTHER_PACKAGES,
             force: Boolean(force),

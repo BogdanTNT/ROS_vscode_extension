@@ -617,11 +617,6 @@
             return;
         }
 
-        if (target.closest('.term-use')) {
-            actions.setPreferredTerminal(id);
-            return;
-        }
-
         if (target.closest('.term-focus')) {
             actions.focusTerminal(id);
             return;
@@ -672,7 +667,16 @@
         }
     };
 
-    const getFileName = (path) => path.split('/').pop() || path;
+    const getFileName = (pathValue) => {
+        const normalized = String(pathValue || '')
+            .trim()
+            .replace(/\\/g, '/')
+            .replace(/\/+$/, '');
+        if (!normalized) {
+            return '';
+        }
+        return normalized.split('/').pop() || normalized;
+    };
 
     const buildConfigButtonsHtml = (argsKey, cfg) => {
         if (!cfg || !cfg.configs || !cfg.configs.length) {
@@ -753,6 +757,8 @@
         const pinKey = argsKey;
         const cfg = state.launchArgConfigs[argsKey];
         const configButtons = buildConfigButtonsHtml(argsKey, cfg);
+        const fallbackNodeLabel = getFileName(nodeName) || nodeName;
+        const displayOpenLabel = String(openLabel || '').trim() || fallbackNodeLabel;
         const hasSourcePath = Boolean(sourcePath);
         const openClasses = hasSourcePath ? 'node-action node-open' : 'node-action node-open disabled';
         const openTitle = hasSourcePath ? 'Open node source' : 'No source path detected';
@@ -785,7 +791,7 @@
             '" tabindex="0" title="' +
             escapeAttr(openTitle) +
             '">' +
-            escapeHtml(openLabel || nodeName) +
+            escapeHtml(displayOpenLabel) +
             '</span>' +
             '<button class="args-btn" title="Edit args">⚙</button>' +
             '<span class="config-pill-group">' +
@@ -902,14 +908,18 @@
         const nodes = pkg.nodes || [];
         const nodeItemsHtml = nodes
             .map((node) => {
-                const nodeLabel = pkg.name + ' / ' + node.name;
+                const normalizedNodeName = getFileName(node.name) || node.name;
+                const nodeLabel = pkg.name + ' / ' + normalizedNodeName;
+                const legacyNodeLabel = pkg.name + ' / ' + node.name;
                 return buildNodeItemHtml({
                     packageName: pkg.name,
                     packagePath: pkg.packagePath,
                     nodeName: node.name,
                     sourcePath: node.sourcePath,
                     isPinned: state.pinnedPaths.includes('node::' + pkg.name + '::' + node.name),
-                    isRunning: runningLaunchPaths.has(nodeLabel) || (node.sourcePath && runningLaunchPaths.has(node.sourcePath)),
+                    isRunning: runningLaunchPaths.has(nodeLabel)
+                        || runningLaunchPaths.has(legacyNodeLabel)
+                        || (node.sourcePath && runningLaunchPaths.has(node.sourcePath)),
                     canRemove: canRemoveNode,
                 });
             })
@@ -1046,11 +1056,7 @@
                         : '<span class="badge error">closed</span>';
                 const launchLabel = t.launchLabel ? t.launchLabel : 'Idle';
                 const terminalName = t.name ? t.name : 'Unknown terminal';
-                const preferred = t.isPreferred ? '<span class="badge info">active</span>' : '';
-                const useBtn =
-                    t.kind === 'integrated'
-                        ? '<button class="secondary small term-use">Use</button>'
-                        : '';
+                const preferred = '';
                 const focusBtn =
                     t.kind === 'integrated'
                         ? '<button class="secondary small term-focus">Focus</button>'
@@ -1079,7 +1085,6 @@
                     '</div>' +
                     '</div>' +
                     '<div class="terminal-actions">' +
-                    useBtn +
                     focusBtn +
                     '<button class="' + killBtnClass + '"' + killBtnDisabled + '>' + killBtnLabel + '</button>' +
                     '</div>' +
@@ -1304,7 +1309,9 @@
                 if (!nodeMatch) {
                     continue;
                 }
-                const nodeLabel = nodeMatch.pkg.name + ' / ' + nodeMatch.node.name;
+                const normalizedNodeName = getFileName(nodeMatch.node.name) || nodeMatch.node.name;
+                const nodeLabel = nodeMatch.pkg.name + ' / ' + normalizedNodeName;
+                const legacyNodeLabel = nodeMatch.pkg.name + ' / ' + nodeMatch.node.name;
                 const canRemovePinnedNode = (state.allPackages || [])
                     .some((workspacePkg) => workspacePkg.name === nodeMatch.pkg.name);
                 pinnedItems.push(buildNodeItemHtml({
@@ -1314,7 +1321,9 @@
                     sourcePath: nodeMatch.node.sourcePath,
                     openLabel: nodeLabel,
                     isPinned: true,
-                    isRunning: running.has(nodeLabel) || (nodeMatch.node.sourcePath && running.has(nodeMatch.node.sourcePath)),
+                    isRunning: running.has(nodeLabel)
+                        || running.has(legacyNodeLabel)
+                        || (nodeMatch.node.sourcePath && running.has(nodeMatch.node.sourcePath)),
                     canRemove: canRemovePinnedNode,
                 }));
                 continue;

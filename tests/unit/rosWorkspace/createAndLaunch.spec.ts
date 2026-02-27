@@ -122,6 +122,34 @@ describe('RosWorkspace create and launch commands', () => {
         expect(cmd).toContain("--description 'TO DO: A very good package description'");
     });
 
+    it('uses WSL-style workspace paths for createPackage when a WSL target is selected on Windows', async () => {
+        workspaceRoot = createTempWorkspace({
+            'src/.keep': '',
+        });
+        __setWorkspaceFolder(workspaceRoot);
+        setMaintainerDefaults();
+
+        const ros = new RosWorkspace();
+        ros.setRunTerminalTarget('wsl-integrated:default');
+        const runSpy = vi.spyOn(ros, 'runInTerminal').mockImplementation(() => {});
+
+        const result = await ros.createPackage('demo_pkg', 'ament_python', []);
+        expect(result).toBe(true);
+        expect(runSpy).toHaveBeenCalledTimes(1);
+
+        const cmd = runSpy.mock.calls[0][0] as string;
+        if (process.platform === 'win32') {
+            const normalizedWorkspaceRoot = workspaceRoot.replace(/\\/g, '/');
+            const driveMatch = normalizedWorkspaceRoot.match(/^([A-Za-z]):\/(.*)$/);
+            const expectedSrcDir = driveMatch
+                ? `/mnt/${driveMatch[1].toLowerCase()}/${driveMatch[2]}/src`
+                : `${normalizedWorkspaceRoot}/src`;
+            expect(cmd).toContain(`cd "${expectedSrcDir}"`);
+        } else {
+            expect(cmd).toContain(`cd "${path.join(workspaceRoot, 'src')}"`);
+        }
+    });
+
     it.each([
         {
             name: 'launches in external terminal when launchInExternalTerminal is enabled',
@@ -377,6 +405,17 @@ describe('RosWorkspace create and launch commands', () => {
         expect(updated[0].status).toBe('closed');
     });
 
+    it('opens a new integrated terminal for each run action', () => {
+        const ros = new RosWorkspace();
+
+        ros.runInLaunchTerminal('ros2 run demo_pkg talker', 'demo_pkg / talker');
+        ros.runInLaunchTerminal('ros2 run demo_pkg listener', 'demo_pkg / listener');
+
+        const createdTerminals = __getCreatedTerminals();
+        expect(createdTerminals).toHaveLength(2);
+        expect(ros.getTrackedTerminals()).toHaveLength(2);
+    });
+
     it('kill sends Ctrl+C when process is still running', async () => {
         const ros = new RosWorkspace();
         ros.runInLaunchTerminal('ros2 run demo_pkg talker', 'demo_pkg / talker');
@@ -433,6 +472,26 @@ describe('RosWorkspace create and launch commands', () => {
 
         // Second kill: ctrlCSent flag causes force-dispose
         await ros.killTrackedTerminal(tracked[0].id);
+        expect(terminal.disposed).toBe(true);
+        expect(ros.getTrackedTerminals()).toHaveLength(0);
+    });
+
+    it('auto-closes integrated terminal after Ctrl+C when shell execution ends', async () => {
+        const ros = new RosWorkspace();
+        ros.runInLaunchTerminal('ros2 run demo_pkg talker', 'demo_pkg / talker');
+
+        const tracked = ros.getTrackedTerminals();
+        const terminal = __getCreatedTerminals()[0] as unknown as {
+            disposed: boolean;
+            sentTexts: string[];
+        };
+
+        await ros.killTrackedTerminal(tracked[0].id);
+        expect(terminal.sentTexts[terminal.sentTexts.length - 1]).toBe('\x03');
+        expect(terminal.disposed).toBe(false);
+
+        __fireShellExecutionEnd(__getCreatedTerminals()[0] as unknown as Parameters<typeof __fireShellExecutionEnd>[0]);
+
         expect(terminal.disposed).toBe(true);
         expect(ros.getTrackedTerminals()).toHaveLength(0);
     });

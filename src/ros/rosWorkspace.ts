@@ -116,13 +116,49 @@ export interface TrackedTerminalInfo {
     isPreferred?: boolean;
 }
 
+export interface RunTerminalTargetOption {
+    id: string;
+    label: string;
+    description: string;
+}
+
 interface TrackedTerminal extends TrackedTerminalInfo {
     terminal?: vscode.Terminal;
     childProcess?: cp.ChildProcess;
     pidFile?: string;
     innerPid?: number;
+    wslIntegrated?: boolean;
+    wslDistro?: string;
+    wslPidFile?: string;
     /** Set after a Ctrl+C has been sent so the next kill force-closes. */
     ctrlCSent?: boolean;
+}
+
+interface OsReleaseInfo {
+    name?: string;
+    version?: string;
+    versionId?: string;
+    prettyName?: string;
+}
+
+interface WslDistroSummary {
+    name: string;
+    state: string;
+    version: string;
+    isDefault: boolean;
+}
+
+interface ExecFileResult {
+    ok: boolean;
+    stdout: string;
+    stderr: string;
+    error?: string;
+}
+
+interface CommandExecutionContext {
+    useWsl: boolean;
+    runTarget: string;
+    wslDistro?: string;
 }
 
 type RosNodeTemplateKind =
@@ -151,9 +187,11 @@ const DEFAULT_CREATE_PACKAGE_DESCRIPTION = 'TO DO: A very good package descripti
 export class RosWorkspace {
     private _env: RosEnvironmentInfo | undefined;
     private _terminal: vscode.Terminal | undefined;
+    private _terminalRunTarget: string | undefined;
     private _trackedTerminals: Map<string, TrackedTerminal> = new Map();
     private _terminalSeq = 1;
     private _preferredTerminalId: string | undefined;
+    private _runTerminalTarget = 'auto';
     private _terminalsEmitter = new vscode.EventEmitter<TrackedTerminalInfo[]>();
     public readonly onTerminalsChanged = this._terminalsEmitter.event;
 
@@ -181,9 +219,16 @@ export class RosWorkspace {
         // Shell integration: detect when a command finishes in one of
         // our tracked terminals and flip its status to 'closed'.
         vscode.window.onDidEndTerminalShellExecution?.((event) => {
-            for (const [, tracked] of this._trackedTerminals.entries()) {
+            for (const [id, tracked] of this._trackedTerminals.entries()) {
                 if (tracked.kind === 'integrated' && tracked.terminal === event.terminal && tracked.status === 'running') {
                     tracked.status = 'closed';
+                    if (tracked.ctrlCSent && tracked.terminal) {
+                        tracked.terminal.dispose();
+                        this._trackedTerminals.delete(id);
+                        if (this._preferredTerminalId === id) {
+                            this._preferredTerminalId = undefined;
+                        }
+                    }
                     this._emitTerminalsChanged();
                     break;
                 }
@@ -334,6 +379,167 @@ export class RosWorkspace {
         }
     }
 
+    async getEnvironmentInfoReport(): Promise<string> {
+        const platform = process.platform;
+        const remoteName = vscode.env.remoteName || 'none';
+        const wsPath = this.getWorkspacePath();
+        const lines: string[] = [
+            `Runtime platform: ${platform}`,
+            `VS Code remote: ${remoteName}`,
+            `Workspace path: ${wsPath}`,
+            `Runtime mode: ${this.describeRuntimeMode(platform, vscode.env.remoteName)}`,
+        ];
+
+        if (platform === 'linux') {
+            const osInfo = this.readOsReleaseFile('/etc/os-release');
+            lines.push(`Linux distro: ${osInfo ? this.formatLinuxDistro(osInfo) : 'unavailable'}`);
+            lines.push(`ROS environment vars: ${this.formatRosEnvironment(process.env.ROS_DISTRO, process.env.ROS_VERSION)}`);
+            const rosInstalls = this.listRosInstallations('/opt/ros');
+            lines.push(`ROS installs in /opt/ros: ${rosInstalls.length > 0 ? rosInstalls.join(', ') : 'none detected'}`);
+
+            if (vscode.env.remoteName?.startsWith('wsl+')) {
+                lines.push(`WSL distro (remote): ${vscode.env.remoteName.slice(4)}`);
+            } else {
+                lines.push(`WSL kernel detected: ${this.isWslKernel() ? 'yes' : 'no'}`);
+            }
+
+            return lines.join('\n');
+        }
+
+        if (platform === 'win32') {
+            lines.push(`Windows ROS environment vars: ${this.formatRosEnvironment(process.env.ROS_DISTRO, process.env.ROS_VERSION)}`);
+
+            const listResult = await this.execFileSafe('wsl.exe', ['-l', '-v'], 5000);
+            if (!listResult.ok) {
+                const reason = listResult.stderr.trim() || listResult.stdout.trim() || listResult.error || 'wsl.exe is not available';
+                lines.push(`WSL probe: unavailable (${reason})`);
+                return lines.join('\n');
+            }
+
+            const distros = this.parseWslList(listResult.stdout);
+            if (distros.length === 0) {
+                lines.push('WSL distros: none detected');
+                const stderr = listResult.stderr.trim();
+                if (stderr) {
+                    lines.push(`WSL detail: ${stderr}`);
+                }
+                return lines.join('\n');
+            }
+
+            lines.push(`WSL distros detected: ${distros.length}`);
+            for (const distro of distros) {
+                const prefix = distro.isDefault ? '* ' : '- ';
+                lines.push(`${prefix}${distro.name} [state: ${distro.state}, version: WSL${distro.version}]`);
+
+                const probe = await this.probeWslDistro(distro.name);
+                if (probe.error) {
+                    lines.push(`  Probe error: ${probe.error}`);
+                    continue;
+                }
+
+                lines.push(`  Linux: ${probe.linuxDistro || 'unavailable'}`);
+                lines.push(`  ROS environment vars: ${this.formatRosEnvironment(probe.rosDistro, probe.rosVersion)}`);
+                lines.push(`  /opt/ros distros: ${probe.rosInstalls.length > 0 ? probe.rosInstalls.join(', ') : 'none detected'}`);
+            }
+
+            return lines.join('\n');
+        }
+
+        lines.push(`ROS environment vars: ${this.formatRosEnvironment(process.env.ROS_DISTRO, process.env.ROS_VERSION)}`);
+        return lines.join('\n');
+    }
+
+    async listRunTerminalTargets(): Promise<RunTerminalTargetOption[]> {
+        const options: RunTerminalTargetOption[] = [
+            {
+                id: 'auto',
+                label: 'Auto (use extension setting)',
+                description: 'Use rosDevToolkit.launchInExternalTerminal to choose integrated vs external terminal.',
+            },
+        ];
+
+        if (process.platform !== 'win32') {
+            options.push({
+                id: 'integrated',
+                label: 'VS Code integrated terminal',
+                description: 'Always run launch/node actions inside a VS Code integrated terminal tab.',
+            });
+            options.push({
+                id: 'external',
+                label: 'External terminal window',
+                description: 'Always run launch/node actions in a native external terminal window.',
+            });
+            return options;
+        }
+
+        const wslList = await this.execFileSafe('wsl.exe', ['-l', '-v'], 5000);
+        if (!wslList.ok) {
+            options.push({
+                id: 'integrated',
+                label: 'VS Code integrated terminal',
+                description: 'Run launch/node actions in the current VS Code terminal shell.',
+            });
+            options.push({
+                id: 'external',
+                label: 'External terminal window',
+                description: 'Run launch/node actions in a native external terminal window.',
+            });
+            return options;
+        }
+
+        const distros = this.parseWslList(wslList.stdout);
+        if (!distros.length) {
+            options.push({
+                id: 'integrated',
+                label: 'VS Code integrated terminal',
+                description: 'Run launch/node actions in the current VS Code terminal shell.',
+            });
+            options.push({
+                id: 'external',
+                label: 'External terminal window',
+                description: 'Run launch/node actions in a native external terminal window.',
+            });
+            return options;
+        }
+
+        options.push({
+            id: 'wsl-integrated:default',
+            label: 'WSL (default distro) in VS Code terminal',
+            description: 'Run commands in the default WSL distro inside a VS Code terminal tab.',
+        });
+        options.push({
+            id: 'wsl-external:default',
+            label: 'WSL (default distro) in external terminal',
+            description: 'Open a native terminal window in the default WSL distro and run commands with bash.',
+        });
+        for (const distro of distros) {
+            const distroName = this.sanitizeWslDistroName(distro.name);
+            if (!distroName) {
+                continue;
+            }
+            options.push({
+                id: `wsl-integrated:${distroName}`,
+                label: `WSL (${distroName}) in VS Code terminal`,
+                description: `Run commands in ${distroName} inside a VS Code terminal tab.`,
+            });
+            options.push({
+                id: `wsl-external:${distroName}`,
+                label: `WSL (${distroName}) in external terminal`,
+                description: `Open a native terminal window in ${distroName} and run commands with bash.`,
+            });
+        }
+
+        return options;
+    }
+
+    setRunTerminalTarget(target: string): void {
+        this._runTerminalTarget = this.normalizeRunTerminalTarget(target);
+    }
+
+    getRunTerminalTarget(): string {
+        return this._runTerminalTarget;
+    }
+
     get env(): RosEnvironmentInfo | undefined {
         return this._env;
     }
@@ -479,6 +685,10 @@ export class RosWorkspace {
             vscode.window.showErrorMessage('Could not determine workspace src directory.');
             return false;
         }
+        const context = this.resolveCommandExecutionContext();
+        const targetSrcDir = context.useWsl
+            ? `${this.getWorkspacePathForRunTarget(context.runTarget)}/src`
+            : srcDir;
 
         // Keep package names ROS-friendly even if callers pass whitespace.
         const normalizedName = String(name || '').trim().replace(/\s+/g, '_');
@@ -512,8 +722,8 @@ export class RosWorkspace {
         const ros1DepsArg = mergedDeps.join(' ');
 
         const cmd = this.isRos2()
-            ? `cd "${srcDir}" && ros2 pkg create ${normalizedName} --build-type ${buildType}${depString} --maintainer-name ${maintainerNameArg} --maintainer-email ${maintainerEmailArg} --license ${licenseArg} --description ${descriptionArg}`
-            : `cd "${srcDir}" && catkin_create_pkg -m ${ros1MaintainerArg} --license ${licenseArg} --description ${descriptionArg} ${normalizedName}${ros1DepsArg ? ` ${ros1DepsArg}` : ''}`;
+            ? `cd "${targetSrcDir}" && ros2 pkg create ${normalizedName} --build-type ${buildType}${depString} --maintainer-name ${maintainerNameArg} --maintainer-email ${maintainerEmailArg} --license ${licenseArg} --description ${descriptionArg}`
+            : `cd "${targetSrcDir}" && catkin_create_pkg -m ${ros1MaintainerArg} --license ${licenseArg} --description ${descriptionArg} ${normalizedName}${ros1DepsArg ? ` ${ros1DepsArg}` : ''}`;
 
         this.runInTerminal(cmd);
         return true;
@@ -1861,7 +2071,10 @@ int main(int argc, char * argv[]) {
 
     // ── Build ──────────────────────────────────────────────────
     buildPackages(packages: string[]): void {
-        const wsPath = this.getWorkspacePath();
+        const context = this.resolveCommandExecutionContext();
+        const wsPath = context.useWsl
+            ? this.getWorkspacePathForRunTarget(context.runTarget)
+            : this.getWorkspacePath();
         const pkgArg = packages.length > 0 ? ` --packages-select ${packages.join(' ')}` : '';
 
         if (!this.isRos2()) {
@@ -1894,7 +2107,7 @@ int main(int argc, char * argv[]) {
         // paths and produce colcon AMENT_PREFIX_PATH warnings.
         // The overlay is re-sourced at the end after the build recreates it.
         const parts: string[] = [
-            this.getRosSourceCommand(),
+            this.getRosSourceCommand(context.runTarget),
             `cd "${wsPath}"`,
             `${cleanCmd}colcon build${symlinkFlag}${pkgArg}`,
             `source "${wsPath}/install/setup.bash"`,
@@ -1919,14 +2132,17 @@ int main(int argc, char * argv[]) {
         nodePath?: string,
         argsLabel?: string,
     ): Promise<void> {
+        const normalizedExecutableLabel = path.basename(String(executable || '').replace(/\\/g, '/')) || executable;
         const argString = args?.trim() ? ` ${args.trim()}` : '';
-        const runCmd = this.isRos2()
+        const runTarget = this.getRunTerminalTarget();
+        const baseRunCmd = this.isRos2()
             ? `ros2 run ${pkg} ${executable}${argString}`
             : `rosrun ${pkg} ${executable}${argString}`;
+        const runCmd = this.buildRunCommandWithWslPackageFallback(pkg, baseRunCmd, runTarget);
         const normalizedArgsLabel = argsLabel?.trim();
         const normalizedNodePath = nodePath?.trim() ? nodePath : undefined;
         const labelSuffix = normalizedArgsLabel ? ` [${normalizedArgsLabel}]` : '';
-        const nodeLabel = `${pkg} / ${executable}${labelSuffix}`;
+        const nodeLabel = `${pkg} / ${normalizedExecutableLabel}${labelSuffix}`;
 
         // Smart-build check before running
         const result = await this.preLaunchBuildCheck(pkg);
@@ -1955,7 +2171,8 @@ int main(int argc, char * argv[]) {
         runLabel?: string,
         runPath?: string,
     ): void {
-        const wsPath = this.getWorkspacePath();
+        const runTarget = this.getRunTerminalTarget();
+        const wsPath = this.getWorkspacePathForRunTarget(runTarget);
         const pkgArg = stalePackages.length > 0
             ? ` --packages-select ${stalePackages.join(' ')}`
             : '';
@@ -1976,7 +2193,7 @@ int main(int argc, char * argv[]) {
         }
 
         const parts: string[] = [
-            this.getRosSourceCommand(),
+            this.getRosSourceCommand(runTarget),
             `cd "${wsPath}"`,
             `${cleanCmd}colcon build${symlinkFlag}${pkgArg}`,
             `source "${wsPath}/install/setup.bash"`,
@@ -2000,13 +2217,19 @@ int main(int argc, char * argv[]) {
         launchPath?: string,
         argsLabel?: string,
     ): Promise<void> {
+        const normalizedLaunchFile = path.basename(String(launchFile || '').replace(/\\/g, '/'));
+        if (!normalizedLaunchFile) {
+            return;
+        }
         const argString = args?.trim() ? ` ${args.trim()}` : '';
-        const launchCmd = this.isRos2()
-            ? `ros2 launch ${pkg} ${launchFile}${argString}`
-            : `roslaunch ${pkg} ${launchFile}${argString}`;
+        const runTarget = this.getRunTerminalTarget();
+        const baseLaunchCmd = this.isRos2()
+            ? `ros2 launch ${pkg} ${normalizedLaunchFile}${argString}`
+            : `roslaunch ${pkg} ${normalizedLaunchFile}${argString}`;
+        const launchCmd = this.buildRunCommandWithWslPackageFallback(pkg, baseLaunchCmd, runTarget);
 
         const labelSuffix = argsLabel ? ` [${argsLabel}]` : '';
-        const launchLabel = `${pkg} / ${launchFile}${labelSuffix}`;
+        const launchLabel = `${pkg} / ${normalizedLaunchFile}${labelSuffix}`;
 
         // Smart-build check before launching
         const result = await this.preLaunchBuildCheck(pkg);
@@ -2074,9 +2297,24 @@ int main(int argc, char * argv[]) {
         launchPath?: string,
         raw?: boolean,
     ): void {
-        const useExternal = vscode.workspace
+        const runTarget = this.getRunTerminalTarget();
+        if (this.isWindowsWslTarget(runTarget)) {
+            if (this.isWindowsWslIntegratedTarget(runTarget)) {
+                this.runInWslIntegratedLaunchTerminal(cmd, runTarget, launchLabel, launchPath, raw);
+            } else {
+                this.runInWslLaunchTerminal(cmd, runTarget, launchLabel, launchPath, raw);
+            }
+            return;
+        }
+
+        let useExternal = vscode.workspace
             .getConfiguration('rosDevToolkit')
             .get<boolean>('launchInExternalTerminal', true);
+        if (runTarget === 'integrated') {
+            useExternal = false;
+        } else if (runTarget === 'external') {
+            useExternal = true;
+        }
 
         if (useExternal) {
             if (raw === undefined) {
@@ -2091,6 +2329,80 @@ int main(int argc, char * argv[]) {
                 this.runInLaunchTerminal(cmd, launchLabel, launchPath, raw);
             }
         }
+    }
+
+    private runInWslLaunchTerminal(
+        cmd: string,
+        runTarget: string,
+        launchLabel?: string,
+        launchPath?: string,
+        raw?: boolean,
+    ): void {
+        const fullCmd = raw
+            ? cmd
+            : this.buildSourcedCommandForRunTarget(cmd, runTarget);
+        const distro = this.resolveInstalledWslDistro(this.getWslDistroFromTarget(runTarget));
+        const wslPidFile = `/tmp/ros-devtool-wsl-${Date.now()}-${this._terminalSeq}.pid`;
+        const bashCmd = `echo $$ > "${wslPidFile}"; ${fullCmd}; exec bash`;
+        const wslArgs: string[] = [];
+        if (distro) {
+            wslArgs.push('-d', distro);
+        }
+        wslArgs.push('--exec', 'bash', '-lc', bashCmd);
+
+        try {
+            const child = cp.spawn('wsl.exe', wslArgs, {
+                detached: true,
+                stdio: 'ignore',
+                windowsHide: false,
+            });
+
+            if (!child.pid) {
+                this.runInWslIntegratedTerminalFallback(cmd, runTarget, launchLabel, launchPath, raw);
+                return;
+            }
+
+            this.trackExternalTerminal(child, 'wsl.exe', cmd, launchLabel, launchPath, undefined, distro, wslPidFile);
+            child.unref();
+        } catch {
+            this.runInWslIntegratedTerminalFallback(cmd, runTarget, launchLabel, launchPath, raw);
+        }
+    }
+
+    private runInWslIntegratedLaunchTerminal(
+        cmd: string,
+        runTarget: string,
+        launchLabel?: string,
+        launchPath?: string,
+        raw?: boolean,
+    ): void {
+        const fullCmd = raw
+            ? cmd
+            : this.buildSourcedCommandForRunTarget(cmd, runTarget);
+        const distro = this.resolveInstalledWslDistro(this.getWslDistroFromTarget(runTarget));
+        this.runPreparedInLaunchTerminal(
+            fullCmd,
+            cmd,
+            launchLabel,
+            launchPath,
+            {
+                wslIntegrated: true,
+                wslDistro: distro,
+            },
+        );
+    }
+
+    private runInWslIntegratedTerminalFallback(
+        cmd: string,
+        runTarget: string,
+        launchLabel?: string,
+        launchPath?: string,
+        raw?: boolean,
+    ): void {
+        vscode.window.showWarningMessage(
+            'Failed to open a native WSL terminal window. Falling back to a VS Code WSL terminal for this run.',
+        );
+        this.runInWslIntegratedLaunchTerminal(cmd, runTarget, launchLabel, launchPath, raw);
     }
 
     /**
@@ -2149,16 +2461,19 @@ int main(int argc, char * argv[]) {
 
     runInLaunchTerminal(cmd: string, launchLabel?: string, launchPath?: string, raw?: boolean): void {
         const fullCmd = raw ? cmd : this.buildSourcedCommand(cmd);
-        let tracked = this.pickLaunchTerminal();
+        this.runPreparedInLaunchTerminal(fullCmd, cmd, launchLabel, launchPath);
+    }
 
-        if (!tracked || !tracked.terminal || tracked.terminal.exitStatus !== undefined) {
-            if (tracked) {
-                this._trackedTerminals.delete(tracked.id);
-            }
-            tracked = this.createLaunchTerminal();
-        }
+    private runPreparedInLaunchTerminal(
+        fullCmd: string,
+        trackedCmd: string,
+        launchLabel?: string,
+        launchPath?: string,
+        profile?: { wslIntegrated?: boolean; wslDistro?: string },
+    ): void {
+        const tracked = this.createLaunchTerminal(profile);
 
-        tracked.cmd = cmd;
+        tracked.cmd = trackedCmd;
         tracked.lastUsed = Date.now();
         tracked.launchLabel = launchLabel;
         tracked.launchPath = launchPath;
@@ -2236,10 +2551,30 @@ int main(int argc, char * argv[]) {
                     // exit once the process terminates.
                     tracked.terminal.sendText('\x03', false);
                     tracked.ctrlCSent = true;
-                    tracked.lastUsed = Date.now();
+                    const killTimestamp = Date.now();
+                    tracked.lastUsed = killTimestamp;
+                    this.scheduleIntegratedCloseWhenIdle(id, killTimestamp);
                 }
             }
         } else {
+            if (process.platform === 'win32' && tracked.wslPidFile) {
+                const interrupted = this.tryInterruptWslTrackedTerminal(tracked);
+                if (!interrupted || tracked.ctrlCSent) {
+                    this.forceCloseTrackedExternalTerminal(tracked);
+                    this._trackedTerminals.delete(id);
+                    if (this._preferredTerminalId === id) {
+                        this._preferredTerminalId = undefined;
+                    }
+                } else {
+                    tracked.ctrlCSent = true;
+                    const killTimestamp = Date.now();
+                    tracked.lastUsed = killTimestamp;
+                    this.scheduleWslCloseWhenIdle(id, killTimestamp);
+                }
+                this._emitTerminalsChanged();
+                return;
+            }
+
             // Prefer the real inner bash PID so SIGINT behaves like Ctrl+C.
             const innerPid = this.readInnerPid(tracked, false);
             if (innerPid) {
@@ -2295,7 +2630,17 @@ int main(int argc, char * argv[]) {
     }
 
     private scheduleIntegratedCloseWhenIdle(id: string, killTimestamp: number, attempt: number = 0): void {
-        if (attempt >= 8) {
+        const maxAttempts = 120;
+        if (attempt >= maxAttempts) {
+            const tracked = this._trackedTerminals.get(id);
+            if (tracked?.kind === 'integrated' && tracked.terminal) {
+                tracked.terminal.dispose();
+                this._trackedTerminals.delete(id);
+                if (this._preferredTerminalId === id) {
+                    this._preferredTerminalId = undefined;
+                }
+                this._emitTerminalsChanged();
+            }
             return;
         }
 
@@ -2333,7 +2678,7 @@ int main(int argc, char * argv[]) {
             }
 
             this.scheduleIntegratedCloseWhenIdle(id, killTimestamp, attempt + 1);
-        }, 180);
+        }, 250);
     }
 
     private getProcessName(pid: number): string | undefined {
@@ -2365,16 +2710,27 @@ int main(int argc, char * argv[]) {
         return new Promise((resolve) => setTimeout(resolve, ms));
     }
 
-    private pickLaunchTerminal(): TrackedTerminal | undefined {
+    private pickLaunchTerminal(profile?: { wslIntegrated?: boolean; wslDistro?: string }): TrackedTerminal | undefined {
+        const wantsWslIntegrated = profile?.wslIntegrated === true;
+        const wantedDistro = this.sanitizeWslDistroName(profile?.wslDistro);
+
         if (this._preferredTerminalId) {
             const preferred = this._trackedTerminals.get(this._preferredTerminalId);
-            if (preferred?.kind === 'integrated' && preferred.status === 'running') {
+            if (
+                preferred?.kind === 'integrated'
+                && preferred.status === 'running'
+                && this.matchesIntegratedLaunchTerminalProfile(preferred, wantsWslIntegrated, wantedDistro)
+            ) {
                 return preferred;
             }
         }
 
         const active = Array.from(this._trackedTerminals.values())
-            .filter((t) => t.kind === 'integrated' && t.status === 'running');
+            .filter((t) => (
+                t.kind === 'integrated'
+                && t.status === 'running'
+                && this.matchesIntegratedLaunchTerminalProfile(t, wantsWslIntegrated, wantedDistro)
+            ));
 
         if (!active.length) {
             return undefined;
@@ -2384,14 +2740,48 @@ int main(int argc, char * argv[]) {
         return active[0];
     }
 
-    private createLaunchTerminal(): TrackedTerminal {
+    private matchesIntegratedLaunchTerminalProfile(
+        tracked: TrackedTerminal,
+        wantsWslIntegrated: boolean,
+        wantedDistro: string,
+    ): boolean {
+        if (wantsWslIntegrated) {
+            if (!tracked.wslIntegrated) {
+                return false;
+            }
+            const trackedDistro = this.sanitizeWslDistroName(tracked.wslDistro);
+            if (!wantedDistro) {
+                return !trackedDistro;
+            }
+            return trackedDistro.toLowerCase() === wantedDistro.toLowerCase();
+        }
+
+        return tracked.wslIntegrated !== true;
+    }
+
+    private createLaunchTerminal(profile?: { wslIntegrated?: boolean; wslDistro?: string }): TrackedTerminal {
         const bashPath = this.resolveBashPath();
         const env = this.getTerminalEnv();
+        const wantsWslIntegrated = process.platform === 'win32' && profile?.wslIntegrated === true;
+        const requestedDistro = this.sanitizeWslDistroName(profile?.wslDistro);
         const num = this._terminalSeq++;
-        const name = `ROS Launch ${num}`;
-        const terminal = bashPath
-            ? vscode.window.createTerminal({ name, shellPath: bashPath, env })
-            : vscode.window.createTerminal({ name, env });
+        const name = wantsWslIntegrated
+            ? `ROS WSL ${requestedDistro || 'default'} ${num}`
+            : `ROS Launch ${num}`;
+        let terminal: vscode.Terminal;
+
+        if (wantsWslIntegrated) {
+            const shellArgs = requestedDistro ? ['-d', requestedDistro] : [];
+            terminal = vscode.window.createTerminal({
+                name,
+                shellPath: 'wsl.exe',
+                shellArgs,
+            });
+        } else {
+            terminal = bashPath
+                ? vscode.window.createTerminal({ name, shellPath: bashPath, env })
+                : vscode.window.createTerminal({ name, env });
+        }
 
         const tracked: TrackedTerminal = {
             id: `launch-${num}`,
@@ -2402,6 +2792,8 @@ int main(int argc, char * argv[]) {
             createdAt: Date.now(),
             lastUsed: Date.now(),
             terminal,
+            wslIntegrated: wantsWslIntegrated,
+            wslDistro: wantsWslIntegrated ? (requestedDistro || undefined) : undefined,
         };
 
         this._trackedTerminals.set(tracked.id, tracked);
@@ -2416,9 +2808,13 @@ int main(int argc, char * argv[]) {
         launchLabel?: string,
         launchPath?: string,
         pidFile?: string,
+        wslDistro?: string,
+        wslPidFile?: string,
     ): void {
         const num = this._terminalSeq++;
-        const name = `External (${path.basename(terminalBin)}) ${num}`;
+        const name = wslDistro
+            ? `External (wsl:${wslDistro}) ${num}`
+            : `External (${path.basename(terminalBin)}) ${num}`;
         const tracked: TrackedTerminal = {
             id: `external-${num}`,
             kind: 'external',
@@ -2432,6 +2828,9 @@ int main(int argc, char * argv[]) {
             lastUsed: Date.now(),
             childProcess: child,
             pidFile,
+            wslDistro,
+            wslPidFile,
+            ctrlCSent: false,
         };
 
         this._trackedTerminals.set(tracked.id, tracked);
@@ -2511,6 +2910,147 @@ int main(int argc, char * argv[]) {
 
             this.scheduleDeferredInterrupt(trackedId, attempt + 1);
         }, 150);
+    }
+
+    private tryInterruptWslTrackedTerminal(tracked: TrackedTerminal): boolean {
+        if (process.platform !== 'win32' || !tracked.wslPidFile) {
+            return false;
+        }
+
+        const wslArgs: string[] = [];
+        if (tracked.wslDistro) {
+            wslArgs.push('-d', tracked.wslDistro);
+        }
+
+        const pidFile = this.escapeShellArg(tracked.wslPidFile);
+        const interruptScript = [
+            `pid_file=${pidFile}`,
+            '[ -f "$pid_file" ] || exit 0',
+            'pid="$(cat "$pid_file" 2>/dev/null || true)"',
+            '[ -n "$pid" ] || exit 0',
+            'kill -INT -"$pid" 2>/dev/null || kill -INT "$pid" 2>/dev/null || true',
+            'pkill -INT -P "$pid" 2>/dev/null || true',
+            'true',
+        ].join('; ');
+
+        wslArgs.push('--exec', 'bash', '-lc', interruptScript);
+
+        try {
+            cp.execFileSync('wsl.exe', wslArgs, {
+                windowsHide: true,
+                stdio: 'ignore',
+                maxBuffer: 1024 * 1024,
+            });
+            return true;
+        } catch {
+            return false;
+        }
+    }
+
+    private scheduleWslCloseWhenIdle(
+        trackedId: string,
+        killTimestamp: number,
+        attempt: number = 0,
+    ): void {
+        const maxAttempts = 120;
+        if (attempt >= maxAttempts) {
+            const tracked = this._trackedTerminals.get(trackedId);
+            if (tracked?.kind === 'external') {
+                this.forceCloseTrackedExternalTerminal(tracked);
+                this._trackedTerminals.delete(trackedId);
+                if (this._preferredTerminalId === trackedId) {
+                    this._preferredTerminalId = undefined;
+                }
+                this._emitTerminalsChanged();
+            }
+            return;
+        }
+
+        setTimeout(() => {
+            const tracked = this._trackedTerminals.get(trackedId);
+            if (!tracked || tracked.kind !== 'external' || !tracked.wslPidFile) {
+                return;
+            }
+
+            // Terminal was reused/updated after this kill request.
+            if (tracked.lastUsed !== killTimestamp) {
+                return;
+            }
+
+            if (this.isWslTrackedTerminalIdle(tracked)) {
+                this.forceCloseTrackedExternalTerminal(tracked);
+                this._trackedTerminals.delete(trackedId);
+                if (this._preferredTerminalId === trackedId) {
+                    this._preferredTerminalId = undefined;
+                }
+                this._emitTerminalsChanged();
+                return;
+            }
+
+            this.scheduleWslCloseWhenIdle(trackedId, killTimestamp, attempt + 1);
+        }, 250);
+    }
+
+    private isWslTrackedTerminalIdle(tracked: TrackedTerminal): boolean {
+        if (process.platform !== 'win32' || !tracked.wslPidFile) {
+            return false;
+        }
+
+        const wslArgs: string[] = [];
+        if (tracked.wslDistro) {
+            wslArgs.push('-d', tracked.wslDistro);
+        }
+
+        const pidFile = this.escapeShellArg(tracked.wslPidFile);
+        const idleScript = [
+            `pid_file=${pidFile}`,
+            '[ -f "$pid_file" ] || exit 1',
+            'pid="$(cat "$pid_file" 2>/dev/null || true)"',
+            '[ -n "$pid" ] || exit 1',
+            // If the shell already died, nothing is running and we can close.
+            'kill -0 "$pid" 2>/dev/null || exit 0',
+            'children="$(pgrep -P "$pid" 2>/dev/null || true)"',
+            '[ -z "$children" ]',
+        ].join('; ');
+
+        wslArgs.push('--exec', 'bash', '-lc', idleScript);
+
+        try {
+            cp.execFileSync('wsl.exe', wslArgs, {
+                windowsHide: true,
+                stdio: 'ignore',
+                maxBuffer: 1024 * 1024,
+            });
+            return true;
+        } catch {
+            return false;
+        }
+    }
+
+    private forceCloseTrackedExternalTerminal(tracked: TrackedTerminal): void {
+        const pid = tracked.pid;
+        if (!pid || pid <= 0) {
+            return;
+        }
+
+        if (process.platform === 'win32') {
+            try {
+                cp.execFileSync('taskkill.exe', ['/PID', String(pid), '/T', '/F'], {
+                    windowsHide: true,
+                    stdio: 'ignore',
+                    maxBuffer: 1024 * 1024,
+                });
+            } catch {
+                // ignore force-close failures
+            }
+            return;
+        }
+
+        try {
+            process.kill(pid, 'SIGTERM');
+        } catch {
+            // ignore force-close failures
+        }
     }
 
     /**
@@ -2802,10 +3342,22 @@ int main(int argc, char * argv[]) {
         const echoCmd = this.isRos2()
             ? `PYTHONUNBUFFERED=1 ros2 topic echo ${topicName}`
             : `PYTHONUNBUFFERED=1 rostopic echo ${topicName}`;
-        const sourcedCommand = this.buildSourcedCommand(echoCmd);
-        const child = cp.spawn('bash', ['-lc', sourcedCommand], {
+        const context = this.resolveCommandExecutionContext();
+        const sourcedCommand = this.buildSourcedCommandForContext(echoCmd, context);
+        const spawnCommand = process.platform === 'win32' && context.useWsl ? 'wsl.exe' : 'bash';
+        const spawnArgs = process.platform === 'win32' && context.useWsl
+            ? [
+                ...(context.wslDistro ? ['-d', context.wslDistro] : []),
+                '--exec',
+                'bash',
+                '-lc',
+                sourcedCommand,
+            ]
+            : ['-lc', sourcedCommand];
+        const child = cp.spawn(spawnCommand, spawnArgs, {
             env: process.env,
             stdio: ['ignore', 'pipe', 'pipe'],
+            windowsHide: process.platform === 'win32',
         });
 
         let disposed = false;
@@ -3940,12 +4492,14 @@ int main(int argc, char * argv[]) {
     }
 
     private extractFirstExistingPath(raw: string): string | undefined {
+        const context = this.resolveCommandExecutionContext();
+        const acceptWslLinuxPaths = process.platform === 'win32' && context.useWsl;
         for (const line of raw.split('\n')) {
             const candidate = line.trim();
             if (!candidate) {
                 continue;
             }
-            if (fs.existsSync(candidate)) {
+            if (acceptWslLinuxPaths || fs.existsSync(candidate)) {
                 return candidate;
             }
         }
@@ -4158,10 +4712,11 @@ int main(int argc, char * argv[]) {
     }
 
     runInTerminal(cmd: string): void {
-        const terminal = this.ensureTerminal();
+        const context = this.resolveCommandExecutionContext();
+        const terminal = this.ensureTerminal(context);
         terminal.show();
         if (cmd.trim().length > 0) {
-            const fullCmd = this.buildSourcedCommand(cmd);
+            const fullCmd = this.buildSourcedCommandForContext(cmd, context);
             terminal.sendText(fullCmd);
         }
     }
@@ -4172,7 +4727,8 @@ int main(int argc, char * argv[]) {
      * has already embedded its own sourcing logic (e.g. buildPackages).
      */
     sendRawCommand(cmd: string): void {
-        const terminal = this.ensureTerminal();
+        const context = this.resolveCommandExecutionContext();
+        const terminal = this.ensureTerminal(context);
         terminal.show();
         if (cmd.trim().length > 0) {
             terminal.sendText(cmd);
@@ -4180,21 +4736,43 @@ int main(int argc, char * argv[]) {
     }
 
     openSourcedTerminal(): void {
-        const terminal = this.ensureTerminal();
+        const terminal = this.ensureTerminal(this.resolveCommandExecutionContext());
         terminal.show();
     }
 
-    private ensureTerminal(): vscode.Terminal {
+    private ensureTerminal(context: CommandExecutionContext): vscode.Terminal {
+        const currentTarget = this.normalizeRunTerminalTarget(context.runTarget);
+        if (
+            this._terminal
+            && this._terminal.exitStatus === undefined
+            && this._terminalRunTarget
+            && this._terminalRunTarget !== currentTarget
+        ) {
+            this._terminal.dispose();
+            this._terminal = undefined;
+            this._terminalRunTarget = undefined;
+        }
+
         if (!this._terminal || this._terminal.exitStatus !== undefined) {
             const bashPath = this.resolveBashPath();
             const env = this.getTerminalEnv();
-            this._terminal = bashPath
-                ? vscode.window.createTerminal({
-                    name: 'ROS Dev Toolkit',
-                    shellPath: bashPath,
-                    env,
-                })
-                : vscode.window.createTerminal({ name: 'ROS Dev Toolkit', env });
+            if (process.platform === 'win32' && context.useWsl) {
+                const shellArgs = context.wslDistro ? ['-d', context.wslDistro] : [];
+                this._terminal = vscode.window.createTerminal({
+                    name: `ROS Dev Toolkit (WSL${context.wslDistro ? `:${context.wslDistro}` : ''})`,
+                    shellPath: 'wsl.exe',
+                    shellArgs,
+                });
+            } else {
+                this._terminal = bashPath
+                    ? vscode.window.createTerminal({
+                        name: 'ROS Dev Toolkit',
+                        shellPath: bashPath,
+                        env,
+                    })
+                    : vscode.window.createTerminal({ name: 'ROS Dev Toolkit', env });
+            }
+            this._terminalRunTarget = currentTarget;
         }
         return this._terminal;
     }
@@ -4226,8 +4804,8 @@ int main(int argc, char * argv[]) {
      * Protected so that specialised command builders (e.g. buildPackages)
      * can reference it without going through the full overlay pipeline.
      */
-    protected getRosSourceCommand(): string {
-        const setupPath = this.resolveRosSetupPath();
+    protected getRosSourceCommand(runTarget?: string): string {
+        const setupPath = this.resolveRosSetupPath(runTarget);
         return `source "${setupPath}"`;
     }
 
@@ -4255,34 +4833,339 @@ int main(int argc, char * argv[]) {
         return parts.join(' && ');
     }
 
+    private buildSourcedCommandForContext(cmd: string, context: CommandExecutionContext): string {
+        if (context.useWsl) {
+            return this.buildSourcedCommandForRunTarget(cmd, context.runTarget);
+        }
+        return this.buildSourcedCommand(cmd);
+    }
+
+    private buildSourcedCommandForRunTarget(cmd: string, runTarget: string): string {
+        if (!this.isWindowsWslTarget(runTarget)) {
+            return this.buildSourcedCommand(cmd);
+        }
+
+        const wsPath = this.getWorkspacePathForRunTarget(runTarget);
+        const overlayParts = [
+            `[ -f "${wsPath}/install/setup.bash" ] && source "${wsPath}/install/setup.bash" || true`,
+            `[ -f "${wsPath}/devel/setup.bash" ] && source "${wsPath}/devel/setup.bash" || true`,
+        ];
+        return [this.getRosSourceCommand(runTarget), `cd "${wsPath}"`, ...overlayParts, cmd].join(' && ');
+    }
+
+    private buildRunCommandWithWslPackageFallback(
+        pkg: string,
+        baseCmd: string,
+        runTarget: string,
+    ): string {
+        if (!this.isWindowsWslTarget(runTarget)) {
+            return baseCmd;
+        }
+
+        const normalizedPkg = String(pkg || '').trim();
+        if (!normalizedPkg) {
+            return baseCmd;
+        }
+
+        const wsPath = this.getWorkspacePathForRunTarget(runTarget);
+        const pkgArg = this.escapeShellArg(normalizedPkg);
+
+        if (this.isRos2()) {
+            const useSymlink = vscode.workspace
+                .getConfiguration('rosDevToolkit')
+                .get<boolean>('symlinkInstall', true);
+            const symlinkFlag = useSymlink ? ' --symlink-install' : '';
+            const fallbackBuild = [
+                `echo "[ROS Dev Toolkit] Package ${normalizedPkg} not found in sourced environment; building it now..."`,
+                `cd "${wsPath}"`,
+                `colcon build${symlinkFlag} --packages-select ${pkgArg}`,
+                `source "${wsPath}/install/setup.bash"`,
+            ].join(' && ');
+            return `if ! ros2 pkg prefix ${pkgArg} >/dev/null 2>&1; then ${fallbackBuild}; fi && ${baseCmd}`;
+        }
+
+        const fallbackBuild = [
+            `echo "[ROS Dev Toolkit] Package ${normalizedPkg} not found in sourced environment; building workspace now..."`,
+            `cd "${wsPath}"`,
+            'catkin_make',
+            `source "${wsPath}/devel/setup.bash"`,
+        ].join(' && ');
+        return `if ! rospack find ${pkgArg} >/dev/null 2>&1; then ${fallbackBuild}; fi && ${baseCmd}`;
+    }
+
+    private normalizeRunTerminalTarget(target?: string): string {
+        const normalized = String(target || '').trim();
+        if (!normalized) {
+            return 'auto';
+        }
+        if (normalized === 'auto' || normalized === 'integrated' || normalized === 'external') {
+            return normalized;
+        }
+        if (normalized === 'wsl:default') {
+            return 'wsl-external:default';
+        }
+        if (normalized.startsWith('wsl:')) {
+            return `wsl-external:${normalized.slice('wsl:'.length)}`;
+        }
+        if (
+            normalized === 'wsl-integrated:default'
+            || normalized.startsWith('wsl-integrated:')
+            || normalized === 'wsl-external:default'
+            || normalized.startsWith('wsl-external:')
+        ) {
+            return normalized;
+        }
+        return 'auto';
+    }
+
+    private isWindowsWslTarget(target: string): boolean {
+        if (process.platform !== 'win32') {
+            return false;
+        }
+        const normalized = this.normalizeRunTerminalTarget(target);
+        return normalized.startsWith('wsl-integrated:') || normalized.startsWith('wsl-external:');
+    }
+
+    private isWindowsWslIntegratedTarget(target: string): boolean {
+        return process.platform === 'win32'
+            && this.normalizeRunTerminalTarget(target).startsWith('wsl-integrated:');
+    }
+
+    private getWslDistroFromTarget(target: string): string | undefined {
+        if (!this.isWindowsWslTarget(target)) {
+            return undefined;
+        }
+
+        const normalized = this.normalizeRunTerminalTarget(target);
+        const isIntegrated = normalized.startsWith('wsl-integrated:');
+        const prefix = isIntegrated ? 'wsl-integrated:' : 'wsl-external:';
+        const rawDistro = normalized.slice(prefix.length);
+        if (!rawDistro || rawDistro === 'default') {
+            return undefined;
+        }
+
+        const distro = this.sanitizeWslDistroName(rawDistro);
+        return distro || undefined;
+    }
+
+    private resolveCommandExecutionContext(): CommandExecutionContext {
+        const selectedTarget = this.normalizeRunTerminalTarget(this.getRunTerminalTarget());
+        if (process.platform !== 'win32') {
+            return {
+                useWsl: false,
+                runTarget: selectedTarget,
+            };
+        }
+
+        if (this.isWindowsWslTarget(selectedTarget)) {
+            const requestedDistro = this.getWslDistroFromTarget(selectedTarget);
+            const resolvedDistro = this.resolveInstalledWslDistroQuiet(requestedDistro) || requestedDistro;
+            return {
+                useWsl: true,
+                runTarget: `wsl-integrated:${resolvedDistro || 'default'}`,
+                wslDistro: resolvedDistro,
+            };
+        }
+
+        const inferredDistro = this.getWslDistroFromWorkspacePath();
+        if (inferredDistro) {
+            const resolvedDistro = this.resolveInstalledWslDistroQuiet(inferredDistro) || inferredDistro;
+            return {
+                useWsl: true,
+                runTarget: `wsl-integrated:${resolvedDistro || 'default'}`,
+                wslDistro: resolvedDistro,
+            };
+        }
+
+        return {
+            useWsl: false,
+            runTarget: selectedTarget,
+        };
+    }
+
+    private getWslDistroFromWorkspacePath(): string | undefined {
+        if (process.platform !== 'win32') {
+            return undefined;
+        }
+
+        const wsPath = this.getWorkspacePath().replace(/\\/g, '/');
+        const wslShareMatch = wsPath.match(/^\/\/(?:wsl(?:\.localhost)?|wsl\$)\/([^/]+)(?:\/|$)/i);
+        const rawDistro = wslShareMatch?.[1];
+        if (!rawDistro) {
+            return undefined;
+        }
+        const distro = this.sanitizeWslDistroName(rawDistro);
+        return distro || undefined;
+    }
+
+    private getWorkspacePathForRunTarget(runTarget: string): string {
+        const wsPath = this.getWorkspacePath();
+        if (!this.isWindowsWslTarget(runTarget)) {
+            return wsPath;
+        }
+
+        const normalized = wsPath.replace(/\\/g, '/');
+        const wslShareMatch = normalized.match(/^\/\/(?:wsl(?:\.localhost)?|wsl\$)\/([^/]+)(\/.*)$/i);
+        if (wslShareMatch) {
+            const linuxPath = wslShareMatch[2];
+            return linuxPath || '/';
+        }
+
+        const driveMatch = normalized.match(/^([A-Za-z]):\/(.*)$/);
+        if (driveMatch) {
+            const drive = driveMatch[1].toLowerCase();
+            const rest = driveMatch[2];
+            return `/mnt/${drive}/${rest}`;
+        }
+
+        return normalized;
+    }
+
+    private sanitizeWslDistroName(value?: string): string {
+        return String(value || '')
+            .replace(/\u0000/g, '')
+            .replace(/\uFEFF/g, '')
+            .replace(/[\u0001-\u001F\u007F-\u009F\u200B-\u200F\u202A-\u202E\u2060-\u206F]/g, '')
+            .replace(/^"+|"+$/g, '')
+            .trim();
+    }
+
+    private resolveInstalledWslDistro(requested?: string): string | undefined {
+        const desired = this.sanitizeWslDistroName(requested);
+        if (!desired) {
+            return undefined;
+        }
+
+        const installed = this.getInstalledWslDistrosSync();
+        if (!installed.length) {
+            vscode.window.showWarningMessage(
+                'Could not verify installed WSL distros. Using the default WSL distro for this run.',
+            );
+            return undefined;
+        }
+
+        const exact = installed.find((name) => name === desired);
+        if (exact) {
+            return exact;
+        }
+
+        const ci = installed.find((name) => name.toLowerCase() === desired.toLowerCase());
+        if (ci) {
+            return ci;
+        }
+
+        vscode.window.showWarningMessage(
+            `WSL distro "${desired}" was not found. Falling back to default WSL distro for this run.`,
+        );
+        return undefined;
+    }
+
+    private resolveInstalledWslDistroQuiet(requested?: string): string | undefined {
+        const desired = this.sanitizeWslDistroName(requested);
+        if (!desired) {
+            return undefined;
+        }
+
+        const installed = this.getInstalledWslDistrosSync();
+        if (!installed.length) {
+            return undefined;
+        }
+
+        const exact = installed.find((name) => name === desired);
+        if (exact) {
+            return exact;
+        }
+
+        return installed.find((name) => name.toLowerCase() === desired.toLowerCase());
+    }
+
+    private getInstalledWslDistrosSync(): string[] {
+        if (process.platform !== 'win32') {
+            return [];
+        }
+
+        try {
+            const rawBuffer = cp.execFileSync('wsl.exe', ['-l', '-v'], {
+                windowsHide: true,
+                maxBuffer: 1024 * 1024,
+            });
+            const raw = this.decodeWslCliOutput(rawBuffer);
+            return this.parseWslList(raw)
+                .map((distro) => this.sanitizeWslDistroName(distro.name))
+                .filter(Boolean);
+        } catch {
+            return [];
+        }
+    }
+
+    private decodeWslCliOutput(raw: Buffer | string): string {
+        if (typeof raw === 'string') {
+            return raw;
+        }
+        if (!raw || raw.length === 0) {
+            return '';
+        }
+
+        const hasUtf16Bom = raw.length >= 2 && raw[0] === 0xFF && raw[1] === 0xFE;
+        const looksUtf16Le = raw.length >= 4 && raw[1] === 0x00 && raw[3] === 0x00;
+        if (hasUtf16Bom || looksUtf16Le) {
+            return raw.toString('utf16le');
+        }
+        return raw.toString('utf8');
+    }
+
+    private formatWslDistroArg(distro: string): string {
+        const normalized = this.sanitizeWslDistroName(distro);
+        if (!normalized) {
+            return '';
+        }
+        if (/^[A-Za-z0-9._-]+$/.test(normalized)) {
+            return normalized;
+        }
+        return `"${normalized.replace(/"/g, '\\"')}"`;
+    }
+
     private escapeShellArg(value: string): string {
         const normalized = String(value ?? '');
         return `'${normalized.replace(/'/g, `'\\''`)}'`;
     }
 
-    private resolveRosSetupPath(): string {
+    private resolveRosSetupPath(runTarget?: string): string {
+        const normalizedTarget = this.normalizeRunTerminalTarget(runTarget);
+        const runningInWslContext = process.platform === 'win32' && this.isWindowsWslTarget(normalizedTarget);
+
         // 1. Explicit user setting
         const config = vscode.workspace.getConfiguration('rosDevToolkit');
         const configured = config.get<string>('rosSetupPath', '').trim();
-        if (configured && fs.existsSync(configured)) {
-            return configured;
+        if (configured) {
+            if (runningInWslContext) {
+                // In WSL context only Linux-style absolute paths are valid.
+                if (configured.startsWith('/')) {
+                    return configured;
+                }
+            } else if (fs.existsSync(configured)) {
+                return configured;
+            }
         }
 
         // 2. Detected distro
         if (this._env?.distro) {
             const p = `/opt/ros/${this._env.distro}/setup.bash`;
-            if (fs.existsSync(p)) { return p; }
+            if (runningInWslContext || fs.existsSync(p)) { return p; }
         }
 
         // 3. $ROS_DISTRO env var
         const envDistro = process.env.ROS_DISTRO;
         if (envDistro) {
             const p = `/opt/ros/${envDistro}/setup.bash`;
-            if (fs.existsSync(p)) { return p; }
+            if (runningInWslContext || fs.existsSync(p)) { return p; }
         }
 
         // 4. First distro folder found under /opt/ros
         const rosRoot = '/opt/ros';
+        if (runningInWslContext) {
+            return '/opt/ros/jazzy/setup.bash';
+        }
         if (fs.existsSync(rosRoot)) {
             try {
                 const dirs = fs.readdirSync(rosRoot, { withFileTypes: true })
@@ -4300,16 +5183,318 @@ int main(int argc, char * argv[]) {
         return '/opt/ros/jazzy/setup.bash';
     }
 
-    private exec(cmd: string): Promise<string> {
-        return new Promise((resolve, reject) => {
-            const setupPath = this.resolveRosSetupPath();
-            const sourced = this.buildSourcedCommand(cmd.replace(/'/g, "'\\''"));
-            const finalCmd = `bash -c '${sourced}'`;
+    private describeRuntimeMode(platform: string, remoteName?: string): string {
+        if (remoteName?.startsWith('wsl+')) {
+            const distro = remoteName.slice(4);
+            return distro ? `WSL remote (${distro})` : 'WSL remote';
+        }
+        if (platform === 'linux') {
+            return this.isWslKernel() ? 'Linux (WSL kernel)' : 'Linux native';
+        }
+        if (platform === 'win32') {
+            return 'Windows local';
+        }
+        return platform;
+    }
 
-            cp.exec(finalCmd, { env: process.env }, (err, stdout, stderr) => {
-                if (err) { reject(stderr || err.message); }
-                else { resolve(stdout); }
+    private isWslKernel(): boolean {
+        if (process.platform !== 'linux') {
+            return false;
+        }
+
+        const candidates = ['/proc/sys/kernel/osrelease', '/proc/version'];
+        for (const candidate of candidates) {
+            if (!fs.existsSync(candidate)) {
+                continue;
+            }
+            try {
+                const content = fs.readFileSync(candidate, 'utf8');
+                if (/microsoft/i.test(content)) {
+                    return true;
+                }
+            } catch {
+                // ignore read failures and continue fallback probing
+            }
+        }
+
+        return false;
+    }
+
+    private readOsReleaseFile(filePath: string): OsReleaseInfo | undefined {
+        if (!fs.existsSync(filePath)) {
+            return undefined;
+        }
+        try {
+            const content = fs.readFileSync(filePath, 'utf8');
+            return this.parseOsReleaseInfo(content);
+        } catch {
+            return undefined;
+        }
+    }
+
+    private parseOsReleaseInfo(content: string): OsReleaseInfo | undefined {
+        if (!content.trim()) {
+            return undefined;
+        }
+
+        const info: OsReleaseInfo = {};
+        for (const line of content.split(/\r?\n/)) {
+            const trimmed = line.trim();
+            if (!trimmed || trimmed.startsWith('#')) {
+                continue;
+            }
+
+            const eqIdx = trimmed.indexOf('=');
+            if (eqIdx <= 0) {
+                continue;
+            }
+
+            const key = trimmed.slice(0, eqIdx).trim();
+            let value = trimmed.slice(eqIdx + 1).trim();
+            if (
+                (value.startsWith('"') && value.endsWith('"'))
+                || (value.startsWith('\'') && value.endsWith('\''))
+            ) {
+                value = value.slice(1, -1);
+            }
+
+            if (key === 'NAME') {
+                info.name = value;
+            } else if (key === 'VERSION') {
+                info.version = value;
+            } else if (key === 'VERSION_ID') {
+                info.versionId = value;
+            } else if (key === 'PRETTY_NAME') {
+                info.prettyName = value;
+            }
+        }
+
+        if (!info.prettyName && !info.name && !info.version && !info.versionId) {
+            return undefined;
+        }
+        return info;
+    }
+
+    private formatLinuxDistro(info: OsReleaseInfo): string {
+        if (info.prettyName?.trim()) {
+            return info.prettyName.trim();
+        }
+
+        const name = info.name?.trim() || '';
+        const version = info.version?.trim() || info.versionId?.trim() || '';
+        const joined = [name, version].filter(Boolean).join(' ').trim();
+        return joined || 'unknown';
+    }
+
+    private formatRosEnvironment(rosDistro?: string, rosVersion?: string): string {
+        const distro = String(rosDistro || '').trim();
+        const version = String(rosVersion || '').trim();
+
+        if (!distro && !version) {
+            return 'not set';
+        }
+        if (distro && version) {
+            return `${distro} (ROS ${version})`;
+        }
+        if (distro) {
+            return `${distro} (ROS version unknown)`;
+        }
+        return `unknown distro (ROS ${version})`;
+    }
+
+    private listRosInstallations(rosRoot: string): string[] {
+        if (!fs.existsSync(rosRoot)) {
+            return [];
+        }
+
+        try {
+            return fs.readdirSync(rosRoot, { withFileTypes: true })
+                .filter((entry) => entry.isDirectory())
+                .map((entry) => entry.name)
+                .filter((distro) => (
+                    fs.existsSync(path.join(rosRoot, distro, 'setup.bash'))
+                    || fs.existsSync(path.join(rosRoot, distro, 'setup.sh'))
+                ))
+                .sort((a, b) => a.localeCompare(b));
+        } catch {
+            return [];
+        }
+    }
+
+    private parseWslList(raw: string): WslDistroSummary[] {
+        const distros: WslDistroSummary[] = [];
+        const cleanedRaw = raw.replace(/\u0000/g, '').replace(/\uFEFF/g, '');
+
+        for (const line of cleanedRaw.split(/\r?\n/)) {
+            const trimmed = line.trim();
+            if (!trimmed || /^name\s+state\s+version$/i.test(trimmed)) {
+                continue;
+            }
+
+            let normalized = trimmed;
+            let isDefault = false;
+            if (normalized.startsWith('*')) {
+                isDefault = true;
+                normalized = normalized.slice(1).trim();
+            }
+
+            const parts = normalized.split(/\s{2,}/).map((part) => part.trim()).filter(Boolean);
+            if (parts.length < 3) {
+                continue;
+            }
+
+            const name = this.sanitizeWslDistroName(parts[0]);
+            if (!name) {
+                continue;
+            }
+
+            distros.push({
+                name,
+                state: parts[1] || 'unknown',
+                version: parts[2] || '?',
+                isDefault,
             });
+        }
+
+        return distros;
+    }
+
+    private async probeWslDistro(name: string): Promise<{
+        linuxDistro?: string;
+        rosDistro?: string;
+        rosVersion?: string;
+        rosInstalls: string[];
+        error?: string;
+    }> {
+        const probeSeparator = '__ROS_DEV_TOOLKIT_SPLIT__';
+        const probeScript = [
+            'if [ -f /etc/os-release ]; then cat /etc/os-release; fi',
+            `echo ${probeSeparator}`,
+            'printf "ROS_DISTRO=%s\\n" "$ROS_DISTRO"',
+            'printf "ROS_VERSION=%s\\n" "$ROS_VERSION"',
+            `echo ${probeSeparator}`,
+            'ls -1 /opt/ros 2>/dev/null || true',
+        ].join('; ');
+        const probe = await this.execFileSafe(
+            'wsl.exe',
+            ['-d', name, '--exec', 'sh', '-lc', probeScript],
+            7000,
+        );
+        if (!probe.ok) {
+            return {
+                rosInstalls: [],
+                error: probe.error || probe.stderr.trim() || 'WSL probe failed',
+            };
+        }
+
+        const probeOutput = probe.stdout.replace(/\u0000/g, '').replace(/\uFEFF/g, '');
+        const parts = probeOutput.split(probeSeparator);
+        const osInfo = this.parseOsReleaseInfo(parts[0] || '');
+        const envChunk = parts[1] || '';
+        const rosDist = this.extractEnvVar(envChunk, 'ROS_DISTRO');
+        const rosVersion = this.extractEnvVar(envChunk, 'ROS_VERSION');
+        const rosInstalls = (parts[2] || '')
+            .split(/\r?\n/)
+            .map((line) => line.trim())
+            .filter(Boolean)
+            .sort((a, b) => a.localeCompare(b));
+
+        return {
+            linuxDistro: osInfo ? this.formatLinuxDistro(osInfo) : undefined,
+            rosDistro: rosDist,
+            rosVersion,
+            rosInstalls,
+        };
+    }
+
+    private extractEnvVar(content: string, key: string): string | undefined {
+        const escapedKey = key.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        const match = content.match(new RegExp(`^${escapedKey}=(.*)$`, 'm'));
+        const value = match?.[1]?.trim();
+        return value || undefined;
+    }
+
+    private execFileSafe(
+        command: string,
+        args: string[],
+        timeoutMs: number = 4000,
+    ): Promise<ExecFileResult> {
+        return new Promise((resolve) => {
+            cp.execFile(
+                command,
+                args,
+                {
+                    env: process.env,
+                    timeout: timeoutMs,
+                    windowsHide: true,
+                    maxBuffer: 1024 * 1024,
+                },
+                (error, stdout, stderr) => {
+                    if (error) {
+                        resolve({
+                            ok: false,
+                            stdout: stdout || '',
+                            stderr: stderr || '',
+                            error: error.message,
+                        });
+                        return;
+                    }
+
+                    resolve({
+                        ok: true,
+                        stdout: stdout || '',
+                        stderr: stderr || '',
+                    });
+                },
+            );
+        });
+    }
+
+    private exec(cmd: string): Promise<string> {
+        const context = this.resolveCommandExecutionContext();
+        const sourced = this.buildSourcedCommandForContext(cmd, context);
+
+        return new Promise((resolve, reject) => {
+            if (process.platform === 'win32' && context.useWsl) {
+                const args: string[] = [];
+                if (context.wslDistro) {
+                    args.push('-d', context.wslDistro);
+                }
+                args.push('--exec', 'bash', '-lc', sourced);
+                cp.execFile(
+                    'wsl.exe',
+                    args,
+                    {
+                        env: process.env,
+                        windowsHide: true,
+                        maxBuffer: 1024 * 1024,
+                    },
+                    (err, stdout, stderr) => {
+                        if (err) {
+                            reject(stderr || err.message);
+                            return;
+                        }
+                        resolve(stdout || '');
+                    },
+                );
+                return;
+            }
+
+            cp.execFile(
+                'bash',
+                ['-lc', sourced],
+                {
+                    env: process.env,
+                    maxBuffer: 1024 * 1024,
+                },
+                (err, stdout, stderr) => {
+                    if (err) {
+                        reject(stderr || err.message);
+                        return;
+                    }
+                    resolve(stdout || '');
+                },
+            );
         });
     }
 }

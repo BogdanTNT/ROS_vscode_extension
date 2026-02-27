@@ -5,6 +5,7 @@
     window.PM.dom = {
         btnCreate: document.getElementById('btnCreate'),
         btnRefresh: document.getElementById('btnRefresh'),
+        btnShowEnvironment: document.getElementById('btnShowEnvironment'),
         btnOpenCreate: document.getElementById('btnOpenCreate'),
         btnCloseCreate: document.getElementById('btnCloseCreate'),
         btnCancelCreate: document.getElementById('btnCancelCreate'),
@@ -63,5 +64,18 @@
         btnCancelRemoveNode: document.getElementById('btnCancelRemoveNode'),
         btnCloseRemoveNode: document.getElementById('btnCloseRemoveNode'),
         removeNodeStatus: document.getElementById('removeNodeStatus'),
+        environmentModal: document.getElementById('environmentModal'),
+        environmentBackdrop: document.getElementById('environmentBackdrop'),
+        environmentLoadingState: document.getElementById('environmentLoadingState'),
+        environmentDetailsToggle: document.getElementById('environmentDetailsToggle'),
+        environmentDetailsContainer: document.getElementById('environmentDetailsContainer'),
+        environmentDetails: document.getElementById('environmentDetails'),
+        runEnvironmentTarget: document.getElementById('runEnvironmentTarget'),
+        runEnvironmentDescription: document.getElementById('runEnvironmentDescription'),
+        runTerminalMode: document.getElementById('runTerminalMode'),
+        runTerminalModeDescription: document.getElementById('runTerminalModeDescription'),
+        btnCloseEnvironment: document.getElementById('btnCloseEnvironment'),
+        btnCancelEnvironment: document.getElementById('btnCancelEnvironment'),
+        btnSaveEnvironment: document.getElementById('btnSaveEnvironment'),
     };
 })();

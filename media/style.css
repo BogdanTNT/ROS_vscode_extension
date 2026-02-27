@@ -1188,6 +1188,27 @@ button.term-kill.is-pending {
     gap: 8px;
 }
 
+.env-report {
+    margin: 0;
+    padding: 8px;
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    background: var(--input-bg);
+    color: var(--text);
+    font-family: var(--vscode-editor-font-family, Consolas, "Courier New", monospace);
+    font-size: 0.82em;
+    line-height: 1.4;
+    white-space: pre-wrap;
+    max-height: 260px;
+    overflow: auto;
+}
+
+.env-details-toggle {
+    width: 100%;
+    text-align: left;
+    justify-content: flex-start;
+}
+
 .arg-list {
     list-style: none;
     border: 1px solid var(--border);
@@ -1366,9 +1387,318 @@ button.term-kill.is-pending {
     margin: 0;
 }
 
+.rdt-ui-settings-field {
+    margin: 0 0 10px;
+}
+
+.rdt-ui-settings-label {
+    display: block;
+    margin: 0 0 4px;
+    color: var(--text);
+    font-size: 0.85em;
+}
+
+.rdt-ui-settings-select {
+    width: 100%;
+    appearance: none;
+    margin: 0;
+    border: 1px solid var(--vscode-dropdown-border, var(--input-border));
+    border-radius: 2px;
+    background: var(--vscode-dropdown-background, var(--input-bg));
+    color: var(--vscode-dropdown-foreground, var(--input-fg));
+    font-family: inherit;
+    font-size: 0.84em;
+    line-height: 20px;
+    min-height: 22px;
+    padding: 0 22px 0 6px;
+    background-image: linear-gradient(45deg, transparent 50%, var(--text-muted) 50%), linear-gradient(135deg, var(--text-muted) 50%, transparent 50%);
+    background-position: calc(100% - 11px) 9px, calc(100% - 6px) 9px;
+    background-size: 5px 5px, 5px 5px;
+    background-repeat: no-repeat;
+}
+
+.rdt-ui-settings-select:focus {
+    outline: none;
+    border-color: var(--accent);
+    box-shadow: inset 0 0 0 1px var(--accent);
+}
+
 .rdt-ui-settings-actions {
     display: flex;
     justify-content: flex-end;
+}
+
+/* Utilitarian package manager style (SCM-inspired) */
+body.rdt-ui-style-utilitarian {
+    padding: 0;
+    --rdt-util-space-1: 2px;
+    --rdt-util-space-2: 4px;
+    --rdt-util-space-3: 6px;
+    --rdt-util-space-4: 8px;
+    --rdt-util-header-margin: var(--rdt-util-space-1);
+    --rdt-util-group-gap: var(--rdt-util-space-2);
+    --rdt-util-card-padding-y: var(--rdt-util-space-2);
+    --rdt-util-card-padding-x: var(--rdt-util-space-3);
+    --rdt-util-nv-block-gap: var(--rdt-util-space-2);
+    --rdt-util-nv-inline-gap: var(--rdt-util-space-2);
+}
+
+body.rdt-ui-style-utilitarian .section {
+    margin-bottom: var(--rdt-util-group-gap);
+}
+
+body.rdt-ui-style-utilitarian .subsection {
+    margin-bottom: var(--rdt-util-space-3);
+}
+
+body.rdt-ui-style-utilitarian h3 {
+    margin: var(--rdt-util-header-margin) 0;
+    color: var(--text);
+    letter-spacing: 0;
+    text-transform: none;
+}
+
+body.rdt-ui-style-utilitarian .toolbar {
+    margin-bottom: var(--rdt-util-group-gap);
+    gap: var(--rdt-util-group-gap);
+    flex-wrap: nowrap;
+}
+
+body.rdt-ui-style-utilitarian .search-row,
+body.rdt-ui-style-utilitarian .toggle-row {
+    margin-bottom: var(--rdt-util-group-gap);
+    gap: var(--rdt-util-group-gap);
+}
+
+body.rdt-ui-style-utilitarian button {
+    border-radius: 0;
+    min-height: 22px;
+    padding: 2px 7px;
+    gap: 3px;
+    border: 1px solid transparent;
+}
+
+body.rdt-ui-style-utilitarian button.small {
+    min-height: 20px;
+    padding: 1px 6px;
+}
+
+body.rdt-ui-style-utilitarian button.secondary {
+    background: var(--panel-bg);
+    color: var(--text);
+    border-color: var(--border);
+}
+
+body.rdt-ui-style-utilitarian button.secondary:hover {
+    background: var(--input-bg);
+    border-color: var(--accent);
+}
+
+body.rdt-ui-style-utilitarian input[type="text"],
+body.rdt-ui-style-utilitarian select,
+body.rdt-ui-style-utilitarian textarea {
+    border-radius: 0;
+    margin-bottom: 6px;
+    padding: 4px 6px;
+}
+
+body.rdt-ui-style-utilitarian .item-list {
+    border: 1px solid var(--border);
+    border-radius: 0;
+}
+
+body.rdt-ui-style-utilitarian .item-list li {
+    padding: var(--rdt-util-space-1) var(--rdt-util-space-2);
+    gap: var(--rdt-util-group-gap);
+}
+
+body.rdt-ui-style-utilitarian .item-list li.pkg-row {
+    gap: 2px;
+}
+
+body.rdt-ui-style-utilitarian .pkg-header {
+    gap: var(--rdt-util-group-gap);
+}
+
+body.rdt-ui-style-utilitarian .pkg-main {
+    gap: var(--rdt-util-group-gap);
+}
+
+body.rdt-ui-style-utilitarian .pkg-toggle {
+    width: 16px;
+    height: 16px;
+    border-radius: 0;
+}
+
+body.rdt-ui-style-utilitarian .pkg-dropdowns {
+    gap: 2px;
+    padding-left: 0;
+}
+
+body.rdt-ui-style-utilitarian .pkg-dropdown {
+    border-radius: 0;
+    background: transparent;
+}
+
+body.rdt-ui-style-utilitarian .pkg-dropdown-header {
+    padding: var(--rdt-util-space-1) var(--rdt-util-space-2);
+    gap: var(--rdt-util-group-gap);
+}
+
+body.rdt-ui-style-utilitarian .pkg-dropdown-body {
+    padding: 0;
+}
+
+body.rdt-ui-style-utilitarian .launch-list,
+body.rdt-ui-style-utilitarian .node-list {
+    gap: 0;
+}
+
+body.rdt-ui-style-utilitarian .launch-item,
+body.rdt-ui-style-utilitarian .node-item {
+    border-left: none;
+    border-right: none;
+    border-top: none;
+    border-radius: 0;
+    padding: 0;
+    gap: 0;
+}
+
+body.rdt-ui-style-utilitarian .launch-action,
+body.rdt-ui-style-utilitarian .node-action {
+    border-radius: 0;
+    padding: 2px 6px;
+    min-height: 22px;
+}
+
+body.rdt-ui-style-utilitarian .launch-run,
+body.rdt-ui-style-utilitarian .node-run {
+    min-width: 46px;
+}
+
+body.rdt-ui-style-utilitarian .launch-open,
+body.rdt-ui-style-utilitarian .node-open {
+    border-left: 1px solid var(--border);
+}
+
+body.rdt-ui-style-utilitarian .config-pill-group {
+    gap: 2px;
+}
+
+body.rdt-ui-style-utilitarian .config-pill {
+    border-radius: 2px;
+    padding: 1px 6px;
+}
+
+body.rdt-ui-style-utilitarian .pin-btn,
+body.rdt-ui-style-utilitarian .args-btn {
+    border-radius: 0;
+    padding: 1px 5px;
+}
+
+body.rdt-ui-style-utilitarian .badge {
+    border-radius: 2px;
+    padding: 1px 5px;
+}
+
+body.rdt-ui-style-utilitarian .section-header-actions,
+body.rdt-ui-style-utilitarian .terminal-actions {
+    gap: var(--rdt-util-group-gap);
+    flex-wrap: nowrap;
+}
+
+body.rdt-ui-style-utilitarian .terminal-item {
+    border-radius: 0;
+    padding: var(--rdt-util-space-1) var(--rdt-util-space-2);
+    margin-bottom: var(--rdt-util-space-1);
+}
+
+body.rdt-ui-style-utilitarian .modal-card {
+    border-radius: 0;
+}
+
+/* Node Visualizer: utilitarian dense layout */
+body.rdt-ui-style-utilitarian .nv-tabs {
+    gap: var(--rdt-util-nv-inline-gap);
+}
+
+body.rdt-ui-style-utilitarian .nv-tab {
+    padding: var(--rdt-util-space-1) var(--rdt-util-space-3);
+    gap: var(--rdt-util-nv-inline-gap);
+}
+
+body.rdt-ui-style-utilitarian .nv-layer-row {
+    gap: var(--rdt-util-nv-inline-gap);
+}
+
+body.rdt-ui-style-utilitarian .nv-details-header {
+    gap: var(--rdt-util-nv-inline-gap);
+}
+
+body.rdt-ui-style-utilitarian .nv-toolbar {
+    gap: var(--rdt-util-nv-inline-gap);
+}
+
+body.rdt-ui-style-utilitarian .nv-details-card,
+body.rdt-ui-style-utilitarian .nv-pinned-card {
+    border-radius: 0;
+    padding: var(--rdt-util-card-padding-y) var(--rdt-util-card-padding-x);
+}
+
+body.rdt-ui-style-utilitarian .nv-overview-sections {
+    gap: var(--rdt-util-nv-block-gap);
+}
+
+body.rdt-ui-style-utilitarian .nv-overview-section {
+    gap: var(--rdt-util-space-1);
+}
+
+body.rdt-ui-style-utilitarian .nv-overview-header {
+    gap: var(--rdt-util-nv-inline-gap);
+}
+
+body.rdt-ui-style-utilitarian .nv-details-card-head {
+    gap: var(--rdt-util-nv-inline-gap);
+    margin-bottom: var(--rdt-util-space-2);
+}
+
+body.rdt-ui-style-utilitarian .nv-topic-heading {
+    gap: var(--rdt-util-nv-inline-gap);
+    margin-bottom: var(--rdt-util-space-1);
+}
+
+body.rdt-ui-style-utilitarian .nv-topic-msg {
+    margin-top: var(--rdt-util-space-1);
+    padding: var(--rdt-util-space-3);
+    border-radius: 0;
+}
+
+body.rdt-ui-style-utilitarian .nv-topic-msg-row,
+body.rdt-ui-style-utilitarian .nv-topic-msg-row-compact {
+    margin-top: var(--rdt-util-space-2);
+}
+
+body.rdt-ui-style-utilitarian .nv-pinned-card-head {
+    gap: var(--rdt-util-nv-inline-gap);
+    margin-bottom: var(--rdt-util-space-2);
+}
+
+body.rdt-ui-style-utilitarian .nv-pinned-list {
+    gap: var(--rdt-util-nv-block-gap);
+}
+
+body.rdt-ui-style-utilitarian .nv-pinned-item {
+    border-radius: 0;
+    padding: var(--rdt-util-space-3);
+}
+
+body.rdt-ui-style-utilitarian .nv-tabs.mb,
+body.rdt-ui-style-utilitarian #status.mb,
+body.rdt-ui-style-utilitarian #overviewToggleBar.mb,
+body.rdt-ui-style-utilitarian .nv-details-header.mb,
+body.rdt-ui-style-utilitarian .nv-details-card.mb,
+body.rdt-ui-style-utilitarian .nv-pinned-card.mb {
+    margin-bottom: var(--rdt-util-nv-block-gap);
 }
 
 /* ── Compact layout mode ─────────────────────────────────────── */

@@ -1,6 +1,8 @@
 export const PMToHostCommand = {
     CREATE_PACKAGE: 'createPackage',
     REFRESH_PACKAGES: 'refreshPackages',
+    SHOW_ENV_INFO: 'showEnvironmentInfo',
+    SET_RUN_TERMINAL_TARGET: 'setRunTerminalTarget',
     LOAD_OTHER_PACKAGES: 'loadOtherPackages',
     LOAD_OTHER_PACKAGE_DETAILS: 'loadOtherPackageDetails',
     OPEN_LAUNCH: 'openLaunch',
@@ -22,6 +24,7 @@ export const PMToWebviewCommand = {
     PACKAGE_LIST: 'packageList',
     OTHER_PACKAGE_LIST: 'otherPackageList',
     OTHER_PACKAGE_DETAILS: 'otherPackageDetails',
+    ENVIRONMENT_DIALOG_STATE: 'environmentDialogState',
     CREATE_DONE: 'createDone',
     FOCUS_CREATE: 'focusCreate',
     LAUNCH_ARGS_OPTIONS: 'launchArgsOptions',

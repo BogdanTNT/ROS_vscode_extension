@@ -215,6 +215,311 @@
         dom.argsModal.classList.add('hidden');
     };
 
+    const normalizeRunTarget = (value) => {
+        const normalized = String(value || '').trim() || 'auto';
+        if (normalized === 'wsl:default') {
+            return 'wsl-external:default';
+        }
+        if (normalized.startsWith('wsl:')) {
+            return 'wsl-external:' + normalized.slice('wsl:'.length);
+        }
+        return normalized;
+    };
+
+    const parseRunTargetToSelection = (target) => {
+        const normalized = normalizeRunTarget(target);
+        if (normalized === 'auto') {
+            return { environmentId: 'auto', terminalModeId: 'auto' };
+        }
+        if (normalized === 'integrated' || normalized === 'external') {
+            return { environmentId: 'host', terminalModeId: normalized };
+        }
+        if (normalized.startsWith('wsl-integrated:')) {
+            const distro = String(normalized.slice('wsl-integrated:'.length) || 'default').trim() || 'default';
+            return { environmentId: 'wsl:' + distro, terminalModeId: 'integrated' };
+        }
+        if (normalized.startsWith('wsl-external:')) {
+            const distro = String(normalized.slice('wsl-external:'.length) || 'default').trim() || 'default';
+            return { environmentId: 'wsl:' + distro, terminalModeId: 'external' };
+        }
+        return { environmentId: 'auto', terminalModeId: 'auto' };
+    };
+
+    const getEnvironmentLabel = (environmentId) => {
+        if (environmentId === 'auto') {
+            return 'Auto';
+        }
+        if (environmentId === 'host') {
+            return 'Current environment';
+        }
+        if (environmentId === 'wsl:default') {
+            return 'WSL (default distro)';
+        }
+        if (environmentId.startsWith('wsl:')) {
+            const distro = String(environmentId.slice('wsl:'.length) || '').trim();
+            return distro ? ('WSL (' + distro + ')') : 'WSL';
+        }
+        return environmentId;
+    };
+
+    const getEnvironmentDescription = (environmentId) => {
+        if (environmentId === 'auto') {
+            return 'Use the extension default environment and terminal behavior.';
+        }
+        if (environmentId === 'host') {
+            return 'Run commands in the current workspace environment.';
+        }
+        if (environmentId === 'wsl:default') {
+            return 'Run commands in the default WSL distro.';
+        }
+        if (environmentId.startsWith('wsl:')) {
+            const distro = String(environmentId.slice('wsl:'.length) || '').trim();
+            return distro
+                ? ('Run commands in WSL distro "' + distro + '".')
+                : 'Run commands in WSL.';
+        }
+        return '';
+    };
+
+    const getTerminalModeLabel = (terminalModeId) => {
+        if (terminalModeId === 'auto') {
+            return 'Auto';
+        }
+        if (terminalModeId === 'integrated') {
+            return 'VS Code terminal';
+        }
+        if (terminalModeId === 'external') {
+            return 'External terminal';
+        }
+        return terminalModeId;
+    };
+
+    const getTerminalModeDescription = (terminalModeId) => {
+        if (terminalModeId === 'auto') {
+            return 'Use rosDevToolkit.launchInExternalTerminal to decide where Run actions open.';
+        }
+        if (terminalModeId === 'integrated') {
+            return 'Always open Run actions in a VS Code terminal tab.';
+        }
+        if (terminalModeId === 'external') {
+            return 'Always open Run actions in a native external terminal window.';
+        }
+        return '';
+    };
+
+    const environmentSortRank = (environmentId) => {
+        if (environmentId === 'auto') {
+            return 0;
+        }
+        if (environmentId === 'host') {
+            return 1;
+        }
+        if (environmentId === 'wsl:default') {
+            return 2;
+        }
+        if (environmentId.startsWith('wsl:')) {
+            return 3;
+        }
+        return 4;
+    };
+
+    const terminalModeSortRank = (terminalModeId) => {
+        if (terminalModeId === 'auto') {
+            return 0;
+        }
+        if (terminalModeId === 'integrated') {
+            return 1;
+        }
+        if (terminalModeId === 'external') {
+            return 2;
+        }
+        return 3;
+    };
+
+    const buildRunTargetSelectionModel = (requestedEnvironmentId, requestedTerminalModeId) => {
+        const rawOptions = Array.isArray(state.runTerminalTargetOptions)
+            ? state.runTerminalTargetOptions
+            : [];
+        const optionIds = rawOptions
+            .map((opt) => normalizeRunTarget(opt?.id))
+            .filter((id) => Boolean(id));
+        const validTargets = new Set(optionIds.length ? optionIds : ['auto']);
+
+        const environmentMap = new Map();
+        const registerPair = (targetId) => {
+            const selection = parseRunTargetToSelection(targetId);
+            const envId = String(selection.environmentId || 'auto').trim() || 'auto';
+            const modeId = String(selection.terminalModeId || 'auto').trim() || 'auto';
+            if (!environmentMap.has(envId)) {
+                environmentMap.set(envId, {
+                    id: envId,
+                    terminalModeToTarget: new Map(),
+                });
+            }
+            const envEntry = environmentMap.get(envId);
+            if (!envEntry.terminalModeToTarget.has(modeId)) {
+                envEntry.terminalModeToTarget.set(modeId, targetId);
+            }
+        };
+
+        validTargets.forEach(registerPair);
+        if (!environmentMap.size) {
+            registerPair('auto');
+        }
+
+        const environmentOptions = Array.from(environmentMap.values())
+            .map((env) => ({
+                id: env.id,
+                label: getEnvironmentLabel(env.id),
+                description: getEnvironmentDescription(env.id),
+            }))
+            .sort((a, b) => {
+                const rankDiff = environmentSortRank(a.id) - environmentSortRank(b.id);
+                return rankDiff !== 0 ? rankDiff : a.label.localeCompare(b.label);
+            });
+
+        const normalizedCurrentTarget = normalizeRunTarget(state.runTerminalTarget);
+        const currentSelection = parseRunTargetToSelection(
+            validTargets.has(normalizedCurrentTarget) ? normalizedCurrentTarget : 'auto',
+        );
+        const requestedEnvironment = String(requestedEnvironmentId || '').trim();
+        const requestedTerminalMode = String(requestedTerminalModeId || '').trim();
+
+        const selectedEnvironmentId = environmentMap.has(requestedEnvironment)
+            ? requestedEnvironment
+            : (
+                environmentMap.has(currentSelection.environmentId)
+                    ? currentSelection.environmentId
+                    : (environmentOptions[0]?.id || 'auto')
+            );
+
+        const terminalModeToTarget = environmentMap.get(selectedEnvironmentId)?.terminalModeToTarget || new Map([
+            ['auto', 'auto'],
+        ]);
+        const terminalModeOptions = Array.from(terminalModeToTarget.keys())
+            .map((id) => ({
+                id,
+                label: getTerminalModeLabel(id),
+                description: getTerminalModeDescription(id),
+            }))
+            .sort((a, b) => {
+                const rankDiff = terminalModeSortRank(a.id) - terminalModeSortRank(b.id);
+                return rankDiff !== 0 ? rankDiff : a.label.localeCompare(b.label);
+            });
+
+        const selectedTerminalModeId = terminalModeToTarget.has(requestedTerminalMode)
+            ? requestedTerminalMode
+            : (
+                terminalModeToTarget.has(currentSelection.terminalModeId)
+                    ? currentSelection.terminalModeId
+                    : (terminalModeOptions[0]?.id || 'auto')
+            );
+
+        const resolvedTarget = normalizeRunTarget(
+            terminalModeToTarget.get(selectedTerminalModeId)
+            || 'auto',
+        );
+
+        return {
+            environmentOptions,
+            terminalModeOptions,
+            selectedEnvironmentId,
+            selectedTerminalModeId,
+            resolvedTarget: validTargets.has(resolvedTarget) ? resolvedTarget : 'auto',
+        };
+    };
+
+    const getSelectedRunTarget = () => {
+        const model = buildRunTargetSelectionModel(
+            dom.runEnvironmentTarget?.value || state.runEnvironmentTarget,
+            dom.runTerminalMode?.value || state.runTerminalMode,
+        );
+        return model.resolvedTarget;
+    };
+
+    const renderEnvironmentDetailsState = () => {
+        const expanded = state.environmentDetailsExpanded === true;
+        if (dom.environmentDetailsContainer) {
+            dom.environmentDetailsContainer.classList.toggle('hidden', !expanded);
+        }
+        if (dom.environmentDetailsToggle) {
+            const arrow = expanded ? '▼' : '▶';
+            const loadingSuffix = state.environmentLoading ? ' (loading...)' : '';
+            dom.environmentDetailsToggle.textContent = arrow + ' Detected environment' + loadingSuffix;
+            dom.environmentDetailsToggle.setAttribute('aria-expanded', expanded ? 'true' : 'false');
+        }
+        if (dom.environmentLoadingState) {
+            dom.environmentLoadingState.classList.toggle('hidden', state.environmentLoading !== true);
+        }
+    };
+
+    const renderEnvironmentModalState = (requestedEnvironmentId, requestedTerminalModeId) => {
+        if (!dom.environmentDetails || !dom.runEnvironmentTarget || !dom.runTerminalMode) {
+            return;
+        }
+
+        const report = String(state.environmentReport || '').trim();
+        dom.environmentDetails.textContent = report || 'Collecting environment details...';
+
+        const model = buildRunTargetSelectionModel(requestedEnvironmentId, requestedTerminalModeId);
+
+        state.runEnvironmentOptions = model.environmentOptions;
+        state.runTerminalModeOptions = model.terminalModeOptions;
+        state.runEnvironmentTarget = model.selectedEnvironmentId;
+        state.runTerminalMode = model.selectedTerminalModeId;
+
+        dom.runEnvironmentTarget.innerHTML = model.environmentOptions
+            .map((opt) => (
+                '<option value="' + String(opt.id).replace(/"/g, '&quot;') + '">' + String(opt.label) + '</option>'
+            ))
+            .join('');
+        dom.runEnvironmentTarget.value = model.selectedEnvironmentId;
+
+        dom.runTerminalMode.innerHTML = model.terminalModeOptions
+            .map((opt) => (
+                '<option value="' + String(opt.id).replace(/"/g, '&quot;') + '">' + String(opt.label) + '</option>'
+            ))
+            .join('');
+        dom.runTerminalMode.value = model.selectedTerminalModeId;
+        dom.runTerminalMode.disabled = model.terminalModeOptions.length <= 1;
+
+        const selectedEnvironment = model.environmentOptions.find(
+            (opt) => String(opt?.id || '') === model.selectedEnvironmentId,
+        );
+        if (dom.runEnvironmentDescription) {
+            dom.runEnvironmentDescription.textContent = String(selectedEnvironment?.description || '');
+        }
+
+        const selectedMode = model.terminalModeOptions.find(
+            (opt) => String(opt?.id || '') === model.selectedTerminalModeId,
+        );
+        if (dom.runTerminalModeDescription) {
+            dom.runTerminalModeDescription.textContent = String(selectedMode?.description || '');
+        }
+
+        renderEnvironmentDetailsState();
+
+    };
+
+    const openEnvironmentModal = () => {
+        if (!dom.environmentModal) {
+            return;
+        }
+        state.environmentDetailsExpanded = false;
+        renderEnvironmentModalState();
+        dom.environmentModal.classList.remove('hidden');
+        if (dom.runEnvironmentTarget) {
+            dom.runEnvironmentTarget.focus();
+        }
+    };
+
+    const closeEnvironmentModal = () => {
+        if (!dom.environmentModal) {
+            return;
+        }
+        dom.environmentModal.classList.add('hidden');
+    };
+
     const submitCreatePackage = () => {
         const rawName = dom.pkgNameInput ? dom.pkgNameInput.value : '';
         const name = normalizePackageName(rawName);
@@ -265,6 +570,56 @@
     dom.btnRefresh.addEventListener('click', () => {
         actions.refreshPackages();
     });
+    if (dom.btnShowEnvironment) {
+        dom.btnShowEnvironment.addEventListener('click', () => {
+            state.environmentLoading = true;
+            openEnvironmentModal();
+            actions.showEnvironmentInfo();
+        });
+    }
+
+    if (dom.environmentDetailsToggle) {
+        dom.environmentDetailsToggle.addEventListener('click', () => {
+            state.environmentDetailsExpanded = !(state.environmentDetailsExpanded === true);
+            renderEnvironmentDetailsState();
+        });
+    }
+
+    if (dom.runEnvironmentTarget) {
+        dom.runEnvironmentTarget.addEventListener('change', () => {
+            renderEnvironmentModalState(dom.runEnvironmentTarget.value, undefined);
+        });
+    }
+    if (dom.runTerminalMode) {
+        dom.runTerminalMode.addEventListener('change', () => {
+            renderEnvironmentModalState(
+                dom.runEnvironmentTarget?.value || state.runEnvironmentTarget,
+                dom.runTerminalMode.value,
+            );
+        });
+    }
+    if (dom.btnSaveEnvironment) {
+        dom.btnSaveEnvironment.addEventListener('click', () => {
+            const target = getSelectedRunTarget();
+            actions.setRunTerminalTarget(target);
+            closeEnvironmentModal();
+        });
+    }
+    if (dom.btnCancelEnvironment) {
+        dom.btnCancelEnvironment.addEventListener('click', closeEnvironmentModal);
+    }
+    if (dom.btnCloseEnvironment) {
+        dom.btnCloseEnvironment.addEventListener('click', closeEnvironmentModal);
+    }
+    if (dom.environmentBackdrop) {
+        dom.environmentBackdrop.addEventListener('click', closeEnvironmentModal);
+    }
+    if (uiInteractions?.bindModalEnterConfirm && dom.environmentModal && dom.btnSaveEnvironment) {
+        uiInteractions.bindModalEnterConfirm({
+            modal: dom.environmentModal,
+            confirmButton: dom.btnSaveEnvironment,
+        });
+    }
 
     const requestOtherPackagesLoad = (force = false) => {
         if (!force && (state.otherPackagesLoaded || state.otherPackagesLoading)) {
@@ -510,6 +865,9 @@
         closeArgsModal,
         openCreate,
         closeCreate,
+        openEnvironmentModal,
+        closeEnvironmentModal,
+        renderEnvironmentModalState,
         openAddNodeModal,
         closeAddNodeModal,
         openRemoveNodeModal,

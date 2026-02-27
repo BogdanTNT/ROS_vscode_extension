@@ -157,6 +157,25 @@
                 render.renderPinned();
                 break;
             }
+            case toWebview.ENVIRONMENT_DIALOG_STATE: {
+                state.environmentReport = String(msg.report || '');
+                state.environmentLoading = false;
+                state.runTerminalTarget = String(msg.target || 'auto');
+                state.autoLaunchInExternalTerminal = msg.autoLaunchInExternalTerminal !== false;
+                state.runTerminalTargetOptions = Array.isArray(msg.targetOptions)
+                    ? msg.targetOptions
+                        .map((opt) => ({
+                            id: typeof opt?.id === 'string' ? opt.id : '',
+                            label: typeof opt?.label === 'string' ? opt.label : '',
+                            description: typeof opt?.description === 'string' ? opt.description : '',
+                        }))
+                        .filter((opt) => Boolean(opt.id))
+                    : [];
+                if (window.PM.handlers?.renderEnvironmentModalState) {
+                    window.PM.handlers.renderEnvironmentModalState();
+                }
+                break;
+            }
             case toWebview.CREATE_DONE: {
                 const { dom } = window.PM;
                 dom.btnCreate.disabled = false;

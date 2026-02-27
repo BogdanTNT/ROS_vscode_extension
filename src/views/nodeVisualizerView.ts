@@ -10,9 +10,9 @@ import {
 } from '../ros/rosWorkspace';
 import { getWebviewHtml } from './webviewHelper';
 import {
-    UI_PREFERENCES_KEY,
+    loadWebviewUiPreferences,
+    saveWebviewUiPreferences,
     WebviewUiPreferences,
-    normalizeWebviewUiPreferences,
 } from './uiPreferences';
 
 const DEFAULT_NODE_VISUALIZER_AUTO_REFRESH_INTERVAL_MS = 3000;
@@ -80,6 +80,7 @@ export class NodeVisualizerViewProvider implements vscode.WebviewViewProvider {
         private readonly _extensionUri: vscode.Uri,
         private readonly _ros: RosWorkspace,
         private readonly _context: vscode.ExtensionContext,
+        private readonly _onUiPreferencesChanged?: (preferences: WebviewUiPreferences) => PromiseLike<void> | void,
     ) {
         this._prefs = this._loadPrefs();
         this._autoRefreshEnabled = this._prefs.autoRefreshEnabled;
@@ -750,23 +751,26 @@ export class NodeVisualizerViewProvider implements vscode.WebviewViewProvider {
     }
 
     private _getUiPreferences(): WebviewUiPreferences {
-        const stored = this._context.globalState.get<Partial<WebviewUiPreferences>>(UI_PREFERENCES_KEY, {});
-        return normalizeWebviewUiPreferences(stored);
+        return loadWebviewUiPreferences(this._context.globalState);
     }
 
     private _sendUiPreferences() {
-        this._view?.webview.postMessage({
-            command: 'uiPreferencesState',
-            preferences: this._getUiPreferences(),
-        });
+        this.applyUiPreferences(this._getUiPreferences());
     }
 
     private async _setUiPreferences(preferences: unknown) {
-        const normalized = normalizeWebviewUiPreferences(preferences);
-        await this._context.globalState.update(UI_PREFERENCES_KEY, normalized);
+        const normalized = await saveWebviewUiPreferences(this._context.globalState, preferences);
+        if (this._onUiPreferencesChanged) {
+            await this._onUiPreferencesChanged(normalized);
+            return;
+        }
+        this.applyUiPreferences(normalized);
+    }
+
+    public applyUiPreferences(preferences: WebviewUiPreferences) {
         this._view?.webview.postMessage({
             command: 'uiPreferencesState',
-            preferences: normalized,
+            preferences,
         });
     }
 

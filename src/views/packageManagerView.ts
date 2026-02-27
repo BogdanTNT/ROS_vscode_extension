@@ -1,11 +1,11 @@
 import * as vscode from 'vscode';
-import { RosWorkspace, RosWorkspacePackageDetails } from '../ros/rosWorkspace';
+import { RosWorkspace, RosWorkspacePackageDetails, RunTerminalTargetOption } from '../ros/rosWorkspace';
 import { getWebviewHtml } from './webviewHelper';
 import { PMToHostCommand, PMToWebviewCommand } from './packageManagerMessages';
 import {
-    UI_PREFERENCES_KEY,
+    loadWebviewUiPreferences,
+    saveWebviewUiPreferences,
     WebviewUiPreferences,
-    normalizeWebviewUiPreferences,
 } from './uiPreferences';
 
 type LaunchArgConfig = { id: string; name: string; args: string };
@@ -14,7 +14,9 @@ type LaunchArgConfigMap = Record<string, { configs: LaunchArgConfig[] }>;
 const PINNED_LAUNCH_FILES_KEY = 'pinnedLaunchFiles';
 const LAUNCH_ARG_CONFIGS_KEY = 'launchArgConfigs';
 const LEGACY_LAUNCH_ARGS_KEY = 'launchArgs';
+const RUN_TERMINAL_TARGET_KEY = 'runTerminalTarget';
 const DEFAULT_CREATE_PACKAGE_DESCRIPTION = 'TO DO: A very good package description';
+const PACKAGE_MANAGER_BASE_TITLE = 'Package Manager';
 // TODO(remove-by: v0.3.0 / 2026-06-30): Remove migration from legacy launch args.
 
 /**
@@ -31,6 +33,7 @@ export class PackageManagerViewProvider implements vscode.WebviewViewProvider {
         private readonly _extensionUri: vscode.Uri,
         private readonly _ros: RosWorkspace,
         private readonly _context: vscode.ExtensionContext,
+        private readonly _onUiPreferencesChanged?: (preferences: WebviewUiPreferences) => PromiseLike<void> | void,
     ) {}
 
     // ── WebviewViewProvider ────────────────────────────────────
@@ -40,6 +43,7 @@ export class PackageManagerViewProvider implements vscode.WebviewViewProvider {
         _token: vscode.CancellationToken,
     ): void {
         this._view = webviewView;
+        this._setViewTitle(this._getStoredRunTerminalTarget());
 
         webviewView.webview.options = {
             enableScripts: true,
@@ -57,6 +61,12 @@ export class PackageManagerViewProvider implements vscode.WebviewViewProvider {
                 case PMToHostCommand.REFRESH_PACKAGES:
                     await this._sendPackageList();
                     this._sendBuildCheckState();
+                    break;
+                case PMToHostCommand.SHOW_ENV_INFO:
+                    await this._showEnvironmentInfo();
+                    break;
+                case PMToHostCommand.SET_RUN_TERMINAL_TARGET:
+                    await this._setRunTerminalTarget(msg.target);
                     break;
                 case PMToHostCommand.LOAD_OTHER_PACKAGES:
                     await this._sendOtherPackageList(Boolean(msg.force));
@@ -119,6 +129,9 @@ export class PackageManagerViewProvider implements vscode.WebviewViewProvider {
             });
         });
 
+        this._applyStoredRunTerminalTarget();
+        void this._initializeEnvironmentOnStartup();
+
         // Send the initial package list once the view is visible
         this._sendPackageList();
         this._sendBuildCheckState();
@@ -143,23 +156,26 @@ export class PackageManagerViewProvider implements vscode.WebviewViewProvider {
     }
 
     private _getUiPreferences(): WebviewUiPreferences {
-        const stored = this._context.globalState.get<Partial<WebviewUiPreferences>>(UI_PREFERENCES_KEY, {});
-        return normalizeWebviewUiPreferences(stored);
+        return loadWebviewUiPreferences(this._context.globalState);
     }
 
     private _sendUiPreferences() {
-        this._view?.webview.postMessage({
-            command: 'uiPreferencesState',
-            preferences: this._getUiPreferences(),
-        });
+        this.applyUiPreferences(this._getUiPreferences());
     }
 
     private async _setUiPreferences(preferences: unknown) {
-        const normalized = normalizeWebviewUiPreferences(preferences);
-        await this._context.globalState.update(UI_PREFERENCES_KEY, normalized);
+        const normalized = await saveWebviewUiPreferences(this._context.globalState, preferences);
+        if (this._onUiPreferencesChanged) {
+            await this._onUiPreferencesChanged(normalized);
+            return;
+        }
+        this.applyUiPreferences(normalized);
+    }
+
+    public applyUiPreferences(preferences: WebviewUiPreferences) {
         this._view?.webview.postMessage({
             command: 'uiPreferencesState',
-            preferences: normalized,
+            preferences,
         });
     }
 
@@ -242,6 +258,106 @@ export class PackageManagerViewProvider implements vscode.WebviewViewProvider {
         await vscode.workspace
             .getConfiguration('rosDevToolkit')
             .update('preLaunchBuildCheck', enabled, vscode.ConfigurationTarget.Global);
+    }
+
+    private _getStoredRunTerminalTarget(): string {
+        return String(this._context.globalState.get<string>(RUN_TERMINAL_TARGET_KEY, 'auto') || 'auto')
+            .trim()
+            || 'auto';
+    }
+
+    private _resolveRunTerminalTarget(
+        requested: string,
+        options: RunTerminalTargetOption[],
+    ): string {
+        const normalized = String(requested || '').trim();
+        if (!normalized) {
+            return 'auto';
+        }
+        const migrated = normalized === 'wsl:default'
+            ? 'wsl-external:default'
+            : (normalized.startsWith('wsl:') ? `wsl-external:${normalized.slice('wsl:'.length)}` : normalized);
+        const validIds = new Set(options.map((opt) => String(opt.id || '').trim()).filter(Boolean));
+        return validIds.has(migrated) ? migrated : 'auto';
+    }
+
+    private _applyStoredRunTerminalTarget() {
+        const target = this._getStoredRunTerminalTarget();
+        this._ros.setRunTerminalTarget(target);
+        this._setViewTitle(target);
+    }
+
+    private async _initializeEnvironmentOnStartup() {
+        try {
+            await this._sendEnvironmentDialogState();
+        } catch {
+            // Keep startup non-disruptive; the user can still open Environment Info manually.
+        }
+    }
+
+    private _setViewTitle(
+        target: string,
+        options?: RunTerminalTargetOption[],
+    ) {
+        if (!this._view) {
+            return;
+        }
+
+        const normalizedTarget = String(target || '').trim() || 'auto';
+        const option = options?.find((candidate) => candidate.id === normalizedTarget);
+        const envLabel = option
+            ? (option.id === 'auto' ? 'Auto' : option.label)
+            : (normalizedTarget === 'auto' ? 'Auto' : normalizedTarget);
+        this._view.title = `${PACKAGE_MANAGER_BASE_TITLE} - ${envLabel}`;
+    }
+
+    private async _sendEnvironmentDialogState() {
+        const [report, options] = await Promise.all([
+            this._ros.getEnvironmentInfoReport(),
+            this._ros.listRunTerminalTargets(),
+        ]);
+        const autoLaunchInExternalTerminal = vscode.workspace
+            .getConfiguration('rosDevToolkit')
+            .get<boolean>('launchInExternalTerminal', true);
+
+        const storedTarget = this._getStoredRunTerminalTarget();
+        const selectedTarget = this._resolveRunTerminalTarget(storedTarget, options);
+        if (storedTarget !== selectedTarget) {
+            await this._context.globalState.update(RUN_TERMINAL_TARGET_KEY, selectedTarget);
+        }
+        this._ros.setRunTerminalTarget(selectedTarget);
+        this._setViewTitle(selectedTarget, options);
+
+        this._view?.webview.postMessage({
+            command: PMToWebviewCommand.ENVIRONMENT_DIALOG_STATE,
+            report,
+            target: selectedTarget,
+            targetOptions: options,
+            autoLaunchInExternalTerminal,
+        });
+    }
+
+    private async _showEnvironmentInfo() {
+        try {
+            await this._sendEnvironmentDialogState();
+        } catch (error) {
+            const message = error instanceof Error ? error.message : String(error);
+            vscode.window.showErrorMessage(`Failed to collect environment info: ${message}`);
+        }
+    }
+
+    private async _setRunTerminalTarget(target: string) {
+        const requested = String(target || '').trim() || 'auto';
+        try {
+            const options = await this._ros.listRunTerminalTargets();
+            const selected = this._resolveRunTerminalTarget(requested, options);
+            await this._context.globalState.update(RUN_TERMINAL_TARGET_KEY, selected);
+            this._ros.setRunTerminalTarget(selected);
+            await this._sendEnvironmentDialogState();
+        } catch (error) {
+            const message = error instanceof Error ? error.message : String(error);
+            vscode.window.showErrorMessage(`Failed to update run terminal target: ${message}`);
+        }
     }
 
     private async _handleCreate(
@@ -498,6 +614,7 @@ export class PackageManagerViewProvider implements vscode.WebviewViewProvider {
     <div class="toolbar">
         <button id="btnOpenCreate">＋ New Package</button>
         <button class="secondary small" id="btnRefresh">↻ Refresh</button>
+        <button class="secondary small" id="btnShowEnvironment">Environment Info</button>
     </div>
 
     <div class="toggle-row">
@@ -700,6 +817,40 @@ export class PackageManagerViewProvider implements vscode.WebviewViewProvider {
             <button class="danger" id="btnRemoveNode">Remove Node</button>
         </div>
         <div id="removeNodeStatus" class="mt hidden"></div>
+    </div>
+</div>
+
+<div class="modal hidden" id="environmentModal" role="dialog" aria-modal="true">
+    <div class="modal-backdrop" id="environmentBackdrop"></div>
+    <div class="modal-card">
+        <div class="modal-header">
+            <h3>Environment & Run Terminal</h3>
+            <button class="secondary small" id="btnCloseEnvironment">✕</button>
+        </div>
+        <div class="modal-body">
+            <label for="runEnvironmentTarget">Run button environment</label>
+            <select id="runEnvironmentTarget"></select>
+            <div id="runEnvironmentDescription" class="text-muted text-sm mb"></div>
+
+            <label for="runTerminalMode">Run button terminal</label>
+            <select id="runTerminalMode"></select>
+            <div id="runTerminalModeDescription" class="text-muted text-sm mb"></div>
+
+            <div id="environmentLoadingState" class="text-muted text-sm mb hidden">
+                <span class="spinner"></span> Detecting environment...
+            </div>
+
+            <button class="secondary small env-details-toggle" id="environmentDetailsToggle" aria-expanded="false">
+                ▶ Detected environment
+            </button>
+            <div id="environmentDetailsContainer" class="hidden">
+                <pre id="environmentDetails" class="env-report">Collecting environment details...</pre>
+            </div>
+        </div>
+        <div class="modal-footer">
+            <button class="secondary" id="btnCancelEnvironment">Close</button>
+            <button id="btnSaveEnvironment">Save target</button>
+        </div>
     </div>
 </div>
 `;
