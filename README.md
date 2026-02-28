@@ -68,12 +68,20 @@ The extension adds a **ROS Dev Toolkit** activity bar container with:
 - `rosDevToolkit.preLaunchBuildCheck`: Enable smart build check before run/launch.
 - `rosDevToolkit.symlinkInstall`: Use `--symlink-install` for faster Python iteration.
 - `rosDevToolkit.launchInExternalTerminal`: Use an external terminal for GUI apps (RViz, Gazebo, rqt).
+- `rosDevToolkit.nodeVisualizerAutoRefreshIntervalMs`: Default Node Visualizer auto-refresh interval.
+- `rosDevToolkit.nodeVisualizerUsePersistentWslShell`: Keep a warm WSL shell for graph refresh on Windows+WSL (enabled by default; set `false` to disable).
 
 ## Development setup
 
 1. Install dependencies: `npm install`
 2. Build the extension: `npm run compile`
 3. Start debugging in VS Code with the `Run Extension` launch config
+
+## Documentation
+
+- Contributor workflow: `AGENTS.md`
+- Architecture overview: `ARCHITECTURE.md`
+- Full docs index: `docs/index.md`
 
 ## Publish
 

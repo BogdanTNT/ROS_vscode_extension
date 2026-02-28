@@ -243,6 +243,36 @@ describe('RosWorkspace create and launch commands', () => {
         expect(cmd).toContain(`"${workspaceRoot}/build/my_pkg"`);
     });
 
+    it('uses --packages-up-to in WSL fallback auto-build so first-run dependencies are included', () => {
+        workspaceRoot = createTempWorkspace({ 'src/.keep': '' });
+        __setWorkspaceFolder(workspaceRoot);
+
+        const ros = new RosWorkspace();
+        const rosInternal = ros as unknown as {
+            buildRunCommandWithWslPackageFallback: (
+                pkg: string,
+                baseCmd: string,
+                runTarget: string,
+            ) => string;
+            isWindowsWslTarget: (target: string) => boolean;
+            isRos2: () => boolean;
+        };
+
+        vi.spyOn(rosInternal, 'isWindowsWslTarget').mockReturnValue(true);
+        vi.spyOn(rosInternal, 'isRos2').mockReturnValue(true);
+
+        const cmd = rosInternal.buildRunCommandWithWslPackageFallback(
+            'demo_pkg',
+            'ros2 launch demo_pkg robot.launch.py',
+            'wsl-integrated:default',
+        );
+
+        expect(cmd).toContain(`ros2 pkg prefix 'demo_pkg'`);
+        expect(cmd).toContain(`--packages-up-to 'demo_pkg'`);
+        expect(cmd).not.toContain('--packages-select');
+        expect(cmd).toContain('ros2 launch demo_pkg robot.launch.py');
+    });
+
     // ── Pre-launch/run build checks ────────────────────────────
     it.each(directExecutionCases)(
         'skips pre-execution build check for $name when toggle is off',
@@ -345,6 +375,7 @@ describe('RosWorkspace create and launch commands', () => {
                 expectedCommand,
                 expectedLabel,
                 undefined,
+                'auto',
             );
             // Direct terminal execution must not be called.
             expect(externalSpy).not.toHaveBeenCalled();
@@ -414,6 +445,18 @@ describe('RosWorkspace create and launch commands', () => {
         const createdTerminals = __getCreatedTerminals();
         expect(createdTerminals).toHaveLength(2);
         expect(ros.getTrackedTerminals()).toHaveLength(2);
+    });
+
+    it('uses package-scoped launch label as integrated terminal name', () => {
+        const ros = new RosWorkspace();
+
+        ros.runInLaunchTerminal('ros2 launch demo_pkg robot.launch.py', 'demo_pkg / robot.launch.py');
+        ros.runInLaunchTerminal('ros2 run demo_pkg talker', 'demo_pkg / talker');
+
+        const createdTerminals = __getCreatedTerminals();
+        expect(createdTerminals).toHaveLength(2);
+        expect(createdTerminals[0]?.name).toBe('demo_pkg / robot.launch.py');
+        expect(createdTerminals[1]?.name).toBe('demo_pkg / talker');
     });
 
     it('kill sends Ctrl+C when process is still running', async () => {

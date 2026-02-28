@@ -333,20 +333,20 @@
         };
     };
 
-    const launchFromItem = (launchItem, args, argsName) => {
+    const launchFromItem = (launchItem, args, argsName, runTarget) => {
         const { pkg, file, path } = getLaunchItemData(launchItem);
         if (!pkg || !file || !path) {
             return;
         }
-        actions.launchFile(pkg, file, path, args || '', argsName || '');
+        actions.launchFile(pkg, file, path, args || '', argsName || '', runTarget || '');
     };
 
-    const runNodeFromItem = (nodeItem, args, argsName) => {
+    const runNodeFromItem = (nodeItem, args, argsName, runTarget) => {
         const { pkg, executable, path } = getNodeItemData(nodeItem);
         if (!pkg || !executable) {
             return;
         }
-        actions.runNode(pkg, executable, args || '', argsName || '', path || '');
+        actions.runNode(pkg, executable, args || '', argsName || '', path || '', runTarget || '');
     };
 
     const openFromItem = (launchItem) => {
@@ -408,7 +408,8 @@
 
         const cfg = state.launchArgConfigs[argsKey];
         const match = cfg?.configs?.find((c) => c.id === id);
-        launchFromItem(launchItem, match?.args || '', match?.name || '');
+        const runTarget = String(match?.runTarget || '').trim();
+        launchFromItem(launchItem, match?.args || '', match?.name || '', runTarget !== 'auto' ? runTarget : '');
     };
 
     const runNodeFromConfigButton = (configBtn, nodeItem) => {
@@ -419,7 +420,8 @@
         }
         const cfg = state.launchArgConfigs[argsKey];
         const match = cfg?.configs?.find((c) => c.id === id);
-        runNodeFromItem(nodeItem, match?.args || '', match?.name || '');
+        const runTarget = String(match?.runTarget || '').trim();
+        runNodeFromItem(nodeItem, match?.args || '', match?.name || '', runTarget !== 'auto' ? runTarget : '');
     };
 
     const handleLaunchListClick = (event) => {
@@ -1012,9 +1014,13 @@
                     return;
                 }
                 state.currentConfigId = id;
-                const cfgItem = cfg.configs.find((c) => c.id === state.currentConfigId);
-                dom.argsInput.value = cfgItem?.args || '';
-                dom.configName.value = cfgItem?.name || '';
+                if (window.PM.handlers?.syncArgsConfigEditor) {
+                    window.PM.handlers.syncArgsConfigEditor();
+                } else {
+                    const cfgItem = cfg.configs.find((c) => c.id === state.currentConfigId);
+                    dom.argsInput.value = cfgItem?.args || '';
+                    dom.configName.value = cfgItem?.name || '';
+                }
                 renderConfigTabs();
             });
         });

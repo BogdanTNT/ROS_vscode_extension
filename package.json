@@ -85,6 +85,11 @@
           "minimum": 1,
           "maximum": 120,
           "description": "Timeout (seconds) for ROS topic info queries in the Node Visualizer."
+        },
+        "rosDevToolkit.nodeVisualizerUsePersistentWslShell": {
+          "type": "boolean",
+          "default": true,
+          "description": "When enabled on Windows+WSL, Node Visualizer graph refresh uses a persistent WSL bash process to reduce startup overhead. Enabled by default for automatic WSL optimization."
         }
       }
     },
@@ -136,11 +141,19 @@
     "test:unit": "vitest run tests/unit",
     "test:webview": "vitest run tests/unit/webview",
     "test:integration": "vitest run tests/integration",
+    "test:matrix": "vitest run tests/integration/extensionHost/runtimeMatrix.spec.ts tests/integration/extensionHost/packageManagerUserFlow.spec.ts tests/integration/extensionHost/nodeVisualizerUserFlow.spec.ts",
+    "test:ui-click": "vitest run tests/integration/uiClick",
+    "e2e:smoke": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/e2e-run.ps1 -Profile smoke",
+    "e2e:full": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/e2e-run.ps1 -Profile full",
+    "e2e:build-goldens": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/e2e-build-goldens.ps1 -Mode all",
+    "e2e:clean": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/e2e-clean.ps1",
     "test:watch": "vitest"
   },
   "devDependencies": {
+    "@vscode/test-electron": "^2.5.2",
     "@types/node": "^20.11.0",
     "@types/vscode": "^1.85.0",
+    "js-yaml": "^4.1.0",
     "jsdom": "^28.0.0",
     "typescript": "^5.3.3",
     "vitest": "^4.0.18"

@@ -97,6 +97,10 @@
         actions.refreshPackages();
     };
 
+    const requestEnvironmentDialogState = () => {
+        actions.requestEnvironmentDialogState();
+    };
+
     window.addEventListener('message', (event) => {
         const msg = event.data;
         switch (msg.command) {
@@ -258,14 +262,21 @@
 
     // Recover from missed initial messages and stale data after tab/window switches.
     requestAutoRefresh();
+    requestEnvironmentDialogState();
 
     window.addEventListener('focus', () => {
         requestAutoRefresh();
+        if (!String(state.environmentReport || '').trim()) {
+            requestEnvironmentDialogState();
+        }
     });
 
     document.addEventListener('visibilitychange', () => {
         if (document.visibilityState === 'visible') {
             requestAutoRefresh();
+            if (!String(state.environmentReport || '').trim()) {
+                requestEnvironmentDialogState();
+            }
         }
     });
 })();

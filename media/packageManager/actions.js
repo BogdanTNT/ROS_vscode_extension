@@ -8,21 +8,23 @@
         post: (payload) => vscode.postMessage(payload),
         openLaunch: (path) => vscode.postMessage({ command: toHost.OPEN_LAUNCH, path }),
         openNode: (path) => vscode.postMessage({ command: toHost.OPEN_NODE, path }),
-        launchFile: (pkg, file, path, args, argsName) => vscode.postMessage({
+        launchFile: (pkg, file, path, args, argsName, runTarget) => vscode.postMessage({
             command: toHost.LAUNCH_FILE,
             pkg,
             file,
             path,
             args,
             argsName,
+            ...(runTarget ? { runTarget } : {}),
         }),
-        runNode: (pkg, executable, args, argsName, path) => vscode.postMessage({
+        runNode: (pkg, executable, args, argsName, path, runTarget) => vscode.postMessage({
             command: toHost.RUN_NODE,
             pkg,
             executable,
             args,
             argsName,
             path,
+            ...(runTarget ? { runTarget } : {}),
         }),
         togglePin: (path) => vscode.postMessage({ command: toHost.TOGGLE_PIN, path }),
         killTerminal: (id) => vscode.postMessage({ command: toHost.KILL_TERMINAL, id }),
@@ -34,6 +36,9 @@
             sourcePath,
         }),
         refreshPackages: () => vscode.postMessage({ command: toHost.REFRESH_PACKAGES }),
+        requestEnvironmentDialogState: () => vscode.postMessage({
+            command: toHost.REQUEST_ENV_DIALOG_STATE,
+        }),
         showEnvironmentInfo: () => vscode.postMessage({ command: toHost.SHOW_ENV_INFO }),
         setRunTerminalTarget: (target) => vscode.postMessage({
             command: toHost.SET_RUN_TERMINAL_TARGET,

@@ -2,6 +2,7 @@ import * as vscode from 'vscode';
 import {
     RosActionGoalResult,
     RosActionGoalTemplateResult,
+    RosGraphSnapshotResult,
     RosNodeGraphInfo,
     RosTopicMessageSubscription,
     RosTopicPublishResult,
@@ -16,6 +17,8 @@ import {
 } from './uiPreferences';
 
 const DEFAULT_NODE_VISUALIZER_AUTO_REFRESH_INTERVAL_MS = 3000;
+const MIN_NODE_VISUALIZER_AUTO_REFRESH_INTERVAL_MS = 250;
+const MAX_NODE_VISUALIZER_AUTO_REFRESH_INTERVAL_MS = 120000;
 const TOPIC_ECHO_RESTART_DELAY_MS = 1200;
 const NODE_VISUALIZER_PREFS_KEY = 'rosDevToolkit.nodeVisualizerPrefs';
 const NODE_VISUALIZER_AUTO_REFRESH_INTERVAL_SETTING = 'nodeVisualizerAutoRefreshIntervalMs';
@@ -27,6 +30,20 @@ interface RefreshScope {
     services: boolean;
     actions: boolean;
     parameters: boolean;
+}
+
+interface RefreshStaleState {
+    nodes: boolean;
+    topics: boolean;
+    services: boolean;
+    actions: boolean;
+    parameters: boolean;
+}
+
+interface RefreshMetaState {
+    autoRefreshIntervalMs: number;
+    stale: RefreshStaleState;
+    partialFailure: boolean;
 }
 
 interface NodeVisualizerPrefs {
@@ -58,6 +75,7 @@ export class NodeVisualizerViewProvider implements vscode.WebviewViewProvider {
     private _refreshQueued = false;
     private _queuedShowLoading = false;
     private _cachedNodes: string[] = [];
+    private _cachedNodeWarnings: string[] = [];
     private _cachedTopics: Array<{ name: string; type: string }> = [];
     private _cachedServices: Array<{ name: string; type: string }> = [];
     private _cachedActions: Array<{ name: string; type: string }> = [];
@@ -75,6 +93,12 @@ export class NodeVisualizerViewProvider implements vscode.WebviewViewProvider {
     private _queuedConnectionsRefresh = false;
     private _prefs: NodeVisualizerPrefs;
     private _lastScope: RefreshScope = { nodes: true, topics: true, services: true, actions: true, parameters: true };
+    private _lastRefreshMeta: RefreshMetaState = {
+        autoRefreshIntervalMs: DEFAULT_NODE_VISUALIZER_AUTO_REFRESH_INTERVAL_MS,
+        stale: { nodes: false, topics: false, services: false, actions: false, parameters: false },
+        partialFailure: false,
+    };
+    private _autoRefreshBackoffMultiplier = 1;
 
     constructor(
         private readonly _extensionUri: vscode.Uri,
@@ -84,6 +108,7 @@ export class NodeVisualizerViewProvider implements vscode.WebviewViewProvider {
     ) {
         this._prefs = this._loadPrefs();
         this._autoRefreshEnabled = this._prefs.autoRefreshEnabled;
+        this._lastRefreshMeta.autoRefreshIntervalMs = this._getAutoRefreshIntervalMs();
     }
 
     resolveWebviewView(
@@ -124,6 +149,9 @@ export class NodeVisualizerViewProvider implements vscode.WebviewViewProvider {
                     this._prefs.autoRefreshEnabled = this._autoRefreshEnabled;
                     await this._savePrefs();
                     this._syncAutoRefresh();
+                    break;
+                case 'setAutoRefreshInterval':
+                    await this._setAutoRefreshIntervalMs(msg.intervalMs);
                     break;
                 case 'viewScope':
                     this._lastScope = this._parseScopeMessage(msg);
@@ -198,7 +226,7 @@ export class NodeVisualizerViewProvider implements vscode.WebviewViewProvider {
             // in-flight, kick off an immediate refresh.  The finally block
             // of _sendGraphData will schedule the next one.
             if (!this._autoRefreshTimer && !this._refreshInFlight) {
-                void this._sendGraphData();
+                void this._sendGraphData({ autoRefreshStartedAt: Date.now() });
             }
         } else {
             this._cancelScheduledRefresh();
@@ -206,19 +234,27 @@ export class NodeVisualizerViewProvider implements vscode.WebviewViewProvider {
     }
 
     /**
-     * Schedule the next auto-refresh after the configured interval.
-     * Uses setTimeout (not setInterval) so the next tick only fires
-     * after the previous refresh has fully completed, preventing
-     * overlapping ROS CLI calls and runaway queue build-up.
+     * Schedule the next auto-refresh while keeping cadence relative to
+     * when the current cycle started.
+     * Uses setTimeout (not setInterval) to prevent overlapping ROS CLI
+     * calls when a refresh runs longer than expected.
      */
-    private _scheduleNextAutoRefresh() {
+    private _scheduleNextAutoRefresh(previousCycleStartedAt?: number) {
         this._cancelScheduledRefresh();
         if (this._view?.visible && this._autoRefreshEnabled) {
-            const refreshIntervalMs = this._getAutoRefreshIntervalMs();
+            const refreshIntervalMs = this._getEffectiveAutoRefreshIntervalMs();
+            let delayMs = refreshIntervalMs;
+            if (Number.isFinite(previousCycleStartedAt) && (previousCycleStartedAt || 0) > 0) {
+                const elapsedMs = Math.max(0, Date.now() - Number(previousCycleStartedAt));
+                delayMs = Math.max(0, refreshIntervalMs - elapsedMs);
+            }
             this._autoRefreshTimer = setTimeout(() => {
                 this._autoRefreshTimer = undefined;
-                void this._sendGraphData({ scope: this._lastScope });
-            }, refreshIntervalMs);
+                void this._sendGraphData({
+                    scope: this._lastScope,
+                    autoRefreshStartedAt: Date.now(),
+                });
+            }, delayMs);
         }
     }
 
@@ -229,7 +265,9 @@ export class NodeVisualizerViewProvider implements vscode.WebviewViewProvider {
         }
     }
 
-    private async _sendGraphData(options?: { showLoading?: boolean; scope?: RefreshScope }) {
+    private async _sendGraphData(
+        options?: { showLoading?: boolean; scope?: RefreshScope; autoRefreshStartedAt?: number },
+    ) {
         const view = this._view;
         if (!view) {
             return;
@@ -256,40 +294,55 @@ export class NodeVisualizerViewProvider implements vscode.WebviewViewProvider {
                 view.webview.postMessage({ command: 'loading' });
             }
 
-            // Fetch only the list commands that are in scope.
-            // Node info (connections) is never fetched here — it is
-            // loaded lazily when the user clicks a node for details.
-            const [nodes, topics, services, actions, parameters] = await Promise.all([
-                scope.nodes
-                    ? this._ros.getNodeList()
-                    : Promise.resolve(this._cachedNodes),
-                scope.topics
-                    ? this._ros.getTopicList()
-                    : Promise.resolve(this._cachedTopics),
-                scope.services
-                    ? this._ros.getServiceList()
-                    : Promise.resolve(this._cachedServices),
-                scope.actions
-                    ? this._ros.getActionList()
-                    : Promise.resolve(this._cachedActions),
-                scope.parameters
-                    ? this._ros.getParameterList()
-                    : Promise.resolve(this._cachedParameters),
-            ]);
+            const snapshot = await this._ros.getGraphSnapshot(scope);
+            const stale = this._createEmptyStaleState();
 
-            // Update per-category caches.
-            this._cachedNodes = nodes as string[];
-            this._cachedTopics = topics as Array<{ name: string; type: string }>;
-            this._cachedServices = services as Array<{ name: string; type: string }>;
-            this._cachedActions = actions as Array<{ name: string; type: string }>;
-            this._cachedParameters = parameters as Array<{ name: string; node?: string }>;
+            if (scope.nodes) {
+                if (snapshot.nodes.ok) {
+                    this._cachedNodes = snapshot.nodes.data;
+                    this._cachedNodeWarnings = Array.isArray(snapshot.nodes.warnings)
+                        ? snapshot.nodes.warnings
+                            .map((entry) => String(entry || '').trim())
+                            .filter(Boolean)
+                        : [];
+                } else {
+                    stale.nodes = true;
+                }
+            }
+            if (scope.topics) {
+                if (snapshot.topics.ok) {
+                    this._cachedTopics = snapshot.topics.data;
+                } else {
+                    stale.topics = true;
+                }
+            }
+            if (scope.services) {
+                if (snapshot.services.ok) {
+                    this._cachedServices = snapshot.services.data;
+                } else {
+                    stale.services = true;
+                }
+            }
+            if (scope.actions) {
+                if (snapshot.actions.ok) {
+                    this._cachedActions = snapshot.actions.data;
+                } else {
+                    stale.actions = true;
+                }
+            }
+            if (scope.parameters) {
+                if (snapshot.parameters.ok) {
+                    this._cachedParameters = snapshot.parameters.data;
+                } else {
+                    stale.parameters = true;
+                }
+            }
 
             const topicNames = this._cachedTopics.map((topic) => topic.name);
             this._pruneTopicMessageCache(topicNames);
             this._syncTrackedTopicSubscriptions();
 
-            // Prune cached connections for nodes that disappeared.
-            if (scope.nodes) {
+            if (scope.nodes && !stale.nodes) {
                 const currentNodeSet = new Set(this._cachedNodes);
                 for (const key of Object.keys(this._cachedConnections)) {
                     if (!currentNodeSet.has(key)) {
@@ -298,42 +351,32 @@ export class NodeVisualizerViewProvider implements vscode.WebviewViewProvider {
                 }
             }
 
-            if (this._view === view) {
-                const graphPayload = {
-                    command: 'graphData',
-                    nodes: this._cachedNodes,
-                    topics: this._cachedTopics,
-                    services: this._cachedServices,
-                    actions: this._cachedActions,
-                    parameters: this._cachedParameters,
-                    connections: { ...this._cachedConnections },
-                    topicLatestMessages: this._buildTopicMessageSnapshot(topicNames),
-                    topicLatestMessageTimes: this._buildTopicMessageTimeSnapshot(topicNames),
-                    rosVersion: this._ros.isRos2() ? 2 : 1,
-                    prefs: this._prefs,
-                };
-                this._cachedGraphPayload = graphPayload;
-                view.webview.postMessage(graphPayload);
-            }
-        } catch (err) {
-            // Keep the panel responsive even if one ROS CLI call fails
-            // unexpectedly; the next refresh can recover.
-            console.error('[NodeVisualizer] Failed to refresh graph data', err);
+            const partialFailure = this._hasScopedFailures(scope, stale);
+            this._updateAutoRefreshBackoff(partialFailure);
+            this._lastRefreshMeta = {
+                autoRefreshIntervalMs: this._getAutoRefreshIntervalMs(),
+                stale,
+                partialFailure,
+            };
 
             if (this._view === view) {
-                view.webview.postMessage({
-                    command: 'graphData',
-                    nodes: [],
-                    topics: [],
-                    services: [],
-                    actions: [],
-                    parameters: [],
-                    connections: {},
-                    topicLatestMessages: {},
-                    topicLatestMessageTimes: {},
-                    rosVersion: this._ros.isRos2() ? 2 : 1,
-                    prefs: this._prefs,
-                });
+                this._postGraphPayload(view, topicNames, this._lastRefreshMeta);
+            }
+        } catch (err) {
+            console.error('[NodeVisualizer] Failed to refresh graph data', err);
+            this._updateAutoRefreshBackoff(true);
+            this._lastRefreshMeta = {
+                autoRefreshIntervalMs: this._getAutoRefreshIntervalMs(),
+                stale: this._createScopedStaleState(scope),
+                partialFailure: true,
+            };
+
+            if (this._view === view) {
+                this._postGraphPayload(
+                    view,
+                    this._cachedTopics.map((topic) => topic.name),
+                    this._lastRefreshMeta,
+                );
             }
         } finally {
             this._refreshInFlight = false;
@@ -344,10 +387,115 @@ export class NodeVisualizerViewProvider implements vscode.WebviewViewProvider {
                 await this._sendGraphData({ showLoading: queuedShowLoading });
             } else {
                 // Only schedule the next tick when there is nothing left
-                // in the queue – this keeps the refresh cycle sequential.
-                this._scheduleNextAutoRefresh();
+                // in the queue - this keeps the refresh cycle sequential.
+                this._scheduleNextAutoRefresh(options?.autoRefreshStartedAt);
             }
         }
+    }
+
+    private _postGraphPayload(
+        view: vscode.WebviewView,
+        topicNames: string[],
+        refreshMeta: RefreshMetaState,
+    ) {
+        const graphPayload = {
+            command: 'graphData',
+            nodes: this._cachedNodes,
+            nodeWarnings: this._cachedNodeWarnings,
+            topics: this._cachedTopics,
+            services: this._cachedServices,
+            actions: this._cachedActions,
+            parameters: this._cachedParameters,
+            connections: { ...this._cachedConnections },
+            topicLatestMessages: this._buildTopicMessageSnapshot(topicNames),
+            topicLatestMessageTimes: this._buildTopicMessageTimeSnapshot(topicNames),
+            rosVersion: this._ros.isRos2() ? 2 : 1,
+            prefs: this._prefs,
+            refreshMeta,
+        };
+        this._cachedGraphPayload = graphPayload;
+        view.webview.postMessage(graphPayload);
+    }
+
+    private _createEmptyStaleState(): RefreshStaleState {
+        return {
+            nodes: false,
+            topics: false,
+            services: false,
+            actions: false,
+            parameters: false,
+        };
+    }
+
+    private _createScopedStaleState(scope: RefreshScope): RefreshStaleState {
+        return {
+            nodes: scope.nodes,
+            topics: scope.topics,
+            services: scope.services,
+            actions: scope.actions,
+            parameters: scope.parameters,
+        };
+    }
+
+    private _hasScopedFailures(scope: RefreshScope, stale: RefreshStaleState): boolean {
+        return (scope.nodes && stale.nodes)
+            || (scope.topics && stale.topics)
+            || (scope.services && stale.services)
+            || (scope.actions && stale.actions)
+            || (scope.parameters && stale.parameters);
+    }
+
+    private _updateAutoRefreshBackoff(hasFailure: boolean) {
+        if (hasFailure) {
+            this._autoRefreshBackoffMultiplier = Math.min(4, this._autoRefreshBackoffMultiplier * 2);
+            return;
+        }
+        this._autoRefreshBackoffMultiplier = 1;
+    }
+
+    private _getEffectiveAutoRefreshIntervalMs(): number {
+        const base = this._getAutoRefreshIntervalMs();
+        const multiplied = base * this._autoRefreshBackoffMultiplier;
+        return Math.min(MAX_NODE_VISUALIZER_AUTO_REFRESH_INTERVAL_MS, multiplied);
+    }
+
+    private async _setAutoRefreshIntervalMs(rawIntervalMs: unknown) {
+        const intervalMs = this._normalizeAutoRefreshIntervalMs(rawIntervalMs);
+        await vscode.workspace
+            .getConfiguration('rosDevToolkit')
+            .update(
+                NODE_VISUALIZER_AUTO_REFRESH_INTERVAL_SETTING,
+                intervalMs,
+                vscode.ConfigurationTarget.Workspace,
+            );
+
+        this._lastRefreshMeta = {
+            ...this._lastRefreshMeta,
+            autoRefreshIntervalMs: intervalMs,
+        };
+
+        if (this._view && this._cachedGraphPayload) {
+            this._postGraphPayload(
+                this._view,
+                this._cachedTopics.map((topic) => topic.name),
+                this._lastRefreshMeta,
+            );
+        }
+
+        if (this._autoRefreshEnabled) {
+            this._scheduleNextAutoRefresh();
+        }
+    }
+
+    private _normalizeAutoRefreshIntervalMs(rawIntervalMs: unknown): number {
+        const numeric = Number(rawIntervalMs);
+        if (!Number.isFinite(numeric)) {
+            return DEFAULT_NODE_VISUALIZER_AUTO_REFRESH_INTERVAL_MS;
+        }
+        return Math.min(
+            MAX_NODE_VISUALIZER_AUTO_REFRESH_INTERVAL_MS,
+            Math.max(MIN_NODE_VISUALIZER_AUTO_REFRESH_INTERVAL_MS, Math.floor(numeric)),
+        );
     }
 
     private _pruneTopicMessageCache(topicNames: string[]) {
@@ -799,12 +947,15 @@ export class NodeVisualizerViewProvider implements vscode.WebviewViewProvider {
         if (!Number.isFinite(numeric)) {
             return DEFAULT_NODE_VISUALIZER_AUTO_REFRESH_INTERVAL_MS;
         }
-        return Math.min(120000, Math.max(250, Math.floor(numeric)));
+        return Math.min(
+            MAX_NODE_VISUALIZER_AUTO_REFRESH_INTERVAL_MS,
+            Math.max(MIN_NODE_VISUALIZER_AUTO_REFRESH_INTERVAL_MS, Math.floor(numeric)),
+        );
     }
 
     private _getHtml(webview: vscode.Webview): string {
         const body = /* html */ `
-<div id="status" class="mb text-muted text-sm">Waiting for data…</div>
+<div id="status" class="mb nv-status text-sm">Waiting for data…</div>
 
 <div class="nv-tabs mb" role="tablist" aria-label="Node visualizer views">
     <button class="secondary nv-tab active" data-view="overview">
@@ -871,6 +1022,19 @@ export class NodeVisualizerViewProvider implements vscode.WebviewViewProvider {
         <label class="nv-layer">
             <input type="checkbox" id="toggleAutoRefresh" />
             <span>Auto refresh</span>
+        </label>
+        <label class="nv-layer hidden" id="autoRefreshIntervalWrap">
+            <span>Every</span>
+            <input
+                type="number"
+                id="autoRefreshIntervalSeconds"
+                min="0"
+                max="120"
+                step="1"
+                value="3"
+                inputmode="decimal"
+            />
+            <span>s</span>
         </label>
     </div>
 </div>
@@ -978,3 +1142,4 @@ export class NodeVisualizerViewProvider implements vscode.WebviewViewProvider {
         return getWebviewHtml(webview, this._extensionUri, body, '', undefined, scriptUris);
     }
 }
+

@@ -8,6 +8,7 @@ import {
     BuildPolicy,
     BuildEvaluation,
 } from './buildPolicy';
+import { WslPersistentGraphRunner } from './runtime/wslPersistentGraphRunner';
 
 export interface RosEnvironmentInfo {
     distro: string;   // e.g. "humble", "noetic"
@@ -49,6 +50,29 @@ export interface RosGraphEntityInfo {
 export interface RosParameterInfo {
     name: string;
     node?: string;
+}
+
+export interface RosGraphSnapshotScope {
+    nodes: boolean;
+    topics: boolean;
+    services: boolean;
+    actions: boolean;
+    parameters: boolean;
+}
+
+export interface RosGraphSnapshotSection<T> {
+    ok: boolean;
+    data: T;
+    error?: string;
+    warnings?: string[];
+}
+
+export interface RosGraphSnapshotResult {
+    nodes: RosGraphSnapshotSection<string[]>;
+    topics: RosGraphSnapshotSection<RosGraphEntityInfo[]>;
+    services: RosGraphSnapshotSection<RosGraphEntityInfo[]>;
+    actions: RosGraphSnapshotSection<RosGraphEntityInfo[]>;
+    parameters: RosGraphSnapshotSection<RosParameterInfo[]>;
 }
 
 export interface RosTopicPublishTemplateResult {
@@ -169,12 +193,20 @@ type RosNodeTemplateKind =
     | 'client'
     | 'timer';
 
+type GraphSnapshotKey = keyof RosGraphSnapshotScope;
+
+interface GraphSnapshotParsedSection {
+    status: number;
+    output: string;
+}
+
 const DEFAULT_ROS_GRAPH_LIST_TIMEOUT_SECONDS = 6;
 const DEFAULT_ROS_NODE_INFO_TIMEOUT_SECONDS = 3;
 const DEFAULT_ROS_TOPIC_INFO_TIMEOUT_SECONDS = 3;
 const ROS_GRAPH_LIST_TIMEOUT_SETTING = 'graphListTimeoutSeconds';
 const ROS_NODE_INFO_TIMEOUT_SETTING = 'nodeInfoTimeoutSeconds';
 const ROS_TOPIC_INFO_TIMEOUT_SETTING = 'topicInfoTimeoutSeconds';
+const ROS_NODE_VISUALIZER_PERSISTENT_WSL_SHELL_SETTING = 'nodeVisualizerUsePersistentWslShell';
 const DEFAULT_MAINTAINER_NAME_SETTING = 'defaultMaintainerName';
 const DEFAULT_MAINTAINER_EMAIL_SETTING = 'defaultMaintainerEmail';
 const DEFAULT_CREATE_PACKAGE_LICENSE = 'GPL-3.0';
@@ -204,6 +236,8 @@ export class RosWorkspace {
     public readonly onBuildStatusChanged = this._buildStatusEmitter.event;
     private _cachedEvaluation: BuildEvaluation | undefined;
     private _evaluationDirty = true;
+    private _wslGraphRunner?: WslPersistentGraphRunner;
+    private _wslGraphRunnerDistro?: string;
 
     constructor() {
         vscode.window.onDidCloseTerminal((terminal) => {
@@ -2131,10 +2165,11 @@ int main(int argc, char * argv[]) {
         args: string = '',
         nodePath?: string,
         argsLabel?: string,
+        runTargetOverride?: string,
     ): Promise<void> {
         const normalizedExecutableLabel = path.basename(String(executable || '').replace(/\\/g, '/')) || executable;
         const argString = args?.trim() ? ` ${args.trim()}` : '';
-        const runTarget = this.getRunTerminalTarget();
+        const runTarget = this.normalizeRunTerminalTarget(runTargetOverride || this.getRunTerminalTarget());
         const baseRunCmd = this.isRos2()
             ? `ros2 run ${pkg} ${executable}${argString}`
             : `rosrun ${pkg} ${executable}${argString}`;
@@ -2152,12 +2187,12 @@ int main(int argc, char * argv[]) {
         }
 
         if (result.action === 'build-and-launch') {
-            this.buildThenRun(result.stalePackages!, runCmd, nodeLabel, normalizedNodePath);
+            this.buildThenRun(result.stalePackages!, runCmd, nodeLabel, normalizedNodePath, runTarget);
             return;
         }
 
         // No build needed — run directly
-        this.runInConfiguredLaunchTerminal(runCmd, nodeLabel, normalizedNodePath);
+        this.runInConfiguredLaunchTerminal(runCmd, nodeLabel, normalizedNodePath, undefined, runTarget);
     }
 
     /**
@@ -2170,8 +2205,9 @@ int main(int argc, char * argv[]) {
         runCmd: string,
         runLabel?: string,
         runPath?: string,
+        runTargetOverride?: string,
     ): void {
-        const runTarget = this.getRunTerminalTarget();
+        const runTarget = this.normalizeRunTerminalTarget(runTargetOverride || this.getRunTerminalTarget());
         const wsPath = this.getWorkspacePathForRunTarget(runTarget);
         const pkgArg = stalePackages.length > 0
             ? ` --packages-select ${stalePackages.join(' ')}`
@@ -2201,7 +2237,7 @@ int main(int argc, char * argv[]) {
         ];
 
         const fullCmd = parts.join(' && ');
-        this.runInConfiguredLaunchTerminal(fullCmd, runLabel, runPath, true);
+        this.runInConfiguredLaunchTerminal(fullCmd, runLabel, runPath, true, runTarget);
 
         // Update stamps so a subsequent run sees them as up-to-date.
         if (stalePackages.length > 0) {
@@ -2216,13 +2252,14 @@ int main(int argc, char * argv[]) {
         args: string = '',
         launchPath?: string,
         argsLabel?: string,
+        runTargetOverride?: string,
     ): Promise<void> {
         const normalizedLaunchFile = path.basename(String(launchFile || '').replace(/\\/g, '/'));
         if (!normalizedLaunchFile) {
             return;
         }
         const argString = args?.trim() ? ` ${args.trim()}` : '';
-        const runTarget = this.getRunTerminalTarget();
+        const runTarget = this.normalizeRunTerminalTarget(runTargetOverride || this.getRunTerminalTarget());
         const baseLaunchCmd = this.isRos2()
             ? `ros2 launch ${pkg} ${normalizedLaunchFile}${argString}`
             : `roslaunch ${pkg} ${normalizedLaunchFile}${argString}`;
@@ -2239,12 +2276,12 @@ int main(int argc, char * argv[]) {
         }
 
         if (result.action === 'build-and-launch') {
-            this.buildThenRun(result.stalePackages!, launchCmd, launchLabel, launchPath);
+            this.buildThenRun(result.stalePackages!, launchCmd, launchLabel, launchPath, runTarget);
             return;
         }
 
         // No build needed — launch directly
-        this.runInConfiguredLaunchTerminal(launchCmd, launchLabel, launchPath);
+        this.runInConfiguredLaunchTerminal(launchCmd, launchLabel, launchPath, undefined, runTarget);
     }
 
     /**
@@ -2296,8 +2333,9 @@ int main(int argc, char * argv[]) {
         launchLabel?: string,
         launchPath?: string,
         raw?: boolean,
+        runTargetOverride?: string,
     ): void {
-        const runTarget = this.getRunTerminalTarget();
+        const runTarget = this.normalizeRunTerminalTarget(runTargetOverride || this.getRunTerminalTarget());
         if (this.isWindowsWslTarget(runTarget)) {
             if (this.isWindowsWslIntegratedTarget(runTarget)) {
                 this.runInWslIntegratedLaunchTerminal(cmd, runTarget, launchLabel, launchPath, raw);
@@ -2426,7 +2464,7 @@ int main(int argc, char * argv[]) {
             vscode.window.showWarningMessage(
                 'No external terminal found (tried gnome-terminal, konsole, xfce4-terminal, mate-terminal, xterm). Falling back to integrated terminal.'
             );
-            this.runInTerminal(cmd);
+            this.runInLaunchTerminal(cmd, launchLabel, launchPath, raw);
             return;
         }
 
@@ -2448,14 +2486,14 @@ int main(int argc, char * argv[]) {
                 vscode.window.showWarningMessage(
                     'Failed to open external terminal. Falling back to integrated terminal.'
                 );
-                this.runInTerminal(cmd);
+                this.runInLaunchTerminal(cmd, launchLabel, launchPath, raw);
             });
             child.unref();
         } catch {
             vscode.window.showWarningMessage(
                 'Failed to open external terminal. Falling back to integrated terminal.'
             );
-            this.runInTerminal(cmd);
+            this.runInLaunchTerminal(cmd, launchLabel, launchPath, raw);
         }
     }
 
@@ -2471,7 +2509,7 @@ int main(int argc, char * argv[]) {
         launchPath?: string,
         profile?: { wslIntegrated?: boolean; wslDistro?: string },
     ): void {
-        const tracked = this.createLaunchTerminal(profile);
+        const tracked = this.createLaunchTerminal(profile, launchLabel);
 
         tracked.cmd = trackedCmd;
         tracked.lastUsed = Date.now();
@@ -2759,15 +2797,20 @@ int main(int argc, char * argv[]) {
         return tracked.wslIntegrated !== true;
     }
 
-    private createLaunchTerminal(profile?: { wslIntegrated?: boolean; wslDistro?: string }): TrackedTerminal {
+    private createLaunchTerminal(
+        profile?: { wslIntegrated?: boolean; wslDistro?: string },
+        launchLabel?: string,
+    ): TrackedTerminal {
         const bashPath = this.resolveBashPath();
         const env = this.getTerminalEnv();
         const wantsWslIntegrated = process.platform === 'win32' && profile?.wslIntegrated === true;
         const requestedDistro = this.sanitizeWslDistroName(profile?.wslDistro);
         const num = this._terminalSeq++;
-        const name = wantsWslIntegrated
-            ? `ROS WSL ${requestedDistro || 'default'} ${num}`
-            : `ROS Launch ${num}`;
+        const name = this.buildLaunchTerminalName(launchLabel, {
+            wslIntegrated: wantsWslIntegrated,
+            wslDistro: requestedDistro,
+            sequence: num,
+        });
         let terminal: vscode.Terminal;
 
         if (wantsWslIntegrated) {
@@ -2812,9 +2855,15 @@ int main(int argc, char * argv[]) {
         wslPidFile?: string,
     ): void {
         const num = this._terminalSeq++;
-        const name = wslDistro
-            ? `External (wsl:${wslDistro}) ${num}`
-            : `External (${path.basename(terminalBin)}) ${num}`;
+        const normalizedLabel = this.normalizeLaunchTerminalLabel(launchLabel);
+        const transportLabel = wslDistro
+            ? `wsl:${wslDistro}`
+            : path.basename(terminalBin);
+        const name = normalizedLabel
+            ? `${normalizedLabel} (${transportLabel})`
+            : (wslDistro
+                ? `External (wsl:${wslDistro}) ${num}`
+                : `External (${path.basename(terminalBin)}) ${num}`);
         const tracked: TrackedTerminal = {
             id: `external-${num}`,
             kind: 'external',
@@ -3235,13 +3284,192 @@ int main(int argc, char * argv[]) {
     }
 
     // ── Graph data (nodes / topics / services / actions / parameters) ──────
+    async getGraphSnapshot(scope?: Partial<RosGraphSnapshotScope>): Promise<RosGraphSnapshotResult> {
+        const effectiveScope: RosGraphSnapshotScope = {
+            nodes: scope?.nodes === true,
+            topics: scope?.topics === true,
+            services: scope?.services === true,
+            actions: scope?.actions === true,
+            parameters: scope?.parameters === true,
+        };
+        const defaults = this.createGraphSnapshotDefaults();
+        const requestedKeys = this.getRequestedGraphSnapshotKeys(effectiveScope);
+        if (requestedKeys.length === 0) {
+            return defaults;
+        }
+
+        const timeoutSeconds = this.getGraphListTimeoutSeconds();
+        const markerPrefix = `__RDT_GRAPH_SNAPSHOT__${Date.now()}_${Math.floor(Math.random() * 1_000_000)}__`;
+        const commandByKey: Record<GraphSnapshotKey, string | undefined> = {
+            nodes: this.isRos2()
+                ? `timeout ${timeoutSeconds}s ros2 node list`
+                : `timeout ${timeoutSeconds}s rosnode list`,
+            topics: this.isRos2()
+                ? `timeout ${timeoutSeconds}s ros2 topic list -t`
+                : `timeout ${timeoutSeconds}s rostopic list`,
+            services: this.isRos2()
+                ? `timeout ${timeoutSeconds}s ros2 service list -t`
+                : `timeout ${timeoutSeconds}s rosservice list`,
+            actions: this.isRos2()
+                ? `timeout ${timeoutSeconds}s ros2 action list -t`
+                : undefined,
+            parameters: this.isRos2()
+                ? `timeout ${timeoutSeconds}s ros2 param list`
+                : `timeout ${timeoutSeconds}s rosparam list`,
+        };
+
+        const sectionsToRun = requestedKeys
+            .filter((key) => !!commandByKey[key])
+            .map((key) => ({
+                key,
+                command: String(commandByKey[key] || ''),
+            }));
+
+        if (sectionsToRun.length === 0) {
+            return defaults;
+        }
+
+        const compositeCommand = this.buildGraphSnapshotParallelCommand(markerPrefix, sectionsToRun);
+        const context = this.resolveCommandExecutionContext();
+        let raw = '';
+        try {
+            raw = await this.execGraphSnapshotCompositeCommand(
+                compositeCommand,
+                context,
+                sectionsToRun.length,
+            );
+        } catch (err) {
+            const errorText = this.normalizeCliError(err, 'Failed to execute graph snapshot command.');
+            for (const key of requestedKeys) {
+                if (!effectiveScope[key]) {
+                    continue;
+                }
+                (defaults[key] as RosGraphSnapshotSection<unknown>).ok = false;
+                (defaults[key] as RosGraphSnapshotSection<unknown>).error = errorText;
+            }
+            return defaults;
+        }
+
+        const parsedSections = this.parseGraphSnapshotSections(
+            raw,
+            markerPrefix,
+            sectionsToRun.map((entry) => entry.key),
+        );
+        for (const key of requestedKeys) {
+            if (!effectiveScope[key]) {
+                continue;
+            }
+            if (key === 'actions' && !this.isRos2()) {
+                defaults.actions = { ok: true, data: [] };
+                continue;
+            }
+
+            const parsed = parsedSections[key];
+            if (!parsed) {
+                (defaults[key] as RosGraphSnapshotSection<unknown>).ok = false;
+                (defaults[key] as RosGraphSnapshotSection<unknown>).error = 'Snapshot output was missing this section.';
+                continue;
+            }
+
+            if (parsed.status !== 0) {
+                (defaults[key] as RosGraphSnapshotSection<unknown>).ok = false;
+                (defaults[key] as RosGraphSnapshotSection<unknown>).error = this.buildGraphSnapshotSectionError(
+                    key,
+                    parsed.status,
+                    parsed.output,
+                );
+                continue;
+            }
+
+            try {
+                if (key === 'nodes') {
+                    const parsedNodes = this.parseNodeList(parsed.output);
+                    defaults.nodes = {
+                        ok: true,
+                        data: parsedNodes.nodes,
+                        ...(parsedNodes.warnings.length > 0 ? { warnings: parsedNodes.warnings } : {}),
+                    };
+                    continue;
+                }
+                if (key === 'topics') {
+                    defaults.topics = {
+                        ok: true,
+                        data: this.parseEntityList(parsed.output),
+                    };
+                    continue;
+                }
+                if (key === 'services') {
+                    defaults.services = {
+                        ok: true,
+                        data: this.parseEntityList(parsed.output),
+                    };
+                    continue;
+                }
+                if (key === 'actions') {
+                    defaults.actions = {
+                        ok: true,
+                        data: this.parseEntityList(parsed.output),
+                    };
+                    continue;
+                }
+                defaults.parameters = {
+                    ok: true,
+                    data: this.isRos2()
+                        ? this.parseRos2ParameterList(parsed.output)
+                        : this.parseRos1ParameterList(parsed.output),
+                };
+            } catch (err) {
+                (defaults[key] as RosGraphSnapshotSection<unknown>).ok = false;
+                (defaults[key] as RosGraphSnapshotSection<unknown>).error = this.normalizeCliError(
+                    err,
+                    `Failed to parse ${key} section from snapshot output.`,
+                );
+            }
+        }
+
+        return defaults;
+    }
+
+    private buildLaunchTerminalName(
+        launchLabel: string | undefined,
+        options: { wslIntegrated: boolean; wslDistro: string; sequence: number },
+    ): string {
+        const normalizedLabel = this.normalizeLaunchTerminalLabel(launchLabel);
+        if (!normalizedLabel) {
+            return options.wslIntegrated
+                ? `ROS WSL ${options.wslDistro || 'default'} ${options.sequence}`
+                : `ROS Launch ${options.sequence}`;
+        }
+
+        if (!options.wslIntegrated) {
+            return normalizedLabel;
+        }
+        const wslSuffix = options.wslDistro ? ` (WSL:${options.wslDistro})` : ' (WSL)';
+        return `${normalizedLabel}${wslSuffix}`;
+    }
+
+    private normalizeLaunchTerminalLabel(launchLabel?: string): string {
+        const normalized = String(launchLabel || '')
+            .replace(/\s+/g, ' ')
+            .trim();
+        if (!normalized) {
+            return '';
+        }
+
+        const maxLength = 72;
+        if (normalized.length <= maxLength) {
+            return normalized;
+        }
+        return `${normalized.slice(0, maxLength - 3)}...`;
+    }
+
     async getNodeList(): Promise<string[]> {
         try {
             const timeoutSeconds = this.getGraphListTimeoutSeconds();
             const raw = this.isRos2()
                 ? await this.exec(`timeout ${timeoutSeconds}s ros2 node list`)
                 : await this.exec(`timeout ${timeoutSeconds}s rosnode list`);
-            return raw.trim().split('\n').filter(Boolean);
+            return this.parseNodeList(raw).nodes;
         } catch {
             return [];
         }
@@ -3742,6 +3970,254 @@ int main(int argc, char * argv[]) {
         );
     }
 
+    private createGraphSnapshotDefaults(): RosGraphSnapshotResult {
+        return {
+            nodes: { ok: true, data: [] },
+            topics: { ok: true, data: [] },
+            services: { ok: true, data: [] },
+            actions: { ok: true, data: [] },
+            parameters: { ok: true, data: [] },
+        };
+    }
+
+    private getRequestedGraphSnapshotKeys(scope: RosGraphSnapshotScope): GraphSnapshotKey[] {
+        const keys: GraphSnapshotKey[] = [];
+        if (scope.nodes) {
+            keys.push('nodes');
+        }
+        if (scope.topics) {
+            keys.push('topics');
+        }
+        if (scope.services) {
+            keys.push('services');
+        }
+        if (scope.actions) {
+            keys.push('actions');
+        }
+        if (scope.parameters) {
+            keys.push('parameters');
+        }
+        return keys;
+    }
+
+    private buildGraphSnapshotParallelCommand(
+        markerPrefix: string,
+        sections: Array<{ key: GraphSnapshotKey; command: string }>,
+    ): string {
+        const lines: string[] = [
+            '__rdt_graph_tmp_root="${TMPDIR:-/tmp}"',
+            '__rdt_graph_tmp_dir="$(mktemp -d "${__rdt_graph_tmp_root%/}/rdt_graph_XXXXXX")"',
+            'if [ -z "$__rdt_graph_tmp_dir" ] || [ ! -d "$__rdt_graph_tmp_dir" ]; then echo "Failed to create graph snapshot temp dir."; exit 1; fi',
+            'cleanup_rdt_graph_tmp() { rm -rf "$__rdt_graph_tmp_dir" 2>/dev/null || true; }',
+            'trap cleanup_rdt_graph_tmp EXIT',
+        ];
+
+        for (const section of sections) {
+            lines.push(
+                `( ( ${section.command} ) > "$__rdt_graph_tmp_dir/${section.key}.out" 2>&1; ` +
+                `echo "$?" > "$__rdt_graph_tmp_dir/${section.key}.status" ) &`,
+            );
+        }
+
+        lines.push('wait');
+
+        for (const section of sections) {
+            const beginMarker = this.getGraphSnapshotBeginMarker(markerPrefix, section.key);
+            const statusPrefix = this.getGraphSnapshotStatusPrefix(markerPrefix, section.key);
+            const endMarker = this.getGraphSnapshotEndMarker(markerPrefix, section.key);
+            lines.push(`echo '${beginMarker}'`);
+            lines.push(`if [ -f "$__rdt_graph_tmp_dir/${section.key}.out" ]; then cat "$__rdt_graph_tmp_dir/${section.key}.out"; fi`);
+            lines.push('__rdt_graph_status_value=1');
+            lines.push(
+                `if [ -f "$__rdt_graph_tmp_dir/${section.key}.status" ]; then ` +
+                `__rdt_graph_status_value="$(cat "$__rdt_graph_tmp_dir/${section.key}.status" 2>/dev/null || echo 1)"; fi`,
+            );
+            lines.push(`echo '${statusPrefix}'"$__rdt_graph_status_value"`);
+            lines.push(`echo '${endMarker}'`);
+        }
+
+        lines.push('cleanup_rdt_graph_tmp');
+        lines.push('trap - EXIT');
+        lines.push('true');
+        return lines.join('\n');
+    }
+
+    private getGraphSnapshotBeginMarker(prefix: string, key: GraphSnapshotKey): string {
+        return `${prefix}BEGIN:${key}`;
+    }
+
+    private getGraphSnapshotStatusPrefix(prefix: string, key: GraphSnapshotKey): string {
+        return `${prefix}STATUS:${key}:`;
+    }
+
+    private getGraphSnapshotEndMarker(prefix: string, key: GraphSnapshotKey): string {
+        return `${prefix}END:${key}`;
+    }
+
+    private parseGraphSnapshotSections(
+        raw: string,
+        markerPrefix: string,
+        expectedKeys: GraphSnapshotKey[],
+    ): Partial<Record<GraphSnapshotKey, GraphSnapshotParsedSection>> {
+        const sectionOutput = new Map<GraphSnapshotKey, string[]>();
+        const sectionStatus = new Map<GraphSnapshotKey, number>();
+        const seenBegin = new Set<GraphSnapshotKey>();
+        const seenEnd = new Set<GraphSnapshotKey>();
+
+        let currentSection: GraphSnapshotKey | undefined;
+        for (const rawLine of raw.split(/\r?\n/)) {
+            const line = rawLine.replace(/\r$/, '');
+
+            const beginKey = expectedKeys.find((key) => line === this.getGraphSnapshotBeginMarker(markerPrefix, key));
+            if (beginKey) {
+                currentSection = beginKey;
+                sectionOutput.set(beginKey, []);
+                seenBegin.add(beginKey);
+                continue;
+            }
+
+            let matchedStatus = false;
+            for (const key of expectedKeys) {
+                const statusPrefix = this.getGraphSnapshotStatusPrefix(markerPrefix, key);
+                if (!line.startsWith(statusPrefix)) {
+                    continue;
+                }
+                const statusText = line.slice(statusPrefix.length).trim();
+                const status = Number.parseInt(statusText, 10);
+                sectionStatus.set(key, Number.isFinite(status) ? status : 1);
+                matchedStatus = true;
+                break;
+            }
+            if (matchedStatus) {
+                continue;
+            }
+
+            const endKey = expectedKeys.find((key) => line === this.getGraphSnapshotEndMarker(markerPrefix, key));
+            if (endKey) {
+                seenEnd.add(endKey);
+                if (currentSection === endKey) {
+                    currentSection = undefined;
+                }
+                continue;
+            }
+
+            if (currentSection) {
+                const lines = sectionOutput.get(currentSection);
+                if (lines) {
+                    lines.push(line);
+                }
+            }
+        }
+
+        const parsed: Partial<Record<GraphSnapshotKey, GraphSnapshotParsedSection>> = {};
+        for (const key of expectedKeys) {
+            if (!seenBegin.has(key) || !seenEnd.has(key)) {
+                continue;
+            }
+
+            parsed[key] = {
+                status: sectionStatus.get(key) ?? 1,
+                output: (sectionOutput.get(key) || []).join('\n'),
+            };
+        }
+        return parsed;
+    }
+
+    private buildGraphSnapshotSectionError(
+        key: GraphSnapshotKey,
+        status: number,
+        output: string,
+    ): string {
+        const normalizedKey = key.charAt(0).toUpperCase() + key.slice(1);
+        const detail = output.trim().replace(/\s+/g, ' ');
+        if (!detail) {
+            return `${normalizedKey} graph query failed (exit ${status}).`;
+        }
+        const maxChars = 220;
+        const trimmed = detail.length > maxChars
+            ? `${detail.slice(0, maxChars)}...`
+            : detail;
+        return `${normalizedKey} graph query failed (exit ${status}): ${trimmed}`;
+    }
+
+    private async execGraphSnapshotCompositeCommand(
+        compositeCommand: string,
+        context: CommandExecutionContext,
+        sectionCount: number,
+    ): Promise<string> {
+        if (!this.shouldUsePersistentWslForGraph(context)) {
+            this.disposePersistentWslGraphRunner();
+            return this.exec(compositeCommand);
+        }
+
+        try {
+            const runner = this.getPersistentWslGraphRunner(context);
+            if (!runner) {
+                return this.exec(compositeCommand);
+            }
+
+            const sourced = this.buildSourcedCommandForContext(compositeCommand, context);
+            return await runner.exec(
+                sourced,
+                this.getGraphSnapshotRunnerTimeoutMs(sectionCount),
+            );
+        } catch (err) {
+            console.warn('[RosWorkspace] Persistent WSL graph runner failed; falling back to one-shot execution.', err);
+            return this.exec(compositeCommand);
+        }
+    }
+
+    private disposePersistentWslGraphRunner() {
+        if (!this._wslGraphRunner) {
+            return;
+        }
+        this._wslGraphRunner.dispose();
+        this._wslGraphRunner = undefined;
+        this._wslGraphRunnerDistro = undefined;
+    }
+
+    private getGraphSnapshotRunnerTimeoutMs(sectionCount: number): number {
+        const boundedSections = Math.max(1, Math.floor(sectionCount));
+        const timeoutSeconds = this.getGraphListTimeoutSeconds();
+        const estimate = (timeoutSeconds * boundedSections * 1000) + 4000;
+        return Math.min(180000, Math.max(5000, estimate));
+    }
+
+    private shouldUsePersistentWslForGraph(context: CommandExecutionContext): boolean {
+        return process.platform === 'win32'
+            && context.useWsl
+            && this.getNodeVisualizerUsePersistentWslShellEnabled();
+    }
+
+    private getNodeVisualizerUsePersistentWslShellEnabled(): boolean {
+        return vscode.workspace
+            .getConfiguration('rosDevToolkit')
+            .get<boolean>(ROS_NODE_VISUALIZER_PERSISTENT_WSL_SHELL_SETTING, true) === true;
+    }
+
+    private getPersistentWslGraphRunner(context: CommandExecutionContext): WslPersistentGraphRunner | undefined {
+        if (process.platform !== 'win32' || !context.useWsl) {
+            return undefined;
+        }
+
+        const normalizedDistro = this.sanitizeWslDistroName(context.wslDistro) || undefined;
+        if (this._wslGraphRunner && this._wslGraphRunnerDistro !== normalizedDistro) {
+            this._wslGraphRunner.dispose();
+            this._wslGraphRunner = undefined;
+            this._wslGraphRunnerDistro = undefined;
+        }
+
+        if (!this._wslGraphRunner) {
+            this._wslGraphRunner = new WslPersistentGraphRunner({
+                distro: normalizedDistro,
+                idleTimeoutMs: 90000,
+            });
+            this._wslGraphRunnerDistro = normalizedDistro;
+        }
+
+        return this._wslGraphRunner;
+    }
+
     private getNumericRosSetting(
         key: string,
         defaultValue: number,
@@ -3781,6 +4257,29 @@ int main(int argc, char * argv[]) {
         }
 
         return entities;
+    }
+
+    private parseNodeList(raw: string): { nodes: string[]; warnings: string[] } {
+        const nodes: string[] = [];
+        const warnings: string[] = [];
+
+        for (const line of raw.split('\n')) {
+            const trimmed = line.trim();
+            if (!trimmed) {
+                continue;
+            }
+            if (trimmed.startsWith('/')) {
+                nodes.push(trimmed);
+                continue;
+            }
+            if (/^warning\b/i.test(trimmed)) {
+                warnings.push(trimmed);
+                continue;
+            }
+            warnings.push(trimmed);
+        }
+
+        return { nodes, warnings };
     }
 
     private parseRos2ParameterList(raw: string): RosParameterInfo[] {
@@ -4876,9 +5375,10 @@ int main(int argc, char * argv[]) {
                 .get<boolean>('symlinkInstall', true);
             const symlinkFlag = useSymlink ? ' --symlink-install' : '';
             const fallbackBuild = [
-                `echo "[ROS Dev Toolkit] Package ${normalizedPkg} not found in sourced environment; building it now..."`,
+                `echo "[ROS Dev Toolkit] Package ${normalizedPkg} not found in sourced environment; building it and local dependencies now..."`,
                 `cd "${wsPath}"`,
-                `colcon build${symlinkFlag} --packages-select ${pkgArg}`,
+                // `--packages-up-to` prevents first-run failures when local deps were never built.
+                `colcon build${symlinkFlag} --packages-up-to ${pkgArg}`,
                 `source "${wsPath}/install/setup.bash"`,
             ].join(' && ');
             return `if ! ros2 pkg prefix ${pkgArg} >/dev/null 2>&1; then ${fallbackBuild}; fi && ${baseCmd}`;

@@ -264,6 +264,61 @@
         };
     };
 
+    /**
+     * Bind Escape-key dismissal for a modal close action.
+     * Uses a document-level listener so all modal dialogs can share the same
+     * consistent keyboard behavior.
+     */
+    interactions.bindModalEscapeClose = (options) => {
+        const modal = options?.modal;
+        const onClose = options?.onClose;
+        const root = options?.root instanceof Document ? options.root : document;
+        const requireFocusWithinModal = options?.requireFocusWithinModal === true;
+        const shouldClose = typeof options?.shouldClose === 'function'
+            ? options.shouldClose
+            : () => true;
+
+        if (!(modal instanceof Element) || typeof onClose !== 'function') {
+            return () => {};
+        }
+
+        const onKeyDown = (event) => {
+            if (!(event instanceof KeyboardEvent)) {
+                return;
+            }
+            if (event.key !== 'Escape' || event.defaultPrevented || event.isComposing) {
+                return;
+            }
+            if (event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) {
+                return;
+            }
+            if (modal.classList.contains('hidden')) {
+                return;
+            }
+
+            if (requireFocusWithinModal) {
+                const eventTarget = event.target instanceof Element ? event.target : null;
+                const activeElement = root.activeElement instanceof Element ? root.activeElement : null;
+                const focusTarget = eventTarget || activeElement;
+                if (focusTarget && !modal.contains(focusTarget)) {
+                    return;
+                }
+            }
+
+            if (!shouldClose(event)) {
+                return;
+            }
+
+            event.preventDefault();
+            onClose(event);
+        };
+
+        root.addEventListener('keydown', onKeyDown);
+        return () => {
+            root.removeEventListener('keydown', onKeyDown);
+        };
+    };
+
     // Install globally once per webview document.
     if (!window.__rosSingleClickActivationInstalled) {
         window.__rosSingleClickActivationInstalled = true;

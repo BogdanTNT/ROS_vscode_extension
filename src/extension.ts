@@ -44,6 +44,9 @@ export function activate(context: vscode.ExtensionContext) {
     providers.packageManager = packageManagerProvider;
     providers.nodeVisualizer = nodeVisualizerProvider;
 
+    // Probe environment once on activation and cache results for panel restore.
+    packageManagerProvider.warmEnvironmentCacheOnStartup();
+
     context.subscriptions.push(
         vscode.window.registerWebviewViewProvider('rosPackageManager', packageManagerProvider),
         vscode.window.registerWebviewViewProvider('rosNodeVisualizer', nodeVisualizerProvider),

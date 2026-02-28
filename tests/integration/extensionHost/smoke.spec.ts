@@ -54,6 +54,8 @@ describe('extension activation wiring', () => {
 
         const initSmartBuildSpy = vi.spyOn(RosWorkspace.prototype, 'initSmartBuild').mockImplementation(() => {});
         const detectEnvironmentSpy = vi.spyOn(RosWorkspace.prototype, 'detectEnvironment').mockResolvedValue(undefined);
+        const warmEnvironmentCacheSpy = vi.spyOn(PackageManagerViewProvider.prototype, 'warmEnvironmentCacheOnStartup')
+            .mockImplementation(() => {});
 
         const focusCreateSpy = vi.spyOn(PackageManagerViewProvider.prototype, 'focusCreateForm').mockImplementation(() => {});
         const openSourcedTerminalSpy = vi.spyOn(RosWorkspace.prototype, 'openSourcedTerminal').mockImplementation(() => {});
@@ -70,6 +72,7 @@ describe('extension activation wiring', () => {
 
         expect(initSmartBuildSpy).toHaveBeenCalledWith(context);
         expect(detectEnvironmentSpy).toHaveBeenCalledTimes(1);
+        expect(warmEnvironmentCacheSpy).toHaveBeenCalledTimes(1);
 
         expect(registerWebviewSpy).toHaveBeenCalledTimes(2);
         expect(registerWebviewSpy.mock.calls.map((call) => call[0])).toEqual([

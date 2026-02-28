@@ -33,6 +33,8 @@
         argsBackdrop: document.getElementById('argsBackdrop'),
         argsInput: document.getElementById('argsInput'),
         configName: document.getElementById('configName'),
+        configRunTarget: document.getElementById('configRunTarget'),
+        configRunTargetDescription: document.getElementById('configRunTargetDescription'),
         configList: document.getElementById('configList'),
         btnAddConfig: document.getElementById('btnAddConfig'),
         btnRemoveConfig: document.getElementById('btnRemoveConfig'),

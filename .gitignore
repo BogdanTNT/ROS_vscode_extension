@@ -14,3 +14,4 @@ tests/integration/extensionHost/nodeVisualizerUserFlow.spec.ts
 tests/helpers/mocks/webview.ts
 tests/fixtures/workspaces/exampleProjects/
 goldens/
+e2e/

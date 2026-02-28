@@ -1,11 +1,13 @@
 /* Node Visualizer Webview Script */
 (function () {
     const vscode = window.__rosVscodeApi || (window.__rosVscodeApi = acquireVsCodeApi());
+    const uiInteractions = window.RosUi?.interactions;
 
     const commands = Object.freeze({
         toHost: Object.freeze({
             REFRESH: 'refresh',
             SET_AUTO_REFRESH: 'setAutoRefresh',
+            SET_AUTO_REFRESH_INTERVAL: 'setAutoRefreshInterval',
             SET_OVERVIEW_TOGGLES: 'setOverviewToggles',
             VIEW_SCOPE: 'viewScope',
             FETCH_NODE_INFO: 'fetchNodeInfo',
@@ -49,6 +51,16 @@
     });
     const TOPIC_ROLES_REFRESH_MIN_INTERVAL_MS = 2000;
     const TOPIC_MESSAGE_STALE_AFTER_MS = 15000;
+    const DEFAULT_AUTO_REFRESH_INTERVAL_MS = 3000;
+    const MIN_AUTO_REFRESH_INTERVAL_MS = 250;
+    const MAX_AUTO_REFRESH_INTERVAL_MS = 120000;
+    const AUTO_REFRESH_INTERVAL_DEBOUNCE_MS = 400;
+    const TOPIC_PIN_ICON = '\u2605';
+    const REFRESH_ICON = '\u21BB';
+    const PLAY_ICON = '\u25B6';
+    const PAUSE_ICON = '\u23F8';
+    const PUBLISH_ICON = '\u2709';
+    const EM_DASH = '\u2014';
 
     const dom = {
         btnRefresh: document.getElementById('btnRefresh'),
@@ -56,6 +68,8 @@
         btnSendActionGoal: document.getElementById('btnSendActionGoal'),
         btnRefetchSelected: document.getElementById('btnRefetchSelected'),
         toggleAutoRefresh: document.getElementById('toggleAutoRefresh'),
+        autoRefreshIntervalWrap: document.getElementById('autoRefreshIntervalWrap'),
+        autoRefreshIntervalSeconds: document.getElementById('autoRefreshIntervalSeconds'),
         status: document.getElementById('status'),
         tabs: Array.from(document.querySelectorAll('.nv-tab')),
         tabNodesCount: document.getElementById('tabNodesCount'),
@@ -143,13 +157,27 @@
         graphData: {
             rosVersion: 2,
             nodes: [],
+            nodeWarnings: [],
             topics: [],
             services: [],
             actions: [],
             parameters: [],
             connections: {},
+            refreshMeta: {
+                autoRefreshIntervalMs: 3000,
+                stale: {
+                    nodes: false,
+                    topics: false,
+                    services: false,
+                    actions: false,
+                    parameters: false,
+                },
+                partialFailure: false,
+            },
         },
     };
+
+    let autoRefreshIntervalDebounceTimer = null;
 
     const persistedState = vscode.getState();
     if (Array.isArray(persistedState?.pinnedTopics)) {
@@ -192,7 +220,7 @@
 
     const renderNameList = (values) => {
         if (!values || values.length === 0) {
-            return '—';
+            return EM_DASH;
         }
         return values.map(escapeHtml).join(', ');
     };
@@ -680,7 +708,17 @@
             command: commands.toHost.SET_AUTO_REFRESH,
             enabled: dom.toggleAutoRefresh.checked,
         });
+        updateAutoRefreshIntervalControls();
+        renderStatus();
         sendViewScope();
+    });
+    dom.autoRefreshIntervalSeconds?.addEventListener('input', () => {
+        queueAutoRefreshIntervalUpdateFromInput();
+        renderStatus();
+    });
+    dom.autoRefreshIntervalSeconds?.addEventListener('blur', () => {
+        queueAutoRefreshIntervalUpdateFromInput();
+        renderStatus();
     });
 
     dom.btnClosePublishTopic.addEventListener('click', () => {
@@ -715,18 +753,29 @@
     dom.btnConfirmActionGoal.addEventListener('click', () => {
         sendActionGoal();
     });
-    document.addEventListener('keydown', (event) => {
-        if (event.key !== 'Escape') {
-            return;
-        }
-        if (!dom.publishTopicModal.classList.contains('hidden')) {
-            closePublishTopicModal();
-            return;
-        }
-        if (!dom.actionGoalModal.classList.contains('hidden')) {
-            closeActionGoalModal();
-        }
-    });
+    if (uiInteractions?.bindModalEscapeClose) {
+        uiInteractions.bindModalEscapeClose({
+            modal: dom.publishTopicModal,
+            onClose: closePublishTopicModal,
+        });
+        uiInteractions.bindModalEscapeClose({
+            modal: dom.actionGoalModal,
+            onClose: closeActionGoalModal,
+        });
+    } else {
+        document.addEventListener('keydown', (event) => {
+            if (event.key !== 'Escape') {
+                return;
+            }
+            if (!dom.publishTopicModal.classList.contains('hidden')) {
+                closePublishTopicModal();
+                return;
+            }
+            if (!dom.actionGoalModal.classList.contains('hidden')) {
+                closeActionGoalModal();
+            }
+        });
+    }
     dom.detailsCard?.addEventListener('click', (event) => {
         const target = event.target;
         if (!(target instanceof Element)) {
@@ -813,18 +862,20 @@
     window.addEventListener('message', (event) => {
         const msg = event.data;
         if (msg.command === commands.toWebview.LOADING) {
-            dom.status.innerHTML = '<span class="spinner"></span> Fetching runtime data...';
+            dom.status.innerHTML = '<span class="spinner"></span><span class="nv-status-main">Fetching runtime data...</span>';
             return;
         }
         if (msg.command === commands.toWebview.GRAPH_DATA) {
             state.graphData = {
                 rosVersion: msg.rosVersion || 2,
                 nodes: msg.nodes || [],
+                nodeWarnings: normalizeNodeWarnings(msg.nodeWarnings),
                 topics: msg.topics || [],
                 services: msg.services || [],
                 actions: msg.actions || [],
                 parameters: msg.parameters || [],
                 connections: msg.connections || {},
+                refreshMeta: normalizeRefreshMeta(msg.refreshMeta),
             };
             Object.keys(state.viewLoadingByKind).forEach((view) => {
                 state.viewLoadingByKind[view] = false;
@@ -871,7 +922,7 @@
                 } else if (state.selectedKey.startsWith(viewKinds.TOPICS + ':') ||
                            state.selectedKey.startsWith(viewKinds.SERVICES + ':') ||
                            state.selectedKey.startsWith(viewKinds.ACTIONS + ':')) {
-                    // Reverse-lookup data may have changed — refresh detail card.
+                    // Reverse-lookup data may have changed - refresh detail card.
                     const selectedRow = findSelectedRow();
                     if (selectedRow) {
                         selectedRow.showDetails(dom.detailsCard);
@@ -957,17 +1008,157 @@
         }
     });
 
-    function renderStatus() {
-        const data = state.graphData;
-        const now = new Date();
-        const stamp = now.toLocaleTimeString();
-        let text = 'Last updated: ' + stamp;
+    function normalizeAutoRefreshIntervalMs(rawValue) {
+        const numeric = Number(rawValue);
+        if (!Number.isFinite(numeric)) {
+            return DEFAULT_AUTO_REFRESH_INTERVAL_MS;
+        }
+        const clamped = Math.max(MIN_AUTO_REFRESH_INTERVAL_MS, Math.min(MAX_AUTO_REFRESH_INTERVAL_MS, Math.floor(numeric)));
+        return clamped;
+    }
 
-        if (data.rosVersion !== 2) {
-            text += ' · ROS 1 mode (actions unavailable)';
+    function parseAutoRefreshSeconds(rawSeconds) {
+        const normalized = String(rawSeconds || '').trim().replace(',', '.');
+        if (!normalized) {
+            return null;
+        }
+        const numeric = Number(normalized);
+        if (!Number.isFinite(numeric)) {
+            return null;
+        }
+        return numeric;
+    }
+
+    function intervalMsToSecondsDisplay(intervalMs) {
+        const seconds = normalizeAutoRefreshIntervalMs(intervalMs) / 1000;
+        if (Math.abs(Math.round(seconds) - seconds) < 0.001) {
+            return String(Math.round(seconds));
+        }
+        return String(Number(seconds.toFixed(2)));
+    }
+
+    function normalizeRefreshMeta(rawMeta) {
+        const staleRaw = rawMeta && typeof rawMeta === 'object'
+            ? (rawMeta.stale || {})
+            : {};
+        return {
+            autoRefreshIntervalMs: normalizeAutoRefreshIntervalMs(rawMeta?.autoRefreshIntervalMs),
+            stale: {
+                nodes: staleRaw.nodes === true,
+                topics: staleRaw.topics === true,
+                services: staleRaw.services === true,
+                actions: staleRaw.actions === true,
+                parameters: staleRaw.parameters === true,
+            },
+            partialFailure: rawMeta?.partialFailure === true,
+        };
+    }
+
+    function normalizeNodeWarnings(rawWarnings) {
+        if (!Array.isArray(rawWarnings)) {
+            return [];
+        }
+        return rawWarnings
+            .map((entry) => String(entry || '').trim())
+            .filter(Boolean);
+    }
+
+    function getCurrentRefreshMeta() {
+        return normalizeRefreshMeta(state.graphData.refreshMeta || {});
+    }
+
+    function updateAutoRefreshIntervalControls() {
+        const enabled = dom.toggleAutoRefresh.checked === true;
+        if (dom.autoRefreshIntervalWrap instanceof HTMLElement) {
+            dom.autoRefreshIntervalWrap.classList.toggle('hidden', !enabled);
         }
 
-        dom.status.textContent = text;
+        if (!(dom.autoRefreshIntervalSeconds instanceof HTMLInputElement)) {
+            return;
+        }
+
+        dom.autoRefreshIntervalSeconds.disabled = !enabled;
+        const refreshMeta = getCurrentRefreshMeta();
+        const expectedDisplay = intervalMsToSecondsDisplay(refreshMeta.autoRefreshIntervalMs);
+        if (dom.autoRefreshIntervalSeconds.value !== expectedDisplay) {
+            dom.autoRefreshIntervalSeconds.value = expectedDisplay;
+        }
+    }
+
+    function queueAutoRefreshIntervalUpdateFromInput() {
+        if (!(dom.autoRefreshIntervalSeconds instanceof HTMLInputElement)) {
+            return;
+        }
+
+        const numericSeconds = parseAutoRefreshSeconds(dom.autoRefreshIntervalSeconds.value);
+        const fallbackMs = getCurrentRefreshMeta().autoRefreshIntervalMs;
+        const intervalMs = numericSeconds !== null
+            ? normalizeAutoRefreshIntervalMs(Math.round(numericSeconds * 1000))
+            : fallbackMs;
+
+        dom.autoRefreshIntervalSeconds.value = intervalMsToSecondsDisplay(intervalMs);
+
+        if (autoRefreshIntervalDebounceTimer) {
+            clearTimeout(autoRefreshIntervalDebounceTimer);
+        }
+        autoRefreshIntervalDebounceTimer = setTimeout(() => {
+            autoRefreshIntervalDebounceTimer = null;
+            vscode.postMessage({
+                command: commands.toHost.SET_AUTO_REFRESH_INTERVAL,
+                intervalMs,
+            });
+        }, AUTO_REFRESH_INTERVAL_DEBOUNCE_MS);
+    }
+
+    function renderStatus() {
+        const data = state.graphData;
+        const refreshMeta = getCurrentRefreshMeta();
+        const now = new Date();
+        const stamp = now.toLocaleTimeString();
+        const statusChips = [];
+
+        if (dom.toggleAutoRefresh.checked === true) {
+            statusChips.push({
+                tone: 'info',
+                text: 'Auto every ' + intervalMsToSecondsDisplay(refreshMeta.autoRefreshIntervalMs) + 's',
+            });
+        }
+
+        if (refreshMeta.partialFailure) {
+            const staleKinds = Object.entries(refreshMeta.stale)
+                .filter((entry) => entry[1] === true)
+                .map((entry) => entry[0]);
+            if (staleKinds.length > 0) {
+                statusChips.push({
+                    tone: 'warn',
+                    text: 'Stale: ' + staleKinds.join(', '),
+                });
+            } else {
+                statusChips.push({
+                    tone: 'warn',
+                    text: 'Partial refresh failure',
+                });
+            }
+        }
+
+        if (data.rosVersion !== 2) {
+            statusChips.push({
+                tone: 'soft',
+                text: 'ROS 1 mode (actions unavailable)',
+            });
+        }
+
+        const chipsHtml = statusChips.length > 0
+            ? '<span class="nv-status-chip-row">' + statusChips
+                .map((chip) => (
+                    '<span class="nv-status-chip nv-status-chip-' + chip.tone + '">' + escapeHtml(chip.text) + '</span>'
+                ))
+                .join('') + '</span>'
+            : '';
+
+        dom.status.innerHTML =
+            '<span class="nv-status-main">Updated ' + escapeHtml(stamp) + '</span>' +
+            chipsHtml;
     }
 
     function renderTabCounts() {
@@ -1006,6 +1197,7 @@
         dom.toggleServices.checked = prefs.showServices !== false;
         dom.toggleActions.checked = prefs.showActions !== false;
         dom.toggleParameters.checked = prefs.showParameters !== false;
+        updateAutoRefreshIntervalControls();
     }
 
     function persistOverviewToggleState() {
@@ -1167,7 +1359,7 @@
         if (!selected) {
             button.classList.add('hidden');
             button.disabled = true;
-            button.textContent = '↻ Refetch Selected';
+            button.textContent = REFRESH_ICON + ' Refetch Selected';
             applyButtonTooltip(
                 button,
                 getRosRefreshCommandForScope(computeCurrentScope()),
@@ -1180,7 +1372,9 @@
         const label = getRefetchLabelForKind(selected.kind);
         const pending = state.selectedRefetchPendingByKind[selected.kind] === true;
         button.disabled = false;
-        button.textContent = pending ? '↻ Refreshing ' + label + '...' : '↻ Refetch ' + label;
+        button.textContent = pending
+            ? REFRESH_ICON + ' Refreshing ' + label + '...'
+            : REFRESH_ICON + ' Refetch ' + label;
         applyButtonTooltip(
             button,
             getRefetchRosCommandForSelection(selected),
@@ -1402,7 +1596,7 @@
 
         const paused = state.allPinnedTopicsPaused;
         pauseAllBtn.disabled = state.pinnedTopics.length === 0;
-        pauseAllBtn.textContent = paused ? '▶' : '⏸';
+        pauseAllBtn.textContent = paused ? PLAY_ICON : PAUSE_ICON;
         pauseAllBtn.classList.toggle('frozen', paused);
         applyButtonTooltip(
             pauseAllBtn,
@@ -1466,7 +1660,7 @@
         const ageMs = Math.max(0, Date.now() - receivedAt);
         const ageSeconds = Math.floor(ageMs / 1000);
         const stamp = new Date(receivedAt).toLocaleTimeString();
-        const staleSuffix = ageMs > TOPIC_MESSAGE_STALE_AFTER_MS ? ' · stale' : '';
+        const staleSuffix = ageMs > TOPIC_MESSAGE_STALE_AFTER_MS ? ' - stale' : '';
         return 'Updated ' + ageSeconds + 's ago (' + stamp + ')' + staleSuffix;
     }
 
@@ -1510,7 +1704,7 @@
 
         const topicType = topic.type || 'unknown';
         const frozen = isPinnedTopicFrozen(topic.name);
-        const freezeIcon = frozen ? '▶' : '⏸';
+        const freezeIcon = frozen ? PLAY_ICON : PAUSE_ICON;
         const pinHelp = getTopicPinHelp(topic.name, true);
         const freezeHelp = getTopicFreezeHelp(topic.name, frozen);
         const effectivelyPaused = isPinnedTopicEffectivelyPaused(topic.name);
@@ -1523,7 +1717,7 @@
             escapeHtml(topic.name) +
             '"' + buildTooltipDataAttrs(pinHelp.command, pinHelp.description) +
             ' aria-label="' + escapeHtml(buildButtonAriaLabel(pinHelp.command, pinHelp.description)) + '">' +
-            '★' +
+            TOPIC_PIN_ICON +
             '</button>' +
             '<span class="nv-pinned-topic-name" title="' + escapeHtml(topic.name) + '">' +
             escapeHtml(topic.name) +
@@ -2018,8 +2212,8 @@
      * Tell the backend which graph categories are currently visible so
      * auto-refresh can skip unnecessary CLI calls.
      *
-     * - Single-kind tab (nodes / topics / …) → only that category.
-     * - Overview → whichever overview toggles are checked.
+     * - Single-kind tab (nodes / topics / ...) -> only that category.
+     * - Overview -> whichever overview toggles are checked.
      */
     function sendViewScope() {
         const scope = computeCurrentScope();
@@ -2178,9 +2372,29 @@
 
         const heading = document.createElement('div');
         heading.className = 'nv-overview-header';
-        heading.innerHTML =
-            '<h3>' + escapeHtml(kindLabels[kind] || kind) + '</h3>' +
-            '<span class="badge info">' + rows.length + '</span>';
+        const headingMain = document.createElement('div');
+        headingMain.className = 'nv-overview-heading-main';
+
+        const headingTitle = document.createElement('h3');
+        headingTitle.textContent = kindLabels[kind] || kind;
+        headingMain.appendChild(headingTitle);
+
+        if (kind === viewKinds.NODES && state.graphData.nodeWarnings.length > 0) {
+            const warningIndicator = document.createElement('span');
+            warningIndicator.className = 'nv-node-warning-indicator';
+            warningIndicator.textContent = '!';
+            warningIndicator.title = state.graphData.nodeWarnings.join('\n');
+            warningIndicator.setAttribute('aria-label', 'Node list warning');
+            warningIndicator.setAttribute('role', 'img');
+            headingMain.appendChild(warningIndicator);
+        }
+
+        const countBadge = document.createElement('span');
+        countBadge.className = 'badge info';
+        countBadge.textContent = String(rows.length);
+
+        heading.appendChild(headingMain);
+        heading.appendChild(countBadge);
         section.appendChild(heading);
 
         const list = document.createElement('ul');
@@ -2272,7 +2486,7 @@
                 pinButton.className = pinned
                     ? 'pin-btn nv-topic-row-pin pinned'
                     : 'pin-btn nv-topic-row-pin';
-                pinButton.textContent = '★';
+                pinButton.textContent = TOPIC_PIN_ICON;
                 const pinHelp = getTopicPinHelp(row.pinTopicName, pinned);
                 applyButtonTooltip(pinButton, pinHelp.command, pinHelp.description);
                 pinButton.addEventListener('click', (event) => {
@@ -2403,12 +2617,12 @@
             '</div>';
 
         if (!info) {
-            // Info not yet fetched — request it lazily.
+            // Info not yet fetched - request it lazily.
             requestNodeInfo(name);
             renderDetailsBody(
                 targetEl,
                 headerHtml,
-                '<div class="text-muted"><span class="spinner"></span> Loading node info…</div>',
+                '<div class="text-muted"><span class="spinner"></span> Loading node info...</div>',
             );
             return;
         }
@@ -2455,7 +2669,7 @@
             'data-topic-name="' + escapeHtml(topicName || '') + '"' +
             buildTooltipDataAttrs(command, description) +
             ' aria-label="' + escapeHtml(buildButtonAriaLabel(command, description)) + '">' +
-            '✉ Publish' +
+            PUBLISH_ICON + ' Publish' +
             '</button>'
         );
     }
@@ -2468,7 +2682,7 @@
             'data-action-name="' + escapeHtml(actionName || '') + '"' +
             buildTooltipDataAttrs(command, description) +
             ' aria-label="' + escapeHtml(buildButtonAriaLabel(command, description)) + '">' +
-            '▶ Send Goal' +
+            PLAY_ICON + ' Send Goal' +
             '</button>'
         );
     }
@@ -2533,7 +2747,7 @@
             '<button class="' + pinButtonClass + '" type="button" data-topic-name="' + escapeHtml(name) + '"' +
             buildTooltipDataAttrs(pinHelp.command, pinHelp.description) +
             ' aria-label="' + escapeHtml(buildButtonAriaLabel(pinHelp.command, pinHelp.description)) + '">' +
-            '★' +
+            TOPIC_PIN_ICON +
             '</button>' +
             '<div class="nv-details-title"><strong>' + escapeHtml(name) + '</strong> <span class="text-muted">(topic)</span></div>' +
             '</div>';
@@ -2806,3 +3020,5 @@
     installRichTooltipHandlers();
     switchView(viewKinds.OVERVIEW);
 })();
+
+

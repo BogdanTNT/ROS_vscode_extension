@@ -44,6 +44,34 @@
             });
         }
     };
+    const bindModalEscapeClose = (modal, onClose) => {
+        if (!uiInteractions?.bindModalEscapeClose) {
+            if (!(modal instanceof Element) || typeof onClose !== 'function') {
+                return;
+            }
+            modal.addEventListener('keydown', (event) => {
+                if (!(event instanceof KeyboardEvent)) {
+                    return;
+                }
+                if (event.key !== 'Escape' || event.defaultPrevented || event.isComposing) {
+                    return;
+                }
+                if (event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) {
+                    return;
+                }
+                if (modal.classList.contains('hidden')) {
+                    return;
+                }
+                event.preventDefault();
+                onClose(event);
+            });
+            return;
+        }
+        uiInteractions.bindModalEscapeClose({
+            modal,
+            onClose,
+        });
+    };
 
     const normalizePackageName = (rawName) => String(rawName || '').trim().replace(/\s+/g, '_');
     const normalizeNodeName = (rawName) => String(rawName || '').trim().replace(/\s+/g, '_');
@@ -194,13 +222,24 @@
         }
         state.currentArgsKey = argsKey;
         const cfg = state.launchArgConfigs[argsKey] || {
-            configs: [{ id: 'default', name: 'default', args: '' }],
+            configs: [{ id: 'default', name: 'default', args: '', runTarget: 'auto' }],
         };
+        if (!Array.isArray(cfg.configs) || !cfg.configs.length) {
+            cfg.configs = [{ id: 'default', name: 'default', args: '', runTarget: 'auto' }];
+        }
+        cfg.configs = cfg.configs.map((config, index) => {
+            const id = String(config?.id || `cfg-${index + 1}`).trim() || `cfg-${index + 1}`;
+            const name = String(config?.name || '').trim() || (id === 'default' ? 'default' : 'config');
+            return {
+                id,
+                name,
+                args: String(config?.args || ''),
+                runTarget: normalizeRunTarget(config?.runTarget || 'auto'),
+            };
+        });
         state.launchArgConfigs[argsKey] = cfg;
         state.currentConfigId = cfg.configs[0]?.id || 'default';
-        const currentCfg = cfg.configs.find((c) => c.id === state.currentConfigId) || cfg.configs[0];
-        dom.argsInput.value = currentCfg?.args || '';
-        dom.configName.value = currentCfg?.name || '';
+        syncArgsConfigEditor();
         state.argsOptions = [];
         render.renderArgsOptions();
         render.renderConfigTabs();
@@ -429,6 +468,94 @@
         };
     };
 
+    const getConfigRunTargetOptions = () => {
+        const optionsById = new Map([
+            [
+                'auto',
+                {
+                    id: 'auto',
+                    label: 'Auto',
+                    description: 'Use the Environment Info run target for this configuration.',
+                },
+            ],
+        ]);
+
+        const rawOptions = Array.isArray(state.runTerminalTargetOptions)
+            ? state.runTerminalTargetOptions
+            : [];
+        rawOptions.forEach((opt) => {
+            const id = normalizeRunTarget(opt?.id);
+            if (!id) {
+                return;
+            }
+            const label = String(opt?.label || id);
+            const description = String(opt?.description || '');
+            const entry = { id, label, description };
+            if (id === 'auto') {
+                optionsById.set(id, entry);
+                return;
+            }
+            if (!optionsById.has(id)) {
+                optionsById.set(id, entry);
+            }
+        });
+
+        return Array.from(optionsById.values());
+    };
+
+    const normalizeConfigRunTarget = (value) => {
+        const normalized = normalizeRunTarget(value);
+        const validTargets = new Set(getConfigRunTargetOptions().map((opt) => String(opt.id || '').trim()).filter(Boolean));
+        return validTargets.has(normalized) ? normalized : 'auto';
+    };
+
+    const renderConfigRunTargetState = (requestedTargetId) => {
+        if (!dom.configRunTarget) {
+            return 'auto';
+        }
+        const options = getConfigRunTargetOptions();
+        const selectedTargetId = normalizeConfigRunTarget(requestedTargetId);
+        dom.configRunTarget.innerHTML = options
+            .map((opt) => (
+                '<option value="' + String(opt.id).replace(/"/g, '&quot;') + '">' + String(opt.label) + '</option>'
+            ))
+            .join('');
+        dom.configRunTarget.value = selectedTargetId;
+        dom.configRunTarget.disabled = options.length <= 1;
+
+        const selected = options.find((opt) => String(opt.id) === selectedTargetId);
+        if (dom.configRunTargetDescription) {
+            dom.configRunTargetDescription.textContent = String(selected?.description || '');
+        }
+        return selectedTargetId;
+    };
+
+    const getCurrentArgsConfig = () => {
+        const cfg = state.launchArgConfigs[state.currentArgsKey];
+        if (!cfg || !Array.isArray(cfg.configs) || !cfg.configs.length) {
+            return undefined;
+        }
+        const selected = cfg.configs.find((c) => c.id === state.currentConfigId) || cfg.configs[0];
+        if (selected && selected.id !== state.currentConfigId) {
+            state.currentConfigId = selected.id;
+        }
+        if (selected) {
+            selected.runTarget = normalizeConfigRunTarget(selected.runTarget || 'auto');
+        }
+        return selected;
+    };
+
+    const syncArgsConfigEditor = () => {
+        const currentCfg = getCurrentArgsConfig();
+        if (dom.argsInput) {
+            dom.argsInput.value = currentCfg?.args || '';
+        }
+        if (dom.configName) {
+            dom.configName.value = currentCfg?.name || '';
+        }
+        renderConfigRunTargetState(currentCfg?.runTarget || 'auto');
+    };
+
     const getSelectedRunTarget = () => {
         const model = buildRunTargetSelectionModel(
             dom.runEnvironmentTarget?.value || state.runEnvironmentTarget,
@@ -495,6 +622,13 @@
         );
         if (dom.runTerminalModeDescription) {
             dom.runTerminalModeDescription.textContent = String(selectedMode?.description || '');
+        }
+
+        if (dom.argsModal && !dom.argsModal.classList.contains('hidden')) {
+            const requestedConfigTarget = dom.configRunTarget?.value
+                || getCurrentArgsConfig()?.runTarget
+                || 'auto';
+            renderConfigRunTargetState(requestedConfigTarget);
         }
 
         renderEnvironmentDetailsState();
@@ -566,6 +700,7 @@
             confirmButton: dom.btnCreate,
         });
     }
+    bindModalEscapeClose(dom.createModal, closeCreate);
 
     dom.btnRefresh.addEventListener('click', () => {
         actions.refreshPackages();
@@ -620,6 +755,7 @@
             confirmButton: dom.btnSaveEnvironment,
         });
     }
+    bindModalEscapeClose(dom.environmentModal, closeEnvironmentModal);
 
     const requestOtherPackagesLoad = (force = false) => {
         if (!force && (state.otherPackagesLoaded || state.otherPackagesLoading)) {
@@ -704,11 +840,14 @@
 
     dom.btnSaveArgs.addEventListener('click', () => {
         const cfg = state.launchArgConfigs[state.currentArgsKey] || { configs: [] };
-        const list = cfg.configs.length ? cfg.configs : [{ id: 'default', name: 'default', args: '' }];
+        const list = cfg.configs.length
+            ? cfg.configs
+            : [{ id: 'default', name: 'default', args: '', runTarget: 'auto' }];
         const idx = list.findIndex((c) => c.id === state.currentConfigId);
         if (idx >= 0) {
             list[idx].args = dom.argsInput.value;
             list[idx].name = dom.configName.value || list[idx].name || 'config';
+            list[idx].runTarget = normalizeConfigRunTarget(dom.configRunTarget?.value || list[idx].runTarget || 'auto');
         }
         cfg.configs = list;
         state.launchArgConfigs[state.currentArgsKey] = cfg;
@@ -720,11 +859,11 @@
         const cfg = state.launchArgConfigs[state.currentArgsKey] || { configs: [] };
         const id = 'cfg-' + Date.now();
         const name = 'config ' + (cfg.configs.length + 1);
-        cfg.configs.push({ id, name, args: '' });
+        const currentRunTarget = normalizeConfigRunTarget(dom.configRunTarget?.value || 'auto');
+        cfg.configs.push({ id, name, args: '', runTarget: currentRunTarget });
         state.launchArgConfigs[state.currentArgsKey] = cfg;
         state.currentConfigId = id;
-        dom.configName.value = name;
-        dom.argsInput.value = '';
+        syncArgsConfigEditor();
         render.renderConfigTabs();
     });
 
@@ -735,16 +874,21 @@
         }
         cfg.configs = cfg.configs.filter((c) => c.id !== state.currentConfigId);
         state.currentConfigId = cfg.configs[0].id;
-        const currentCfg = cfg.configs[0];
-        dom.configName.value = currentCfg?.name || '';
-        dom.argsInput.value = currentCfg?.args || '';
         state.launchArgConfigs[state.currentArgsKey] = cfg;
+        syncArgsConfigEditor();
         render.renderConfigTabs();
     });
+
+    if (dom.configRunTarget) {
+        dom.configRunTarget.addEventListener('change', () => {
+            renderConfigRunTargetState(dom.configRunTarget.value);
+        });
+    }
 
     dom.btnCancelArgs.addEventListener('click', closeArgsModal);
     dom.btnCloseArgs.addEventListener('click', closeArgsModal);
     dom.argsBackdrop.addEventListener('click', closeArgsModal);
+    bindModalEscapeClose(dom.argsModal, closeArgsModal);
 
     // ── Add Node modal ─────────────────────────────────────────
     const openAddNodeModal = (pkgName, pkgPath) => {
@@ -811,6 +955,7 @@
             confirmButton: dom.btnAddNode,
         });
     }
+    bindModalEscapeClose(dom.addNodeModal, closeAddNodeModal);
 
     // ── Remove Node modal ──────────────────────────────────────
     const openRemoveNodeModal = (pkgName, nodeName, pkgPath, nodePath) => {
@@ -859,6 +1004,7 @@
             confirmButton: dom.btnRemoveNode,
         });
     }
+    bindModalEscapeClose(dom.removeNodeModal, closeRemoveNodeModal);
 
     window.PM.handlers = {
         openArgsModal,
@@ -872,5 +1018,6 @@
         closeAddNodeModal,
         openRemoveNodeModal,
         closeRemoveNodeModal,
+        syncArgsConfigEditor,
     };
 })();

@@ -1,3 +1,4 @@
+import fs from 'node:fs';
 import path from 'node:path';
 
 type Listener<T> = (event: T) => void;
@@ -29,17 +30,28 @@ export class EventEmitter<T> {
     }
 }
 
-type MockTerminalOptions = { name?: string; shellPath?: string; env?: Record<string, string> };
+type MockTerminalOptions = {
+    name?: string;
+    shellPath?: string;
+    shellArgs?: string[];
+    env?: Record<string, string>;
+};
 
 class MockTerminal {
     readonly name: string;
+    readonly shellPath?: string;
+    readonly shellArgs?: string[];
+    readonly env?: Record<string, string>;
     readonly sentTexts: string[] = [];
     exitStatus: { code: number } | undefined;
     processId: Promise<number | undefined> = Promise.resolve(undefined);
     disposed = false;
 
-    constructor(name: string) {
+    constructor(name: string, options?: MockTerminalOptions) {
         this.name = name;
+        this.shellPath = options?.shellPath;
+        this.shellArgs = options?.shellArgs;
+        this.env = options?.env;
     }
 
     show(): void {}
@@ -92,10 +104,17 @@ const configuration: ConfigurationStore = {
 const infoMessages: string[] = [];
 const warningMessages: string[] = [];
 const errorMessages: string[] = [];
+const shownTextDocuments: Uri[] = [];
+const inputBoxResponses: Array<string | undefined> = [];
 
 let workspaceFolders: Array<{ uri: Uri }> = [{ uri: Uri.file(process.cwd()) }];
 
 let warningMessageResponse: string | undefined = undefined;
+let defaultInputBoxResponse: string | undefined = undefined;
+
+export const env = {
+    remoteName: undefined as string | undefined,
+};
 
 export const window = {
     onDidCloseTerminal: closeTerminalEmitter.event,
@@ -104,7 +123,7 @@ export const window = {
         const name = typeof options === 'string'
             ? options
             : options?.name || 'Terminal';
-        const terminal = new MockTerminal(name);
+        const terminal = new MockTerminal(name, typeof options === 'string' ? undefined : options);
         createdTerminals.push(terminal);
         return terminal;
     },
@@ -120,7 +139,16 @@ export const window = {
         errorMessages.push(message);
         return Promise.resolve(undefined);
     },
-    showTextDocument(): Promise<undefined> {
+    showInputBox(): Promise<string | undefined> {
+        if (inputBoxResponses.length > 0) {
+            return Promise.resolve(inputBoxResponses.shift());
+        }
+        return Promise.resolve(defaultInputBoxResponse);
+    },
+    showTextDocument(uri?: Uri): Promise<undefined> {
+        if (uri) {
+            shownTextDocuments.push(uri);
+        }
         return Promise.resolve(undefined);
     },
     setStatusBarMessage(): Disposable {
@@ -154,6 +182,20 @@ export const workspace = {
                 return Promise.resolve();
             },
         };
+    },
+    fs: {
+        stat(uri: Uri): Promise<{ type: number; ctime: number; mtime: number; size: number }> {
+            if (!fs.existsSync(uri.fsPath)) {
+                return Promise.reject(new Error(`ENOENT: ${uri.fsPath}`));
+            }
+            const stats = fs.statSync(uri.fsPath);
+            return Promise.resolve({
+                type: stats.isDirectory() ? 2 : 1,
+                ctime: stats.ctimeMs,
+                mtime: stats.mtimeMs,
+                size: stats.size,
+            });
+        },
     },
 };
 
@@ -194,8 +236,24 @@ export function __getCreatedTerminals(): MockTerminal[] {
     return [...createdTerminals];
 }
 
+export function __getShownTextDocuments(): Uri[] {
+    return [...shownTextDocuments];
+}
+
 export function __setWarningMessageResponse(response: string | undefined): void {
     warningMessageResponse = response;
+}
+
+export function __setDefaultInputBoxResponse(response: string | undefined): void {
+    defaultInputBoxResponse = response;
+}
+
+export function __enqueueInputBoxResponse(response: string | undefined): void {
+    inputBoxResponses.push(response);
+}
+
+export function __setRemoteName(remoteName: string | undefined): void {
+    env.remoteName = remoteName;
 }
 
 export function __resetMockState(): void {
@@ -204,7 +262,11 @@ export function __resetMockState(): void {
     infoMessages.length = 0;
     warningMessages.length = 0;
     errorMessages.length = 0;
+    shownTextDocuments.length = 0;
+    inputBoxResponses.length = 0;
     warningMessageResponse = undefined;
+    defaultInputBoxResponse = undefined;
+    env.remoteName = undefined;
 
     configuration.rosDevToolkit = {
         rosSetupPath: '',

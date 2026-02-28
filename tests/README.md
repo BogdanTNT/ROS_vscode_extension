@@ -11,9 +11,13 @@ This folder is organized so each test domain is isolated and easy to maintain.
 - `tests/unit/webview/packageManager/`
   - Webview-side unit tests for `media/packageManager/*.js` (DOM/events/render logic).
 - `tests/integration/extensionHost/`
-  - Extension-host integration and activation smoke tests.
+  - Extension-host integration, button/user-flow tests, and runtime matrix tests.
+- `tests/integration/uiClick/`
+  - Selective literal button click tests that execute real webview JS bundles in JSDOM.
 - `tests/fixtures/workspaces/`
   - Reusable fake ROS workspace fixtures (`package.xml`, launch files, etc.).
+- `tests/fixtures/workspaces/exampleProjects/`
+  - Optional real/sample ROS projects provided by users for fixture-driven validation.
 - `tests/fixtures/launchFiles/`
   - Launch-file fixtures for launch arg parsing coverage.
 - `tests/helpers/mocks/`
@@ -44,6 +48,24 @@ This folder is organized so each test domain is isolated and easy to maintain.
 - `npm run test:unit`
 - `npm run test:webview`
 - `npm run test:integration`
+- `npm run test:matrix`
+- `npm run test:ui-click`
+
+## Runtime Matrix Coverage
+
+- `tests/integration/extensionHost/runtimeMatrix.spec.ts`
+  - ROS 1 and ROS 2 command families (`roslaunch`/`rosrun` vs `ros2 launch`/`ros2 run`).
+  - Terminal routing matrix (`auto`, `integrated`, `external`, WSL integrated/external targets).
+- `tests/integration/extensionHost/packageManagerUserFlow.spec.ts`
+  - Package Manager webview host commands (equivalent to user button flows).
+- `tests/integration/extensionHost/nodeVisualizerUserFlow.spec.ts`
+  - Node Visualizer webview host commands (refresh, topic publish, action goals, tracked topics).
+
+## Using Example Projects As Fixtures
+
+- Put sample projects under `tests/fixtures/workspaces/exampleProjects/<project-name>/`.
+- Keep each fixture self-contained (workspace root with packages inside it).
+- Add or extend tests to point `__setWorkspaceFolder(...)` at those fixture paths.
 
 ## Notes
 

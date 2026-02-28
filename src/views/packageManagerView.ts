@@ -8,16 +8,24 @@ import {
     WebviewUiPreferences,
 } from './uiPreferences';
 
-type LaunchArgConfig = { id: string; name: string; args: string };
+type LaunchArgConfig = { id: string; name: string; args: string; runTarget?: string };
 type LaunchArgConfigMap = Record<string, { configs: LaunchArgConfig[] }>;
 
 const PINNED_LAUNCH_FILES_KEY = 'pinnedLaunchFiles';
 const LAUNCH_ARG_CONFIGS_KEY = 'launchArgConfigs';
 const LEGACY_LAUNCH_ARGS_KEY = 'launchArgs';
 const RUN_TERMINAL_TARGET_KEY = 'runTerminalTarget';
+const ENVIRONMENT_DIALOG_CACHE_KEY = 'rosDevToolkit.environmentDialogCache';
 const DEFAULT_CREATE_PACKAGE_DESCRIPTION = 'TO DO: A very good package description';
 const PACKAGE_MANAGER_BASE_TITLE = 'Package Manager';
 // TODO(remove-by: v0.3.0 / 2026-06-30): Remove migration from legacy launch args.
+
+interface EnvironmentDialogCacheSnapshot {
+    report: string;
+    targetOptions: RunTerminalTargetOption[];
+    autoLaunchInExternalTerminal: boolean;
+    refreshedAt: number;
+}
 
 /**
  * Sidebar webview that lets the user create new ROS packages.
@@ -28,13 +36,17 @@ export class PackageManagerViewProvider implements vscode.WebviewViewProvider {
     private _launchArgConfigs: LaunchArgConfigMap = {};
     private _cachedOtherPackages?: string[];
     private _cachedOtherPackageDetails = new Map<string, RosWorkspacePackageDetails>();
+    private _environmentDialogCache?: EnvironmentDialogCacheSnapshot;
+    private _environmentDialogRefreshPromise?: Promise<EnvironmentDialogCacheSnapshot | undefined>;
 
     constructor(
         private readonly _extensionUri: vscode.Uri,
         private readonly _ros: RosWorkspace,
         private readonly _context: vscode.ExtensionContext,
         private readonly _onUiPreferencesChanged?: (preferences: WebviewUiPreferences) => PromiseLike<void> | void,
-    ) {}
+    ) {
+        this._environmentDialogCache = this._readEnvironmentDialogCache();
+    }
 
     // ── WebviewViewProvider ────────────────────────────────────
     resolveWebviewView(
@@ -62,6 +74,9 @@ export class PackageManagerViewProvider implements vscode.WebviewViewProvider {
                     await this._sendPackageList();
                     this._sendBuildCheckState();
                     break;
+                case PMToHostCommand.REQUEST_ENV_DIALOG_STATE:
+                    await this._sendEnvironmentDialogState();
+                    break;
                 case PMToHostCommand.SHOW_ENV_INFO:
                     await this._showEnvironmentInfo();
                     break;
@@ -81,10 +96,10 @@ export class PackageManagerViewProvider implements vscode.WebviewViewProvider {
                     await this._openNodeFile(msg.path);
                     break;
                 case PMToHostCommand.LAUNCH_FILE:
-                    await this._launchFile(msg.pkg, msg.file, msg.path, msg.args, msg.argsName);
+                    await this._launchFile(msg.pkg, msg.file, msg.path, msg.args, msg.argsName, msg.runTarget);
                     break;
                 case PMToHostCommand.RUN_NODE:
-                    await this._runNode(msg.pkg, msg.executable, msg.args, msg.argsName, msg.path);
+                    await this._runNode(msg.pkg, msg.executable, msg.args, msg.argsName, msg.path, msg.runTarget);
                     break;
                 case PMToHostCommand.TOGGLE_PIN:
                     await this._togglePin(msg.path);
@@ -129,6 +144,12 @@ export class PackageManagerViewProvider implements vscode.WebviewViewProvider {
             });
         });
 
+        webviewView.onDidChangeVisibility(() => {
+            if (webviewView.visible) {
+                void this._sendEnvironmentDialogState();
+            }
+        });
+
         this._applyStoredRunTerminalTarget();
         void this._initializeEnvironmentOnStartup();
 
@@ -142,6 +163,16 @@ export class PackageManagerViewProvider implements vscode.WebviewViewProvider {
     focusCreateForm(): void {
         this._view?.show(true);
         this._view?.webview.postMessage({ command: PMToWebviewCommand.FOCUS_CREATE });
+    }
+
+    /**
+     * Refreshes the environment cache in the background.
+     * Safe to call during activation when the webview is not visible yet.
+     */
+    warmEnvironmentCacheOnStartup(): void {
+        void this._ensureEnvironmentDialogCache(true).catch(() => {
+            // Keep activation non-disruptive; explicit Environment Info refresh can retry.
+        });
     }
 
     // ── Private ────────────────────────────────────────────────
@@ -281,6 +312,31 @@ export class PackageManagerViewProvider implements vscode.WebviewViewProvider {
         return validIds.has(migrated) ? migrated : 'auto';
     }
 
+    private _normalizeRunTerminalTargetId(target: unknown): string {
+        const normalized = String(target || '').trim();
+        if (!normalized) {
+            return 'auto';
+        }
+        if (normalized === 'auto' || normalized === 'integrated' || normalized === 'external') {
+            return normalized;
+        }
+        if (normalized === 'wsl:default') {
+            return 'wsl-external:default';
+        }
+        if (normalized.startsWith('wsl:')) {
+            return `wsl-external:${normalized.slice('wsl:'.length)}`;
+        }
+        if (
+            normalized === 'wsl-integrated:default'
+            || normalized.startsWith('wsl-integrated:')
+            || normalized === 'wsl-external:default'
+            || normalized.startsWith('wsl-external:')
+        ) {
+            return normalized;
+        }
+        return 'auto';
+    }
+
     private _applyStoredRunTerminalTarget() {
         const target = this._getStoredRunTerminalTarget();
         this._ros.setRunTerminalTarget(target);
@@ -311,7 +367,42 @@ export class PackageManagerViewProvider implements vscode.WebviewViewProvider {
         this._view.title = `${PACKAGE_MANAGER_BASE_TITLE} - ${envLabel}`;
     }
 
-    private async _sendEnvironmentDialogState() {
+    private _readEnvironmentDialogCache(): EnvironmentDialogCacheSnapshot | undefined {
+        const raw = this._context.globalState.get<Partial<EnvironmentDialogCacheSnapshot>>(
+            ENVIRONMENT_DIALOG_CACHE_KEY,
+        );
+        if (!raw || typeof raw !== 'object') {
+            return undefined;
+        }
+
+        const report = typeof raw.report === 'string' ? raw.report : '';
+        const targetOptions = Array.isArray(raw.targetOptions)
+            ? raw.targetOptions
+                .map((option) => ({
+                    id: String(option?.id || '').trim(),
+                    label: String(option?.label || '').trim(),
+                    description: String(option?.description || '').trim(),
+                }))
+                .filter((option) => Boolean(option.id))
+            : [];
+        const autoLaunchInExternalTerminal = raw.autoLaunchInExternalTerminal !== false;
+        const refreshedAt = Number.isFinite(raw.refreshedAt)
+            ? Number(raw.refreshedAt)
+            : 0;
+
+        if (!targetOptions.length) {
+            return undefined;
+        }
+
+        return {
+            report,
+            targetOptions,
+            autoLaunchInExternalTerminal,
+            refreshedAt,
+        };
+    }
+
+    private async _refreshEnvironmentDialogCache(): Promise<EnvironmentDialogCacheSnapshot> {
         const [report, options] = await Promise.all([
             this._ros.getEnvironmentInfoReport(),
             this._ros.listRunTerminalTargets(),
@@ -320,26 +411,69 @@ export class PackageManagerViewProvider implements vscode.WebviewViewProvider {
             .getConfiguration('rosDevToolkit')
             .get<boolean>('launchInExternalTerminal', true);
 
+        const snapshot: EnvironmentDialogCacheSnapshot = {
+            report: String(report || ''),
+            targetOptions: options,
+            autoLaunchInExternalTerminal,
+            refreshedAt: Date.now(),
+        };
+        this._environmentDialogCache = snapshot;
+        await this._context.globalState.update(ENVIRONMENT_DIALOG_CACHE_KEY, snapshot);
+        return snapshot;
+    }
+
+    private async _ensureEnvironmentDialogCache(
+        forceRefresh: boolean = false,
+    ): Promise<EnvironmentDialogCacheSnapshot | undefined> {
+        if (!forceRefresh && this._environmentDialogCache) {
+            return this._environmentDialogCache;
+        }
+
+        if (!forceRefresh && this._environmentDialogRefreshPromise) {
+            return await this._environmentDialogRefreshPromise;
+        }
+
+        const refreshPromise = this._refreshEnvironmentDialogCache();
+        this._environmentDialogRefreshPromise = refreshPromise;
+
+        try {
+            return await refreshPromise;
+        } finally {
+            if (this._environmentDialogRefreshPromise === refreshPromise) {
+                this._environmentDialogRefreshPromise = undefined;
+            }
+        }
+    }
+
+    private async _sendEnvironmentDialogState(forceRefresh: boolean = false) {
+        const snapshot = await this._ensureEnvironmentDialogCache(forceRefresh);
+        if (!snapshot || snapshot.targetOptions.length === 0) {
+            return;
+        }
+        const autoLaunchInExternalTerminal = vscode.workspace
+            .getConfiguration('rosDevToolkit')
+            .get<boolean>('launchInExternalTerminal', true);
+
         const storedTarget = this._getStoredRunTerminalTarget();
-        const selectedTarget = this._resolveRunTerminalTarget(storedTarget, options);
+        const selectedTarget = this._resolveRunTerminalTarget(storedTarget, snapshot.targetOptions);
         if (storedTarget !== selectedTarget) {
             await this._context.globalState.update(RUN_TERMINAL_TARGET_KEY, selectedTarget);
         }
         this._ros.setRunTerminalTarget(selectedTarget);
-        this._setViewTitle(selectedTarget, options);
+        this._setViewTitle(selectedTarget, snapshot.targetOptions);
 
         this._view?.webview.postMessage({
             command: PMToWebviewCommand.ENVIRONMENT_DIALOG_STATE,
-            report,
+            report: snapshot.report,
             target: selectedTarget,
-            targetOptions: options,
+            targetOptions: snapshot.targetOptions,
             autoLaunchInExternalTerminal,
         });
     }
 
     private async _showEnvironmentInfo() {
         try {
-            await this._sendEnvironmentDialogState();
+            await this._sendEnvironmentDialogState(true);
         } catch (error) {
             const message = error instanceof Error ? error.message : String(error);
             vscode.window.showErrorMessage(`Failed to collect environment info: ${message}`);
@@ -349,7 +483,10 @@ export class PackageManagerViewProvider implements vscode.WebviewViewProvider {
     private async _setRunTerminalTarget(target: string) {
         const requested = String(target || '').trim() || 'auto';
         try {
-            const options = await this._ros.listRunTerminalTargets();
+            const cache = await this._ensureEnvironmentDialogCache();
+            const options = cache?.targetOptions?.length
+                ? cache.targetOptions
+                : await this._ros.listRunTerminalTargets();
             const selected = this._resolveRunTerminalTarget(requested, options);
             await this._context.globalState.update(RUN_TERMINAL_TARGET_KEY, selected);
             this._ros.setRunTerminalTarget(selected);
@@ -461,8 +598,31 @@ export class PackageManagerViewProvider implements vscode.WebviewViewProvider {
         for (const [path, args] of Object.entries(legacyArgs)) {
             if (!launchArgConfigs[path]) {
                 launchArgConfigs[path] = {
-                    configs: [{ id: 'default', name: 'default', args }],
+                    configs: [{ id: 'default', name: 'default', args, runTarget: 'auto' }],
                 };
+                migrated = true;
+            }
+        }
+
+        for (const [argsKey, configSet] of Object.entries(launchArgConfigs)) {
+            const existing = Array.isArray(configSet?.configs) ? configSet.configs : [];
+            if (!existing.length) {
+                launchArgConfigs[argsKey] = {
+                    configs: [{ id: 'default', name: 'default', args: '', runTarget: 'auto' }],
+                };
+                migrated = true;
+                continue;
+            }
+
+            const normalized = existing.map((config, index) => {
+                const id = String(config?.id || `cfg-${index + 1}`).trim() || `cfg-${index + 1}`;
+                const name = String(config?.name || '').trim() || (id === 'default' ? 'default' : 'config');
+                const args = String(config?.args || '').trim();
+                const runTarget = this._normalizeRunTerminalTargetId(config?.runTarget);
+                return { id, name, args, runTarget };
+            });
+            if (JSON.stringify(normalized) !== JSON.stringify(existing)) {
+                launchArgConfigs[argsKey] = { configs: normalized };
                 migrated = true;
             }
         }
@@ -508,6 +668,7 @@ export class PackageManagerViewProvider implements vscode.WebviewViewProvider {
         path: string,
         argsOverride?: string,
         argsNameOverride?: string,
+        runTargetOverride?: string,
     ) {
         if (!pkg || !file) {
             return;
@@ -517,7 +678,13 @@ export class PackageManagerViewProvider implements vscode.WebviewViewProvider {
             : undefined;
 
         const argsLabel = argsNameOverride ?? undefined;
+        const normalizedRunTarget = this._normalizeRunTerminalTargetId(runTargetOverride);
+        const effectiveRunTarget = normalizedRunTarget !== 'auto' ? normalizedRunTarget : undefined;
 
+        if (effectiveRunTarget) {
+            this._ros.launchFile(pkg, file, args, path, argsLabel, effectiveRunTarget);
+            return;
+        }
         this._ros.launchFile(pkg, file, args, path, argsLabel);
     }
 
@@ -527,6 +694,7 @@ export class PackageManagerViewProvider implements vscode.WebviewViewProvider {
         argsOverride?: string,
         argsNameOverride?: string,
         sourcePath?: string,
+        runTargetOverride?: string,
     ) {
         if (!pkg || !executable) {
             return;
@@ -536,6 +704,12 @@ export class PackageManagerViewProvider implements vscode.WebviewViewProvider {
             : '';
         const argsLabel = argsNameOverride?.trim() ? argsNameOverride : undefined;
         const nodePath = sourcePath?.trim() ? sourcePath : undefined;
+        const normalizedRunTarget = this._normalizeRunTerminalTargetId(runTargetOverride);
+        const effectiveRunTarget = normalizedRunTarget !== 'auto' ? normalizedRunTarget : undefined;
+        if (effectiveRunTarget) {
+            this._ros.runNode(pkg, executable, args, nodePath, argsLabel, effectiveRunTarget);
+            return;
+        }
         this._ros.runNode(pkg, executable, args, nodePath, argsLabel);
     }
 
@@ -585,6 +759,7 @@ export class PackageManagerViewProvider implements vscode.WebviewViewProvider {
                 id: c.id,
                 name: c.name?.trim() || 'config',
                 args: c.args?.trim() || '',
+                runTarget: this._normalizeRunTerminalTargetId(c.runTarget),
             })),
         };
 
@@ -733,6 +908,10 @@ export class PackageManagerViewProvider implements vscode.WebviewViewProvider {
 
                     <label for="configName">Config name</label>
                     <input type="text" id="configName" placeholder="default" />
+
+                    <label for="configRunTarget">Run terminal</label>
+                    <select id="configRunTarget"></select>
+                    <div id="configRunTargetDescription" class="text-muted text-sm mb"></div>
 
             <label for="argsInput">Arguments</label>
             <input type="text" id="argsInput" placeholder="use_sim_time:=true namespace:=robot1" />

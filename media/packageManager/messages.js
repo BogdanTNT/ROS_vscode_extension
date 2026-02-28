@@ -6,6 +6,7 @@
         toHost: Object.freeze({
             CREATE_PACKAGE: 'createPackage',
             REFRESH_PACKAGES: 'refreshPackages',
+            REQUEST_ENV_DIALOG_STATE: 'requestEnvironmentDialogState',
             SHOW_ENV_INFO: 'showEnvironmentInfo',
             SET_RUN_TERMINAL_TARGET: 'setRunTerminalTarget',
             LOAD_OTHER_PACKAGES: 'loadOtherPackages',

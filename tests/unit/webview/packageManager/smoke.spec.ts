@@ -34,12 +34,13 @@ describe('webview helper smoke', () => {
             scriptUris,
         );
 
-        expect(html).toContain("content=\"default-src 'none';");
-        expect(html).toContain("style-src vscode-webview://abc123 'unsafe-inline';");
-        expect(html).toContain('webview:///tmp/ros-dev-toolkit-ext/media/style.css');
-        expect(html).toContain('webview:///tmp/ros-dev-toolkit-ext/media/legacy.js');
-        expect(html).toContain('webview:///tmp/ros-dev-toolkit-ext/media/shared.js');
-        expect(html).toContain('webview:///tmp/ros-dev-toolkit-ext/media/page.js');
+        const normalizedHtml = html.replace(/\\/g, '/');
+        expect(normalizedHtml).toContain("content=\"default-src 'none';");
+        expect(normalizedHtml).toContain("style-src vscode-webview://abc123 'unsafe-inline';");
+        expect(normalizedHtml).toContain('webview:///tmp/ros-dev-toolkit-ext/media/style.css');
+        expect(normalizedHtml).toContain('webview:///tmp/ros-dev-toolkit-ext/media/legacy.js');
+        expect(normalizedHtml).toContain('webview:///tmp/ros-dev-toolkit-ext/media/shared.js');
+        expect(normalizedHtml).toContain('webview:///tmp/ros-dev-toolkit-ext/media/page.js');
         expect(html).toContain('<div id="root">Package manager</div>');
         expect(html).toContain('window.__pmBoot = true;');
 
