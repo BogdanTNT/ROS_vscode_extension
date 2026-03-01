@@ -92,7 +92,7 @@ export class NodeVisualizerViewProvider implements vscode.WebviewViewProvider {
     private _connectionsRefreshInFlight = false;
     private _queuedConnectionsRefresh = false;
     private _prefs: NodeVisualizerPrefs;
-    private _lastScope: RefreshScope = { nodes: true, topics: true, services: true, actions: true, parameters: true };
+    private _lastScope: RefreshScope;
     private _lastRefreshMeta: RefreshMetaState = {
         autoRefreshIntervalMs: DEFAULT_NODE_VISUALIZER_AUTO_REFRESH_INTERVAL_MS,
         stale: { nodes: false, topics: false, services: false, actions: false, parameters: false },
@@ -108,6 +108,7 @@ export class NodeVisualizerViewProvider implements vscode.WebviewViewProvider {
     ) {
         this._prefs = this._loadPrefs();
         this._autoRefreshEnabled = this._prefs.autoRefreshEnabled;
+        this._lastScope = this._buildScopeFromPrefs(this._prefs);
         this._lastRefreshMeta.autoRefreshIntervalMs = this._getAutoRefreshIntervalMs();
     }
 
@@ -122,8 +123,6 @@ export class NodeVisualizerViewProvider implements vscode.WebviewViewProvider {
             enableScripts: true,
             localResourceRoots: [this._extensionUri],
         };
-
-        webviewView.webview.html = this._getHtml(webviewView.webview);
 
         webviewView.webview.onDidReceiveMessage(async (msg) => {
             switch (msg.command) {
@@ -197,6 +196,8 @@ export class NodeVisualizerViewProvider implements vscode.WebviewViewProvider {
             }
         });
 
+        webviewView.webview.html = this._getHtml(webviewView.webview);
+
         webviewView.onDidChangeVisibility(() => {
             this._syncAutoRefresh();
         });
@@ -226,7 +227,10 @@ export class NodeVisualizerViewProvider implements vscode.WebviewViewProvider {
             // in-flight, kick off an immediate refresh.  The finally block
             // of _sendGraphData will schedule the next one.
             if (!this._autoRefreshTimer && !this._refreshInFlight) {
-                void this._sendGraphData({ autoRefreshStartedAt: Date.now() });
+                void this._sendGraphData({
+                    scope: this._lastScope,
+                    autoRefreshStartedAt: Date.now(),
+                });
             }
         } else {
             this._cancelScheduledRefresh();
@@ -898,6 +902,20 @@ export class NodeVisualizerViewProvider implements vscode.WebviewViewProvider {
         };
     }
 
+    private _buildScopeFromPrefs(prefs: NodeVisualizerPrefs): RefreshScope {
+        return {
+            nodes: prefs.showNodes,
+            topics: prefs.showTopics,
+            services: prefs.showServices,
+            actions: prefs.showActions,
+            parameters: prefs.showParameters,
+        };
+    }
+
+    private _checkedAttr(value: boolean): string {
+        return value ? 'checked' : '';
+    }
+
     private _getUiPreferences(): WebviewUiPreferences {
         return loadWebviewUiPreferences(this._context.globalState);
     }
@@ -954,6 +972,12 @@ export class NodeVisualizerViewProvider implements vscode.WebviewViewProvider {
     }
 
     private _getHtml(webview: vscode.Webview): string {
+        const autoRefreshChecked = this._checkedAttr(this._prefs.autoRefreshEnabled);
+        const nodesChecked = this._checkedAttr(this._prefs.showNodes);
+        const topicsChecked = this._checkedAttr(this._prefs.showTopics);
+        const servicesChecked = this._checkedAttr(this._prefs.showServices);
+        const actionsChecked = this._checkedAttr(this._prefs.showActions);
+        const parametersChecked = this._checkedAttr(this._prefs.showParameters);
         const body = /* html */ `
 <div id="status" class="mb nv-status text-sm">Waiting for data…</div>
 
@@ -985,23 +1009,23 @@ export class NodeVisualizerViewProvider implements vscode.WebviewViewProvider {
 
 <div id="overviewToggleBar" class="nv-layer-row mb">
     <label class="nv-layer">
-        <input type="checkbox" id="toggleNodes" checked />
+        <input type="checkbox" id="toggleNodes" ${nodesChecked} />
         <span>Nodes</span>
     </label>
     <label class="nv-layer">
-        <input type="checkbox" id="toggleTopics" checked />
+        <input type="checkbox" id="toggleTopics" ${topicsChecked} />
         <span>Topics</span>
     </label>
     <label class="nv-layer">
-        <input type="checkbox" id="toggleServices" checked />
+        <input type="checkbox" id="toggleServices" ${servicesChecked} />
         <span>Services</span>
     </label>
     <label class="nv-layer">
-        <input type="checkbox" id="toggleActions" checked />
+        <input type="checkbox" id="toggleActions" ${actionsChecked} />
         <span>Actions</span>
     </label>
     <label class="nv-layer">
-        <input type="checkbox" id="toggleParameters" checked />
+        <input type="checkbox" id="toggleParameters" ${parametersChecked} />
         <span>Parameters</span>
     </label>
 </div>
@@ -1020,7 +1044,7 @@ export class NodeVisualizerViewProvider implements vscode.WebviewViewProvider {
         </button>
         <button id="btnRefresh" title="Refresh all graph data">↻ Refresh All</button>
         <label class="nv-layer">
-            <input type="checkbox" id="toggleAutoRefresh" />
+            <input type="checkbox" id="toggleAutoRefresh" ${autoRefreshChecked} />
             <span>Auto refresh</span>
         </label>
         <label class="nv-layer hidden" id="autoRefreshIntervalWrap">

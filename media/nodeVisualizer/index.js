@@ -1191,6 +1191,7 @@
     }
 
     function applyPreferences(prefs) {
+        const previousScope = computeCurrentScope();
         dom.toggleAutoRefresh.checked = prefs.autoRefreshEnabled === true;
         dom.toggleNodes.checked = prefs.showNodes !== false;
         dom.toggleTopics.checked = prefs.showTopics !== false;
@@ -1198,6 +1199,10 @@
         dom.toggleActions.checked = prefs.showActions !== false;
         dom.toggleParameters.checked = prefs.showParameters !== false;
         updateAutoRefreshIntervalControls();
+        const nextScope = computeCurrentScope();
+        if (!scopesEqual(previousScope, nextScope)) {
+            sendViewScope();
+        }
     }
 
     function persistOverviewToggleState() {
@@ -2206,6 +2211,14 @@
             actions: view === viewKinds.ACTIONS,
             parameters: view === viewKinds.PARAMETERS,
         };
+    }
+
+    function scopesEqual(left, right) {
+        return left.nodes === right.nodes
+            && left.topics === right.topics
+            && left.services === right.services
+            && left.actions === right.actions
+            && left.parameters === right.parameters;
     }
 
     /**
