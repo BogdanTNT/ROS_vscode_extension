@@ -847,6 +847,358 @@ export class RosWorkspace {
     }
 
     /**
+     * Create a launch file in an existing workspace package and ensure it can
+     * be installed by the package build system.
+     */
+    async createLaunchFileInPackage(
+        packageName: string,
+        launchName: string,
+        packagePathHint?: string,
+    ): Promise<boolean> {
+        const safePackageName = this.sanitizeRosPackageName(packageName);
+        if (!safePackageName) {
+            vscode.window.showErrorMessage(
+                'Invalid package name. Use only letters, numbers, and underscores, and start with a letter.',
+            );
+            return false;
+        }
+
+        const safeLaunchFileName = this.normalizeLaunchFileName(launchName);
+        if (!safeLaunchFileName) {
+            vscode.window.showErrorMessage(
+                'Invalid launch file name. Use letters, numbers, underscores, dashes, and dots only.',
+            );
+            return false;
+        }
+
+        const pkgDir = this.resolveWorkspacePackagePath(safePackageName, packagePathHint);
+        if (!pkgDir) {
+            vscode.window.showErrorMessage(`Package folder not found for "${safePackageName}" in this workspace.`);
+            return false;
+        }
+
+        const setupPyPath = path.join(pkgDir, 'setup.py');
+        const setupCfgPath = path.join(pkgDir, 'setup.cfg');
+        const cmakePath = path.join(pkgDir, 'CMakeLists.txt');
+        const hasPythonBuildFiles = fs.existsSync(setupPyPath) || fs.existsSync(setupCfgPath);
+        const hasCmakeBuildFile = fs.existsSync(cmakePath);
+
+        if (!hasPythonBuildFiles && !hasCmakeBuildFile) {
+            vscode.window.showErrorMessage(
+                `Package "${safePackageName}" is not supported for create-launch (missing setup.py/setup.cfg and CMakeLists.txt).`,
+            );
+            return false;
+        }
+
+        const launchDir = path.join(pkgDir, 'launch');
+        const launchFilePath = path.resolve(path.join(launchDir, safeLaunchFileName));
+        if (!this.isPathInsideDirectory(launchFilePath, pkgDir)) {
+            vscode.window.showErrorMessage('Launch file path must stay inside the selected package.');
+            return false;
+        }
+
+        try {
+            fs.mkdirSync(launchDir, { recursive: true });
+        } catch (err) {
+            vscode.window.showErrorMessage(`Failed to create launch directory: ${err}`);
+            return false;
+        }
+
+        if (!fs.existsSync(launchFilePath)) {
+            const template = this.buildLaunchFileTemplate(safePackageName, safeLaunchFileName);
+            try {
+                fs.writeFileSync(launchFilePath, template, 'utf8');
+            } catch (err) {
+                vscode.window.showErrorMessage(`Failed to create launch file: ${err}`);
+                return false;
+            }
+        }
+
+        if (hasPythonBuildFiles) {
+            if (fs.existsSync(setupPyPath)) {
+                try {
+                    const setupPy = fs.readFileSync(setupPyPath, 'utf8');
+                    const updated = this.ensurePythonLaunchInstallInSetupPy(setupPy, safePackageName);
+                    if (updated !== setupPy) {
+                        fs.writeFileSync(setupPyPath, updated, 'utf8');
+                    }
+                } catch (err) {
+                    vscode.window.showErrorMessage(`Failed to update setup.py: ${err}`);
+                    return false;
+                }
+            } else if (fs.existsSync(setupCfgPath)) {
+                try {
+                    const setupCfg = fs.readFileSync(setupCfgPath, 'utf8');
+                    const updated = this.ensurePythonLaunchInstallInSetupCfg(setupCfg, safePackageName);
+                    if (updated !== setupCfg) {
+                        fs.writeFileSync(setupCfgPath, updated, 'utf8');
+                    }
+                } catch (err) {
+                    vscode.window.showErrorMessage(`Failed to update setup.cfg: ${err}`);
+                    return false;
+                }
+            }
+        }
+
+        if (hasCmakeBuildFile) {
+            try {
+                const cmake = fs.readFileSync(cmakePath, 'utf8');
+                const updated = this.ensureLaunchDirectoryInstalledInCmake(cmake);
+                if (updated !== cmake) {
+                    fs.writeFileSync(cmakePath, updated, 'utf8');
+                }
+            } catch (err) {
+                vscode.window.showErrorMessage(`Failed to update CMakeLists.txt: ${err}`);
+                return false;
+            }
+        }
+
+        const uri = vscode.Uri.file(launchFilePath);
+        await vscode.window.showTextDocument(uri, { preview: false });
+        return true;
+    }
+
+    async removeLaunchFileFromPackage(
+        packageName: string,
+        launchName: string,
+        packagePathHint?: string,
+        launchPathHint?: string,
+    ): Promise<boolean> {
+        const safePackageName = this.sanitizeRosPackageName(packageName);
+        if (!safePackageName) {
+            vscode.window.showErrorMessage(
+                'Invalid package name. Use only letters, numbers, and underscores, and start with a letter.',
+            );
+            return false;
+        }
+
+        const safeLaunchFileName = this.sanitizeExistingLaunchFileName(launchName);
+        if (!safeLaunchFileName) {
+            vscode.window.showErrorMessage(
+                'Invalid launch file name. Use a supported launch file with a valid extension.',
+            );
+            return false;
+        }
+
+        const pkgDir = this.resolveWorkspacePackagePath(safePackageName, packagePathHint);
+        if (!pkgDir) {
+            vscode.window.showErrorMessage(`Package folder not found for "${safePackageName}" in this workspace.`);
+            return false;
+        }
+
+        const setupPyPath = path.join(pkgDir, 'setup.py');
+        const setupCfgPath = path.join(pkgDir, 'setup.cfg');
+        const cmakePath = path.join(pkgDir, 'CMakeLists.txt');
+        const hasPythonBuildFiles = fs.existsSync(setupPyPath) || fs.existsSync(setupCfgPath);
+        const hasCmakeBuildFile = fs.existsSync(cmakePath);
+
+        if (!hasPythonBuildFiles && !hasCmakeBuildFile) {
+            vscode.window.showErrorMessage(
+                `Package "${safePackageName}" is not supported for remove-launch (missing setup.py/setup.cfg and CMakeLists.txt).`,
+            );
+            return false;
+        }
+
+        const launchCandidates = this.resolveSafeLaunchFileCandidates(
+            pkgDir,
+            launchPathHint,
+            [safeLaunchFileName],
+        );
+        for (const launchCandidate of launchCandidates) {
+            if (this.tryDeleteSourceFile(launchCandidate)) {
+                return true;
+            }
+        }
+
+        vscode.window.showWarningMessage(
+            `Launch file "${safeLaunchFileName}" was not found in package "${safePackageName}".`,
+        );
+        return false;
+    }
+
+    private normalizeLaunchFileName(name: string): string | undefined {
+        const normalized = String(name || '').trim().replace(/\s+/g, '_');
+        if (!normalized) {
+            return undefined;
+        }
+        if (normalized.includes('/') || normalized.includes('\\')) {
+            return undefined;
+        }
+        if (!/^[A-Za-z0-9][A-Za-z0-9_.-]*$/.test(normalized)) {
+            return undefined;
+        }
+
+        const normalizedLower = normalized.toLowerCase();
+        const knownSuffixes = ['.launch.py', '.launch.xml', '.launch.yaml', '.launch.yml', '.py', '.xml', '.launch', '.yaml', '.yml'];
+        if (knownSuffixes.some((suffix) => normalizedLower.endsWith(suffix))) {
+            const ext = path.extname(normalizedLower);
+            const allowedExt = new Set(['.py', '.xml', '.launch', '.yaml', '.yml']);
+            return allowedExt.has(ext) ? normalized : undefined;
+        }
+
+        if (path.extname(normalized)) {
+            return undefined;
+        }
+        return `${normalized}.launch.py`;
+    }
+
+    private sanitizeExistingLaunchFileName(name: string): string | undefined {
+        const normalized = String(name || '').trim().replace(/\s+/g, '_');
+        if (!normalized) {
+            return undefined;
+        }
+        if (normalized.includes('/') || normalized.includes('\\')) {
+            return undefined;
+        }
+        if (!/^[A-Za-z0-9][A-Za-z0-9_.-]*$/.test(normalized)) {
+            return undefined;
+        }
+        const allowedExt = new Set(['.py', '.xml', '.launch', '.yaml', '.yml']);
+        const ext = path.extname(normalized).toLowerCase();
+        if (!allowedExt.has(ext)) {
+            return undefined;
+        }
+        return normalized;
+    }
+
+    private buildLaunchFileTemplate(packageName: string, launchFileName: string): string {
+        const lower = launchFileName.toLowerCase();
+        if (lower.endsWith('.xml') || lower.endsWith('.launch')) {
+            return `<launch>
+  <!-- Add launch actions for package "${packageName}" here. -->
+</launch>
+`;
+        }
+
+        if (lower.endsWith('.yaml') || lower.endsWith('.yml')) {
+            return `launch:
+  # Add launch configuration for package "${packageName}" here.
+`;
+        }
+
+        return `from launch import LaunchDescription
+
+
+def generate_launch_description():
+    # Add actions for package "${packageName}" here.
+    return LaunchDescription([])
+`;
+    }
+
+    private ensurePythonLaunchInstallInSetupPy(setupPy: string, packageName: string): string {
+        let updated = setupPy;
+        const hasFromGlobImport = /^\s*from\s+glob\s+import\s+glob\b/m.test(updated);
+        if (!hasFromGlobImport) {
+            updated = `from glob import glob\n${updated}`;
+        }
+
+        const escapedPkgName = this.escapeRegex(packageName);
+        const hasLaunchDataFilesEntry = new RegExp(`['"]share/${escapedPkgName}/launch['"]`).test(updated);
+        if (hasLaunchDataFilesEntry) {
+            return updated;
+        }
+
+        const launchEntry = `        ('share/${packageName}/launch', glob('launch/*')),`;
+        const dataFilesBlockPattern = /(data_files\s*=\s*\[)([\s\S]*?)(\]\s*,)/m;
+        if (dataFilesBlockPattern.test(updated)) {
+            return updated.replace(
+                dataFilesBlockPattern,
+                (_full, prefix: string, body: string, suffix: string) => {
+                    const trimmedBody = body.replace(/\s*$/, '');
+                    const nextBody = trimmedBody
+                        ? `${trimmedBody}\n${launchEntry}\n`
+                        : `\n${launchEntry}\n`;
+                    return `${prefix}${nextBody}${suffix}`;
+                },
+            );
+        }
+
+        const setupCallPattern = /setup\s*\(\s*/m;
+        if (setupCallPattern.test(updated)) {
+            return updated.replace(
+                setupCallPattern,
+                (match) => `${match}data_files=[\n${launchEntry}\n    ],\n    `,
+            );
+        }
+        return updated;
+    }
+
+    private ensurePythonLaunchInstallInSetupCfg(setupCfg: string, packageName: string): string {
+        const lineEnding = setupCfg.includes('\r\n') ? '\r\n' : '\n';
+        const launchKey = `share/${packageName}/launch`;
+        const launchKeyPattern = new RegExp(`^\\s*${this.escapeRegex(launchKey)}\\s*=`, 'm');
+        if (launchKeyPattern.test(setupCfg)) {
+            return setupCfg;
+        }
+
+        const lines = setupCfg.split(/\r?\n/);
+        const dataFilesSectionIndex = lines.findIndex((line) => /^\s*\[options\.data_files\]\s*$/i.test(line));
+        if (dataFilesSectionIndex < 0) {
+            const trimmed = setupCfg.trimEnd();
+            const separator = trimmed ? `${lineEnding}${lineEnding}` : '';
+            return `${trimmed}${separator}[options.data_files]${lineEnding}${launchKey} =${lineEnding}    launch/*${lineEnding}`;
+        }
+
+        let insertIndex = lines.length;
+        for (let idx = dataFilesSectionIndex + 1; idx < lines.length; idx += 1) {
+            if (/^\s*\[.*\]\s*$/.test(lines[idx])) {
+                insertIndex = idx;
+                break;
+            }
+        }
+
+        lines.splice(
+            insertIndex,
+            0,
+            `${launchKey} =`,
+            '    launch/*',
+        );
+        return lines.join(lineEnding);
+    }
+
+    private ensureLaunchDirectoryInstalledInCmake(cmake: string): string {
+        const hasLaunchInstall = /install\s*\(\s*DIRECTORY\s+launch\b[\s\S]*?DESTINATION\s+share\s*\/\s*\$\{PROJECT_NAME\}[\s\S]*?\)/im.test(cmake);
+        if (hasLaunchInstall) {
+            return cmake;
+        }
+        const installBlock = [
+            'install(',
+            '  DIRECTORY launch',
+            '  DESTINATION share/${PROJECT_NAME}',
+            ')',
+        ].join('\n');
+        return this.insertBeforeAmentPackage(cmake, installBlock);
+    }
+
+    private resolveSafeLaunchFileCandidates(
+        packageDir: string,
+        launchPathHint: string | undefined,
+        launchFileNames: string[],
+    ): string[] {
+        const launchDir = path.join(packageDir, 'launch');
+        const candidates: string[] = [];
+        const addCandidate = (candidatePath: string) => {
+            if (!candidatePath) {
+                return;
+            }
+            const resolved = path.resolve(candidatePath);
+            if (!this.isPathInsideDirectory(resolved, launchDir)) {
+                return;
+            }
+            if (!candidates.includes(resolved)) {
+                candidates.push(resolved);
+            }
+        };
+
+        const trimmedHint = String(launchPathHint || '').trim();
+        if (trimmedHint) {
+            addCandidate(trimmedHint);
+        }
+        launchFileNames.forEach((fileName) => addCandidate(path.join(launchDir, fileName)));
+        return candidates;
+    }
+
+    /**
      * Add a new node to an existing workspace package.
      * Supports both ament_python (setup.py) and ament_cmake (CMakeLists.txt).
      */

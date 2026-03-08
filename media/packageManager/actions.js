@@ -76,6 +76,19 @@
             pkgPath,
             nodePath,
         }),
+        createLaunch: (pkg, launchName, pkgPath) => vscode.postMessage({
+            command: toHost.CREATE_LAUNCH,
+            pkg,
+            launchName,
+            pkgPath,
+        }),
+        removeLaunch: (pkg, launchName, pkgPath, launchPath) => vscode.postMessage({
+            command: toHost.REMOVE_LAUNCH,
+            pkg,
+            launchName,
+            pkgPath,
+            launchPath,
+        }),
         setLaunchArgConfigs: (argsKey, configs) => vscode.postMessage({
             command: toHost.SET_LAUNCH_ARG_CONFIGS,
             path: argsKey,

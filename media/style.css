@@ -351,12 +351,16 @@ button.small {
     display: flex;
     align-items: center;
     gap: 6px;
+    flex: 1 1 auto;
     min-width: 0;
 }
 
 .pkg-name {
+    flex: 1 1 auto;
     font-weight: 600;
     cursor: pointer;
+    min-width: 0;
+    text-align: center;
 }
 
 .pkg-toggle {
@@ -481,9 +485,14 @@ button.small {
 
 .node-open {
     flex: 1 1 auto;
+    min-width: 0;
     background: var(--input-bg);
     color: var(--text);
-    text-align: left;
+    text-align: center;
+    justify-content: center;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
 }
 
 .node-open.disabled {
@@ -519,9 +528,14 @@ button.small {
 
 .launch-open {
     flex: 1 1 auto;
+    min-width: 0;
     background: var(--input-bg);
     color: var(--text);
-    text-align: left;
+    text-align: center;
+    justify-content: center;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
 }
 
 .pin-btn {
@@ -546,6 +560,7 @@ button.small {
     display: inline-flex;
     gap: 4px;
     flex-wrap: wrap;
+    align-items: center;
 }
 
 .config-pill {

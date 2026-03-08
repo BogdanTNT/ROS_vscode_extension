@@ -66,7 +66,6 @@
         btnRefresh: document.getElementById('btnRefresh'),
         btnPublishTopic: document.getElementById('btnPublishTopic'),
         btnSendActionGoal: document.getElementById('btnSendActionGoal'),
-        btnRefetchSelected: document.getElementById('btnRefetchSelected'),
         toggleAutoRefresh: document.getElementById('toggleAutoRefresh'),
         autoRefreshIntervalWrap: document.getElementById('autoRefreshIntervalWrap'),
         autoRefreshIntervalSeconds: document.getElementById('autoRefreshIntervalSeconds'),
@@ -111,6 +110,14 @@
         actionGoalPayload: document.getElementById('actionGoalPayload'),
         actionGoalStatus: document.getElementById('actionGoalStatus'),
     };
+
+    function getRefetchSelectedButton() {
+        if (!(dom.detailsCard instanceof HTMLElement)) {
+            return null;
+        }
+        const button = dom.detailsCard.querySelector('#btnRefetchSelected');
+        return button instanceof HTMLButtonElement ? button : null;
+    }
 
     const emptyNodeInfo = Object.freeze({
         publishers: [],
@@ -651,7 +658,11 @@
             getRosSendGoalCommand(selectedAction?.name, selectedAction?.type),
             buttonDescriptions.openGoalModal,
         );
-        applyButtonTooltip(dom.btnRefetchSelected, getRefetchRosCommandForSelection(getSelectedEntityRef()), buttonDescriptions.refetchSelected);
+        applyButtonTooltip(
+            getRefetchSelectedButton(),
+            getRefetchRosCommandForSelection(getSelectedEntityRef()),
+            buttonDescriptions.refetchSelected,
+        );
         applyButtonTooltip(dom.btnClosePublishTopic, 'closePublishTopicModal', buttonDescriptions.closePublishModal);
         applyButtonTooltip(dom.btnCancelPublishTopic, 'closePublishTopicModal', buttonDescriptions.cancelPublishModal);
         applyButtonTooltip(
@@ -698,9 +709,6 @@
     });
     dom.btnSendActionGoal.addEventListener('click', () => {
         openActionGoalModal();
-    });
-    dom.btnRefetchSelected?.addEventListener('click', () => {
-        refetchSelectedDetails();
     });
 
     dom.toggleAutoRefresh.addEventListener('change', () => {
@@ -779,6 +787,12 @@
     dom.detailsCard?.addEventListener('click', (event) => {
         const target = event.target;
         if (!(target instanceof Element)) {
+            return;
+        }
+
+        const refetchBtn = target.closest('#btnRefetchSelected');
+        if (refetchBtn) {
+            refetchSelectedDetails();
             return;
         }
 
@@ -1355,7 +1369,7 @@
     }
 
     function updateRefetchSelectedButtonState() {
-        const button = dom.btnRefetchSelected;
+        const button = getRefetchSelectedButton();
         if (!button) {
             return;
         }
@@ -2700,6 +2714,18 @@
         );
     }
 
+    function buildDetailsRefetchButton() {
+        const command = getRefetchRosCommandForSelection(getSelectedEntityRef());
+        const description = buttonDescriptions.refetchSelected;
+        return (
+            '<button class="secondary small nv-details-action-btn hidden" id="btnRefetchSelected" type="button" disabled ' +
+            buildTooltipDataAttrs(command, description) +
+            ' aria-label="' + escapeHtml(buildButtonAriaLabel(command, description)) + '">' +
+            REFRESH_ICON + ' Refetch Selected' +
+            '</button>'
+        );
+    }
+
     function showEntityDetails(kind, name, targetEl) {
         if (kind === viewKinds.TOPICS) {
             showTopicDetails(name, targetEl);
@@ -3002,7 +3028,7 @@
 
     function renderDetailsBody(targetEl, headerHtml, bodyHtml, options = {}) {
         const hasSelection = !!state.selectedKey;
-        const headerActionsHtml = String(options.headerActionsHtml || '');
+        const headerActionsHtml = buildDetailsRefetchButton() + String(options.headerActionsHtml || '');
         const clearCommand = 'clearSelectedDetails';
         const clearDescription = buttonDescriptions.clearSelection;
         targetEl.innerHTML =

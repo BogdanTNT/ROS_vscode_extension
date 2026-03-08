@@ -24,6 +24,8 @@
             TOGGLE_BUILD_CHECK: 'toggleBuildCheck',
             ADD_NODE: 'addNode',
             REMOVE_NODE: 'removeNode',
+            CREATE_LAUNCH: 'createLaunch',
+            REMOVE_LAUNCH: 'removeLaunch',
         }),
         toWebview: Object.freeze({
             PACKAGE_LIST: 'packageList',
@@ -37,6 +39,8 @@
             BUILD_CHECK_STATE: 'buildCheckState',
             ADD_NODE_DONE: 'addNodeDone',
             REMOVE_NODE_DONE: 'removeNodeDone',
+            CREATE_LAUNCH_DONE: 'createLaunchDone',
+            REMOVE_LAUNCH_DONE: 'removeLaunchDone',
         }),
     });
 })();

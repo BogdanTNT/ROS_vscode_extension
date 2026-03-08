@@ -245,6 +245,30 @@
                 }
                 break;
             }
+            case toWebview.CREATE_LAUNCH_DONE: {
+                const { dom: d4 } = window.PM;
+                d4.btnCreateLaunch.disabled = false;
+                d4.createLaunchStatus.innerHTML = msg.success
+                    ? '<span class="badge success">Created launch file</span>'
+                    : '<span class="badge error">Failed</span>';
+                if (msg.success) {
+                    actions.refreshPackages();
+                    window.PM.handlers.closeCreateLaunchModal();
+                }
+                break;
+            }
+            case toWebview.REMOVE_LAUNCH_DONE: {
+                const { dom: d5 } = window.PM;
+                d5.btnRemoveLaunch.disabled = false;
+                d5.removeLaunchStatus.innerHTML = msg.success
+                    ? '<span class="badge success">Removed launch file</span>'
+                    : '<span class="badge error">Failed</span>';
+                if (msg.success) {
+                    actions.refreshPackages();
+                    window.PM.handlers.closeRemoveLaunchModal();
+                }
+                break;
+            }
             case toWebview.REMOVE_NODE_DONE: {
                 const { dom: d3 } = window.PM;
                 d3.btnRemoveNode.disabled = false;

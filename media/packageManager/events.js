@@ -76,6 +76,7 @@
     const normalizePackageName = (rawName) => String(rawName || '').trim().replace(/\s+/g, '_');
     const normalizeNodeName = (rawName) => String(rawName || '').trim().replace(/\s+/g, '_');
     const normalizeNodeTopic = (rawTopic) => String(rawTopic || '').trim().replace(/\s+/g, '_');
+    const normalizeLaunchName = (rawName) => String(rawName || '').trim().replace(/\s+/g, '_');
     const nodeTemplateTopicSuggestions = Object.freeze({
         publisher: 'chatter',
         subscriber: 'chatter',
@@ -154,6 +155,31 @@
 
         dom.addNodeTopicNormalizedHint.textContent = 'Topic will be created as: ' + normalizedTopic;
         dom.addNodeTopicNormalizedHint.classList.remove('hidden');
+    };
+
+    const updateLaunchNamePreview = () => {
+        if (!dom.createLaunchName || !dom.createLaunchNameNormalizedHint) {
+            return;
+        }
+
+        const rawName = String(dom.createLaunchName.value || '');
+        const normalizedName = normalizeLaunchName(rawName);
+
+        if (!normalizedName) {
+            dom.createLaunchNameNormalizedHint.textContent = 'Spaces are converted to "_" in launch file names.';
+            dom.createLaunchNameNormalizedHint.classList.remove('hidden');
+            return;
+        }
+
+        if (rawName.trim() !== normalizedName) {
+            dom.createLaunchNameNormalizedHint.textContent =
+                'Spaces are converted to "_". Launch will be created as: ' + normalizedName;
+            dom.createLaunchNameNormalizedHint.classList.remove('hidden');
+            return;
+        }
+
+        dom.createLaunchNameNormalizedHint.textContent = 'Launch will be created as: ' + normalizedName;
+        dom.createLaunchNameNormalizedHint.classList.remove('hidden');
     };
 
     const updateNodeTemplateFields = (forceSuggestion = false) => {
@@ -957,6 +983,104 @@
     }
     bindModalEscapeClose(dom.addNodeModal, closeAddNodeModal);
 
+    const openCreateLaunchModal = (pkgName, pkgPath) => {
+        if (!pkgName) {
+            return;
+        }
+        dom.createLaunchPkg.value = pkgName;
+        dom.createLaunchModal.dataset.pkgPath = typeof pkgPath === 'string' ? pkgPath : '';
+        dom.createLaunchName.value = '';
+        dom.createLaunchStatus.className = 'mt hidden';
+        dom.createLaunchStatus.textContent = '';
+        updateLaunchNamePreview();
+        dom.createLaunchModal.classList.remove('hidden');
+        dom.createLaunchName.focus();
+    };
+
+    const closeCreateLaunchModal = () => {
+        dom.createLaunchModal.dataset.pkgPath = '';
+        dom.createLaunchModal.classList.add('hidden');
+    };
+
+    const submitCreateLaunch = () => {
+        const pkg = String(dom.createLaunchPkg?.value || '').trim();
+        const launchName = normalizeLaunchName(dom.createLaunchName?.value || '');
+        const pkgPath = String(dom.createLaunchModal?.dataset?.pkgPath || '').trim();
+        if (!pkg || !launchName) {
+            return;
+        }
+
+        dom.createLaunchName.value = launchName;
+        updateLaunchNamePreview();
+        dom.btnCreateLaunch.disabled = true;
+        dom.createLaunchStatus.className = 'mt';
+        dom.createLaunchStatus.innerHTML = '<span class="spinner"></span> Creating launch file...';
+        actions.createLaunch(pkg, launchName, pkgPath);
+    };
+
+    dom.btnCreateLaunch.addEventListener('click', submitCreateLaunch);
+    dom.btnCancelCreateLaunch.addEventListener('click', closeCreateLaunchModal);
+    dom.btnCloseCreateLaunch.addEventListener('click', closeCreateLaunchModal);
+    dom.createLaunchBackdrop.addEventListener('click', closeCreateLaunchModal);
+    if (dom.createLaunchName) {
+        dom.createLaunchName.addEventListener('input', updateLaunchNamePreview);
+    }
+    if (uiInteractions?.bindModalEnterConfirm) {
+        uiInteractions.bindModalEnterConfirm({
+            modal: dom.createLaunchModal,
+            confirmButton: dom.btnCreateLaunch,
+        });
+    }
+    bindModalEscapeClose(dom.createLaunchModal, closeCreateLaunchModal);
+
+    const openRemoveLaunchModal = (pkgName, launchName, pkgPath, launchPath) => {
+        if (!pkgName || !launchName) {
+            return;
+        }
+        dom.removeLaunchPkg.value = pkgName;
+        dom.removeLaunchName.value = launchName;
+        dom.removeLaunchPath.value = launchPath || '(not detected)';
+        dom.removeLaunchModal.dataset.pkgPath = typeof pkgPath === 'string' ? pkgPath : '';
+        dom.removeLaunchModal.dataset.launchPath = typeof launchPath === 'string' ? launchPath : '';
+        dom.removeLaunchStatus.className = 'mt hidden';
+        dom.removeLaunchStatus.textContent = '';
+        dom.removeLaunchModal.classList.remove('hidden');
+        dom.btnRemoveLaunch.focus();
+    };
+
+    const closeRemoveLaunchModal = () => {
+        dom.removeLaunchModal.dataset.pkgPath = '';
+        dom.removeLaunchModal.dataset.launchPath = '';
+        dom.removeLaunchModal.classList.add('hidden');
+    };
+
+    const submitRemoveLaunch = () => {
+        const pkg = String(dom.removeLaunchPkg?.value || '').trim();
+        const launchName = String(dom.removeLaunchName?.value || '').trim();
+        const pkgPath = String(dom.removeLaunchModal?.dataset?.pkgPath || '').trim();
+        const launchPath = String(dom.removeLaunchModal?.dataset?.launchPath || '').trim();
+        if (!pkg || !launchName) {
+            return;
+        }
+
+        dom.btnRemoveLaunch.disabled = true;
+        dom.removeLaunchStatus.className = 'mt';
+        dom.removeLaunchStatus.innerHTML = '<span class="spinner"></span> Removing launch file...';
+        actions.removeLaunch(pkg, launchName, pkgPath, launchPath);
+    };
+
+    dom.btnRemoveLaunch.addEventListener('click', submitRemoveLaunch);
+    dom.btnCancelRemoveLaunch.addEventListener('click', closeRemoveLaunchModal);
+    dom.btnCloseRemoveLaunch.addEventListener('click', closeRemoveLaunchModal);
+    dom.removeLaunchBackdrop.addEventListener('click', closeRemoveLaunchModal);
+    if (uiInteractions?.bindModalEnterConfirm) {
+        uiInteractions.bindModalEnterConfirm({
+            modal: dom.removeLaunchModal,
+            confirmButton: dom.btnRemoveLaunch,
+        });
+    }
+    bindModalEscapeClose(dom.removeLaunchModal, closeRemoveLaunchModal);
+
     // ── Remove Node modal ──────────────────────────────────────
     const openRemoveNodeModal = (pkgName, nodeName, pkgPath, nodePath) => {
         if (!pkgName || !nodeName) {
@@ -1016,6 +1140,10 @@
         renderEnvironmentModalState,
         openAddNodeModal,
         closeAddNodeModal,
+        openCreateLaunchModal,
+        closeCreateLaunchModal,
+        openRemoveLaunchModal,
+        closeRemoveLaunchModal,
         openRemoveNodeModal,
         closeRemoveNodeModal,
         syncArgsConfigEditor,

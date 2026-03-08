@@ -128,6 +128,12 @@ export class PackageManagerViewProvider implements vscode.WebviewViewProvider {
                 case PMToHostCommand.REMOVE_NODE:
                     await this._handleRemoveNode(msg.pkg, msg.nodeName, msg.pkgPath, msg.nodePath);
                     break;
+                case PMToHostCommand.CREATE_LAUNCH:
+                    await this._handleCreateLaunch(msg.pkg, msg.launchName, msg.pkgPath);
+                    break;
+                case PMToHostCommand.REMOVE_LAUNCH:
+                    await this._handleRemoveLaunch(msg.pkg, msg.launchName, msg.pkgPath, msg.launchPath);
+                    break;
                 case 'requestUiPreferences':
                     this._sendUiPreferences();
                     break;
@@ -276,6 +282,79 @@ export class PackageManagerViewProvider implements vscode.WebviewViewProvider {
         } finally {
             this._view?.webview.postMessage({
                 command: PMToWebviewCommand.REMOVE_NODE_DONE,
+                success: ok,
+            });
+        }
+
+        if (ok) {
+            await this._sendPackageList();
+        }
+    }
+
+    private async _handleCreateLaunch(
+        pkg: string,
+        launchName: string,
+        pkgPath?: string,
+    ) {
+        if (!pkg || !launchName) {
+            this._view?.webview.postMessage({
+                command: PMToWebviewCommand.CREATE_LAUNCH_DONE,
+                success: false,
+            });
+            return;
+        }
+
+        let ok = false;
+        try {
+            ok = await this._ros.createLaunchFileInPackage(pkg, launchName, pkgPath);
+            if (ok) {
+                vscode.window.showInformationMessage(
+                    `Launch file "${launchName}" created in package "${pkg}".`,
+                );
+            }
+        } catch (error) {
+            const message = error instanceof Error ? error.message : String(error);
+            vscode.window.showErrorMessage(`Failed to create launch file "${launchName}": ${message}`);
+        } finally {
+            this._view?.webview.postMessage({
+                command: PMToWebviewCommand.CREATE_LAUNCH_DONE,
+                success: ok,
+            });
+        }
+
+        if (ok) {
+            await this._sendPackageList();
+        }
+    }
+
+    private async _handleRemoveLaunch(
+        pkg: string,
+        launchName: string,
+        pkgPath?: string,
+        launchPath?: string,
+    ) {
+        if (!pkg || !launchName) {
+            this._view?.webview.postMessage({
+                command: PMToWebviewCommand.REMOVE_LAUNCH_DONE,
+                success: false,
+            });
+            return;
+        }
+
+        let ok = false;
+        try {
+            ok = await this._ros.removeLaunchFileFromPackage(pkg, launchName, pkgPath, launchPath);
+            if (ok) {
+                vscode.window.showInformationMessage(
+                    `Launch file "${launchName}" removed from package "${pkg}".`,
+                );
+            }
+        } catch (error) {
+            const message = error instanceof Error ? error.message : String(error);
+            vscode.window.showErrorMessage(`Failed to remove launch file "${launchName}": ${message}`);
+        } finally {
+            this._view?.webview.postMessage({
+                command: PMToWebviewCommand.REMOVE_LAUNCH_DONE,
                 success: ok,
             });
         }
@@ -967,6 +1046,62 @@ export class PackageManagerViewProvider implements vscode.WebviewViewProvider {
             <button id="btnAddNode">Add Node</button>
         </div>
         <div id="addNodeStatus" class="mt hidden"></div>
+    </div>
+</div>
+
+<div class="modal hidden" id="createLaunchModal" role="dialog" aria-modal="true">
+    <div class="modal-backdrop" id="createLaunchBackdrop"></div>
+    <div class="modal-card">
+        <div class="modal-header">
+            <h3>Create Launch File</h3>
+            <button class="secondary small" id="btnCloseCreateLaunch">✕</button>
+        </div>
+        <div class="modal-body">
+            <label for="createLaunchPkg">Package</label>
+            <input type="text" id="createLaunchPkg" readonly />
+
+            <label for="createLaunchName">Launch file name</label>
+            <input type="text" id="createLaunchName" placeholder="bringup.launch.py" />
+            <div id="createLaunchNameNormalizedHint" class="normalized-hint text-muted text-sm hidden"></div>
+
+            <div class="text-muted text-sm">
+                If no extension is provided, <code>.launch.py</code> is appended automatically.
+            </div>
+        </div>
+        <div class="modal-footer">
+            <button class="secondary" id="btnCancelCreateLaunch">Cancel</button>
+            <button id="btnCreateLaunch">Create Launch</button>
+        </div>
+        <div id="createLaunchStatus" class="mt hidden"></div>
+    </div>
+</div>
+
+<div class="modal hidden" id="removeLaunchModal" role="dialog" aria-modal="true">
+    <div class="modal-backdrop" id="removeLaunchBackdrop"></div>
+    <div class="modal-card">
+        <div class="modal-header">
+            <h3>Remove Launch File</h3>
+            <button class="secondary small" id="btnCloseRemoveLaunch">✕</button>
+        </div>
+        <div class="modal-body">
+            <label for="removeLaunchPkg">Package</label>
+            <input type="text" id="removeLaunchPkg" readonly />
+
+            <label for="removeLaunchName">Launch file</label>
+            <input type="text" id="removeLaunchName" readonly />
+
+            <label for="removeLaunchPath">Path</label>
+            <input type="text" id="removeLaunchPath" readonly />
+
+            <div class="text-muted text-sm">
+                Removes the selected launch file from the package launch directory.
+            </div>
+        </div>
+        <div class="modal-footer">
+            <button class="secondary" id="btnCancelRemoveLaunch">Cancel</button>
+            <button class="danger" id="btnRemoveLaunch">Remove Launch</button>
+        </div>
+        <div id="removeLaunchStatus" class="mt hidden"></div>
     </div>
 </div>
 

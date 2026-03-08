@@ -39,6 +39,8 @@ Authoritative code:
 | `toggleBuildCheck` | `enabled` | `_toggleBuildCheck` |
 | `addNode` | `pkg`, `nodeName`, optional `pkgPath`, `nodeTemplate`, `nodeTopic` | `_handleAddNode` |
 | `removeNode` | `pkg`, `nodeName`, optional `pkgPath`, `nodePath` | `_handleRemoveNode` |
+| `createLaunch` | `pkg`, `launchName`, optional `pkgPath` | `_handleCreateLaunch` |
+| `removeLaunch` | `pkg`, `launchName`, optional `pkgPath`, `launchPath` | `_handleRemoveLaunch` |
 | `requestUiPreferences` | none | `_sendUiPreferences` |
 | `setUiPreferences` | `preferences` | `_setUiPreferences` |
 
@@ -56,6 +58,8 @@ Authoritative code:
 | `buildCheckState` | `enabled` | `_sendBuildCheckState` |
 | `addNodeDone` | `success` | `_handleAddNode` |
 | `removeNodeDone` | `success` | `_handleRemoveNode` |
+| `createLaunchDone` | `success` | `_handleCreateLaunch` |
+| `removeLaunchDone` | `success` | `_handleRemoveLaunch` |
 | `uiPreferencesState` | `preferences` | `applyUiPreferences` |
 
 ## Node Visualizer Contracts

@@ -163,6 +163,151 @@ setup(
         ]);
     });
 
+    it('creates a Python launch file and registers launch install in setup.py', async () => {
+        workspaceRoot = createTempWorkspace({
+            'src/pkg_py/package.xml': '<package><name>pkg_py</name></package>',
+            'src/pkg_py/setup.py': `
+from setuptools import find_packages, setup
+
+package_name = 'pkg_py'
+
+setup(
+    name=package_name,
+    packages=find_packages(exclude=['test']),
+    data_files=[
+        ('share/ament_index/resource_index/packages', ['resource/' + package_name]),
+        ('share/' + package_name, ['package.xml']),
+    ],
+)
+`,
+        });
+
+        __setWorkspaceFolder(workspaceRoot);
+        const ros = new RosWorkspace();
+
+        const created = await ros.createLaunchFileInPackage('pkg_py', 'robot bringup');
+        expect(created).toBe(true);
+
+        const pkgPath = path.join(workspaceRoot, 'src/pkg_py');
+        const launchPath = path.join(pkgPath, 'launch/robot_bringup.launch.py');
+        expect(fs.existsSync(launchPath)).toBe(true);
+        const launchContent = fs.readFileSync(launchPath, 'utf8');
+        expect(launchContent).toContain('def generate_launch_description():');
+
+        const setupPy = fs.readFileSync(path.join(pkgPath, 'setup.py'), 'utf8');
+        expect(setupPy).toContain("from glob import glob");
+        expect(setupPy).toContain("('share/pkg_py/launch', glob('launch/*'))");
+    });
+
+    it('creates a CMake launch file and registers launch directory install', async () => {
+        workspaceRoot = createTempWorkspace({
+            'src/cmake_pkg/package.xml': '<package><name>cmake_pkg</name></package>',
+            'src/cmake_pkg/CMakeLists.txt': `
+cmake_minimum_required(VERSION 3.8)
+project(cmake_pkg)
+
+find_package(ament_cmake REQUIRED)
+
+ament_package()
+`,
+        });
+
+        __setWorkspaceFolder(workspaceRoot);
+        const ros = new RosWorkspace();
+
+        const createdFirst = await ros.createLaunchFileInPackage('cmake_pkg', 'bringup');
+        const createdSecond = await ros.createLaunchFileInPackage('cmake_pkg', 'bringup');
+        expect(createdFirst).toBe(true);
+        expect(createdSecond).toBe(true);
+
+        const pkgPath = path.join(workspaceRoot, 'src/cmake_pkg');
+        const launchPath = path.join(pkgPath, 'launch/bringup.launch.py');
+        expect(fs.existsSync(launchPath)).toBe(true);
+
+        const cmake = fs.readFileSync(path.join(pkgPath, 'CMakeLists.txt'), 'utf8');
+        expect(cmake).toContain('install(');
+        expect(cmake).toContain('DIRECTORY launch');
+        expect(cmake).toContain('DESTINATION share/${PROJECT_NAME}');
+        expect((cmake.match(/DIRECTORY launch/g) || []).length).toBe(1);
+    });
+
+    it('removes a Python launch file from the package launch directory', async () => {
+        workspaceRoot = createTempWorkspace({
+            'src/pkg_py/package.xml': '<package><name>pkg_py</name></package>',
+            'src/pkg_py/setup.py': `
+from setuptools import find_packages, setup
+
+setup(
+    name='pkg_py',
+    packages=find_packages(exclude=['test']),
+)
+`,
+            'src/pkg_py/launch/demo.launch.py': '# launch',
+            'src/pkg_py/launch/keep.launch.py': '# keep',
+        });
+
+        __setWorkspaceFolder(workspaceRoot);
+        const ros = new RosWorkspace();
+
+        const removed = await ros.removeLaunchFileFromPackage(
+            'pkg_py',
+            'demo.launch.py',
+            undefined,
+            path.join(workspaceRoot, 'src/pkg_py/launch/demo.launch.py'),
+        );
+        expect(removed).toBe(true);
+
+        const pkgPath = path.join(workspaceRoot, 'src/pkg_py');
+        expect(fs.existsSync(path.join(pkgPath, 'launch/demo.launch.py'))).toBe(false);
+        expect(fs.existsSync(path.join(pkgPath, 'launch/keep.launch.py'))).toBe(true);
+
+        const details = await ros.listWorkspacePackageDetails();
+        expect(details.find((pkg) => pkg.name === 'pkg_py')?.launchFiles).toEqual([
+            path.join(pkgPath, 'launch/keep.launch.py'),
+        ]);
+    });
+
+    it('removes a CMake launch file from the package launch directory', async () => {
+        workspaceRoot = createTempWorkspace({
+            'src/cmake_pkg/package.xml': '<package><name>cmake_pkg</name></package>',
+            'src/cmake_pkg/CMakeLists.txt': `
+cmake_minimum_required(VERSION 3.8)
+project(cmake_pkg)
+
+find_package(ament_cmake REQUIRED)
+
+install(
+  DIRECTORY launch
+  DESTINATION share/\${PROJECT_NAME}
+)
+
+ament_package()
+`,
+            'src/cmake_pkg/launch/demo.launch.py': '# launch',
+            'src/cmake_pkg/launch/keep.launch.py': '# keep',
+        });
+
+        __setWorkspaceFolder(workspaceRoot);
+        const ros = new RosWorkspace();
+
+        const removed = await ros.removeLaunchFileFromPackage(
+            'cmake_pkg',
+            'demo.launch.py',
+            undefined,
+            path.join(workspaceRoot, 'src/cmake_pkg/launch/demo.launch.py'),
+        );
+        expect(removed).toBe(true);
+
+        const pkgPath = path.join(workspaceRoot, 'src/cmake_pkg');
+        expect(fs.existsSync(path.join(pkgPath, 'launch/demo.launch.py'))).toBe(false);
+        expect(fs.existsSync(path.join(pkgPath, 'launch/keep.launch.py'))).toBe(true);
+
+        const details = await ros.listWorkspacePackageDetails();
+        expect(details.find((pkg) => pkg.name === 'cmake_pkg')?.launchFiles).toEqual([
+            path.join(pkgPath, 'launch/keep.launch.py'),
+        ]);
+    });
+
     it('adds a node to a workspace package outside root src/ using the provided package path hint', async () => {
         workspaceRoot = createTempWorkspace({
             'test_export/src/test_with_git_user/package.xml': '<package><name>test_with_git_user</name></package>',

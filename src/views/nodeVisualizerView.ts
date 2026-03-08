@@ -1032,9 +1032,6 @@ export class NodeVisualizerViewProvider implements vscode.WebviewViewProvider {
 
 <div class="nv-details-header mb">
     <h3>Details</h3>
-    <button class="secondary hidden" id="btnRefetchSelected" title="Refetch selected item details" disabled>
-        ↻ Refetch Selected
-    </button>
     <div class="nv-toolbar">
         <button class="secondary hidden" id="btnPublishTopic" title="Publish a debug message to a topic">
             ✉ Publish
