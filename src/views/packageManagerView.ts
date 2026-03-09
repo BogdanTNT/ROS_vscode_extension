@@ -80,6 +80,9 @@ export class PackageManagerViewProvider implements vscode.WebviewViewProvider {
                 case PMToHostCommand.SHOW_ENV_INFO:
                     await this._showEnvironmentInfo();
                     break;
+                case PMToHostCommand.OPEN_SOURCED_TERMINAL:
+                    this._ros.openSourcedTerminal();
+                    break;
                 case PMToHostCommand.SET_RUN_TERMINAL_TARGET:
                     await this._setRunTerminalTarget(msg.target);
                     break;
@@ -115,6 +118,9 @@ export class PackageManagerViewProvider implements vscode.WebviewViewProvider {
                     break;
                 case PMToHostCommand.FOCUS_TERMINAL:
                     await this._focusTerminal(msg.id);
+                    break;
+                case PMToHostCommand.RELAUNCH_TERMINAL:
+                    await this._relaunchTerminal(msg.id);
                     break;
                 case PMToHostCommand.SET_PREFERRED_TERMINAL:
                     await this._setPreferredTerminal(msg.id);
@@ -806,6 +812,13 @@ export class PackageManagerViewProvider implements vscode.WebviewViewProvider {
         this._ros.focusTrackedTerminal(id);
     }
 
+    private async _relaunchTerminal(id: string) {
+        if (!id) {
+            return;
+        }
+        await this._ros.relaunchTrackedTerminal(id);
+    }
+
     private async _setPreferredTerminal(id: string) {
         this._ros.setPreferredTerminal(id);
     }
@@ -887,9 +900,17 @@ export class PackageManagerViewProvider implements vscode.WebviewViewProvider {
     <div id="pkgStatus" class="text-muted text-sm mb"></div>
 
     <div class="subsection">
-        <h3>Active Launch Terminals</h3>
+        <div class="section-header">
+            <div class="section-header-main">
+                <button class="secondary small" id="btnToggleTerminalList" title="Collapse/expand active terminal list">▾</button>
+                <h3 id="lblToggleTerminalList" class="section-toggle-label" tabindex="0" title="Collapse/expand active terminal list">Active Terminals</h3>
+            </div>
+            <div class="section-header-actions">
+                <button class="secondary small" id="btnNewRosTerminal">New ROS Terminal</button>
+            </div>
+        </div>
         <ul class="item-list" id="terminalList">
-            <li class="text-muted">No active launch terminals</li>
+            <li class="text-muted">No active terminals</li>
         </ul>
     </div>
 

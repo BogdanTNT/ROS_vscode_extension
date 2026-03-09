@@ -7,3 +7,6 @@ tsconfig.json
 ROS_vscode_extension.code-workspace
 .gitignore
 **/*.map
+*.vsix
+goldens/**
+e2e/**

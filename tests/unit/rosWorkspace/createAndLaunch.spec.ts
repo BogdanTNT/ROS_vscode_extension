@@ -447,6 +447,80 @@ describe('RosWorkspace create and launch commands', () => {
         expect(ros.getTrackedTerminals()).toHaveLength(2);
     });
 
+    it('opens a new tracked ROS terminal each time and keeps it active', () => {
+        const ros = new RosWorkspace();
+
+        ros.openSourcedTerminal();
+        ros.openSourcedTerminal();
+
+        const createdTerminals = __getCreatedTerminals() as Array<{ sentTexts: string[]; name: string }>;
+        const tracked = ros.getTrackedTerminals();
+
+        expect(createdTerminals).toHaveLength(2);
+        expect(tracked).toHaveLength(2);
+        expect(tracked.every((terminal) => terminal.launchLabel === 'ROS Terminal')).toBe(true);
+        expect(tracked.every((terminal) => terminal.status === 'running')).toBe(true);
+        expect(createdTerminals[0]?.sentTexts[0]).toContain('source ');
+        expect(createdTerminals[0]?.sentTexts[0]).toContain('printf "ROS environment ready');
+    });
+
+    it('relaunches tracked node terminals with the same args and target', async () => {
+        const ros = new RosWorkspace();
+        vi.spyOn(ros, 'preLaunchBuildCheck').mockResolvedValue({ action: 'launch' });
+
+        await ros.runNode(
+            'demo_pkg',
+            'talker',
+            '--ros-args -p speed:=1.0',
+            '/tmp/ws/src/demo_pkg/demo_pkg/talker.py',
+            'fast',
+            'integrated',
+        );
+
+        const tracked = ros.getTrackedTerminals();
+        const runNodeSpy = vi.spyOn(ros, 'runNode');
+
+        await ros.relaunchTrackedTerminal(tracked[0].id);
+
+        expect(runNodeSpy).toHaveBeenCalledWith(
+            'demo_pkg',
+            'talker',
+            '--ros-args -p speed:=1.0',
+            '/tmp/ws/src/demo_pkg/demo_pkg/talker.py',
+            'fast',
+            'integrated',
+        );
+    });
+
+    it('relaunches tracked launch terminals with the same args and target', async () => {
+        const ros = new RosWorkspace();
+        vi.spyOn(ros, 'preLaunchBuildCheck').mockResolvedValue({ action: 'launch' });
+
+        await ros.launchFile(
+            'demo_pkg',
+            'demo.launch.py',
+            'use_sim_time:=true',
+            '/tmp/ws/src/demo_pkg/launch/demo.launch.py',
+            'sim',
+            'external',
+        );
+
+        const tracked = ros.getTrackedTerminals();
+        const expectedRunTarget = tracked[0].kind === 'external' ? 'external' : 'integrated';
+        const launchFileSpy = vi.spyOn(ros, 'launchFile');
+
+        await ros.relaunchTrackedTerminal(tracked[0].id);
+
+        expect(launchFileSpy).toHaveBeenCalledWith(
+            'demo_pkg',
+            'demo.launch.py',
+            'use_sim_time:=true',
+            '/tmp/ws/src/demo_pkg/launch/demo.launch.py',
+            'sim',
+            expectedRunTarget,
+        );
+    });
+
     it('uses package-scoped launch label as integrated terminal name', () => {
         const ros = new RosWorkspace();
 

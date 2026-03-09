@@ -738,6 +738,11 @@
             actions.showEnvironmentInfo();
         });
     }
+    if (dom.btnNewRosTerminal) {
+        dom.btnNewRosTerminal.addEventListener('click', () => {
+            actions.openSourcedTerminal();
+        });
+    }
 
     if (dom.environmentDetailsToggle) {
         dom.environmentDetailsToggle.addEventListener('click', () => {
@@ -846,6 +851,22 @@
             dom.lblToggleOtherPackages,
             onToggleOther,
             onRecursiveToggleOther,
+        );
+    }
+
+    if (dom.btnToggleTerminalList) {
+        const onToggleTerminals = () => {
+            render.toggleTerminals();
+        };
+        bindRecursiveToggleTrigger(
+            dom.btnToggleTerminalList,
+            onToggleTerminals,
+            onToggleTerminals,
+        );
+        bindRecursiveToggleTrigger(
+            dom.lblToggleTerminalList,
+            onToggleTerminals,
+            onToggleTerminals,
         );
     }
 

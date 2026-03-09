@@ -26,6 +26,7 @@
         argsOptions: [],
         currentArgsKey: '',
         terminals: [],
+        terminalsVisible: true,
         preferredTerminalId: '',
         environmentReport: '',
         environmentLoading: false,

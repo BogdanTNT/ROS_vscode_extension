@@ -35,7 +35,9 @@ Authoritative code:
 | `requestLaunchArgs` | `argsKey`, optional `sourcePath` | `_sendLaunchArgOptions` |
 | `killTerminal` | `id` | `_killTerminal` |
 | `focusTerminal` | `id` | `_focusTerminal` |
+| `relaunchTerminal` | `id` | `_relaunchTerminal` |
 | `setPreferredTerminal` | `id` | `_setPreferredTerminal` |
+| `openSourcedTerminal` | none | `RosWorkspace.openSourcedTerminal` |
 | `toggleBuildCheck` | `enabled` | `_toggleBuildCheck` |
 | `addNode` | `pkg`, `nodeName`, optional `pkgPath`, `nodeTemplate`, `nodeTopic` | `_handleAddNode` |
 | `removeNode` | `pkg`, `nodeName`, optional `pkgPath`, `nodePath` | `_handleRemoveNode` |

@@ -215,6 +215,17 @@
         }
         renderOtherPackages();
     };
+    const setTerminalsVisible = (visible, shouldRender = true) => {
+        state.terminalsVisible = visible;
+        if (shouldRender) {
+            renderTerminals();
+        }
+    };
+    const isTerminalsVisible = () => state.terminalsVisible !== false;
+    const toggleTerminals = () => {
+        setTerminalsVisible(!isTerminalsVisible(), false);
+        renderTerminals();
+    };
     const getPackagePinKey = (packageName) => packageName ? ('pkg::' + packageName) : '';
     const isPackagePinKey = (pinKey) => pinKey.startsWith('pkg::');
     const getPackageNameFromPinKey = (pinKey) => pinKey.startsWith('pkg::') ? pinKey.slice('pkg::'.length) : '';
@@ -643,6 +654,11 @@
             return;
         }
 
+        if (target.closest('.term-relaunch')) {
+            actions.relaunchTerminal(id);
+            return;
+        }
+
         if (target.closest('.term-kill')) {
             const pendingUntil = killFeedbackUntil.get(id) || 0;
             if (pendingUntil > Date.now()) {
@@ -1062,6 +1078,18 @@
             return;
         }
 
+        if (dom.btnToggleTerminalList) {
+            dom.btnToggleTerminalList.textContent = isTerminalsVisible() ? '▾' : '▸';
+            dom.btnToggleTerminalList.setAttribute('aria-expanded', String(isTerminalsVisible()));
+        }
+        if (dom.lblToggleTerminalList) {
+            dom.lblToggleTerminalList.setAttribute('aria-expanded', String(isTerminalsVisible()));
+        }
+        dom.terminalList.classList.toggle('hidden', !isTerminalsVisible());
+        if (!isTerminalsVisible()) {
+            return;
+        }
+
         const now = Date.now();
         for (const [id, until] of killFeedbackUntil.entries()) {
             if (until <= now) {
@@ -1070,7 +1098,7 @@
         }
 
         if (!state.terminals.length) {
-            dom.terminalList.innerHTML = '<li class="text-muted">No active launch terminals</li>';
+            dom.terminalList.innerHTML = '<li class="text-muted">No active terminals</li>';
             return;
         }
 
@@ -1092,6 +1120,9 @@
                 const launchLabel = t.launchLabel ? t.launchLabel : 'Idle';
                 const terminalName = t.name ? t.name : 'Unknown terminal';
                 const preferred = '';
+                const relaunchBtn = t.canRelaunch === true
+                    ? '<button class="secondary small term-relaunch">Relaunch</button>'
+                    : '';
                 const focusBtn =
                     t.kind === 'integrated'
                         ? '<button class="secondary small term-focus">Focus</button>'
@@ -1108,6 +1139,7 @@
                     '">' +
                     '<div class="terminal-main">' +
                     '<div class="terminal-title">' +
+                    relaunchBtn +
                     '<span class="terminal-name">' +
                     escapeHtml(launchLabel) +
                     '</span>' +
@@ -1408,12 +1440,15 @@
         renderPinned,
         renderTerminals,
         copyPackage,
+        toggleTerminals,
         toggleWorkspacePackages,
         toggleOtherPackages,
         setAllWorkspacePackagesExpanded,
         setAllOtherPackagesExpanded,
+        setTerminalsVisible,
         setWorkspacePackagesVisible,
         setOtherPackagesVisible,
+        isTerminalsVisible,
         isWorkspacePackagesVisible,
         isOtherPackagesVisible,
     };

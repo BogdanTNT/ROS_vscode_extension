@@ -29,6 +29,7 @@
         togglePin: (path) => vscode.postMessage({ command: toHost.TOGGLE_PIN, path }),
         killTerminal: (id) => vscode.postMessage({ command: toHost.KILL_TERMINAL, id }),
         focusTerminal: (id) => vscode.postMessage({ command: toHost.FOCUS_TERMINAL, id }),
+        relaunchTerminal: (id) => vscode.postMessage({ command: toHost.RELAUNCH_TERMINAL, id }),
         setPreferredTerminal: (id) => vscode.postMessage({ command: toHost.SET_PREFERRED_TERMINAL, id }),
         requestLaunchArgs: (argsKey, sourcePath) => vscode.postMessage({
             command: toHost.REQUEST_LAUNCH_ARGS,
@@ -40,6 +41,7 @@
             command: toHost.REQUEST_ENV_DIALOG_STATE,
         }),
         showEnvironmentInfo: () => vscode.postMessage({ command: toHost.SHOW_ENV_INFO }),
+        openSourcedTerminal: () => vscode.postMessage({ command: toHost.OPEN_SOURCED_TERMINAL }),
         setRunTerminalTarget: (target) => vscode.postMessage({
             command: toHost.SET_RUN_TERMINAL_TARGET,
             target,

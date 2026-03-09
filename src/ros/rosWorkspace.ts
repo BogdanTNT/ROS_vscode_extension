@@ -138,7 +138,32 @@ export interface TrackedTerminalInfo {
     createdAt: number;
     lastUsed: number;
     isPreferred?: boolean;
+    canRelaunch?: boolean;
 }
+
+type TrackedTerminalReplay =
+    | {
+        kind: 'launch';
+        pkg: string;
+        launchFile: string;
+        launchPath?: string;
+        args: string;
+        argsLabel?: string;
+        runTarget: string;
+    }
+    | {
+        kind: 'node';
+        pkg: string;
+        executable: string;
+        nodePath?: string;
+        args: string;
+        argsLabel?: string;
+        runTarget: string;
+    }
+    | {
+        kind: 'sourcedTerminal';
+        runTarget: string;
+    };
 
 export interface RunTerminalTargetOption {
     id: string;
@@ -156,6 +181,9 @@ interface TrackedTerminal extends TrackedTerminalInfo {
     wslPidFile?: string;
     /** Set after a Ctrl+C has been sent so the next kill force-closes. */
     ctrlCSent?: boolean;
+    /** Long-lived interactive shell that should remain "running" after bootstrap commands finish. */
+    persistentShell?: boolean;
+    replay?: TrackedTerminalReplay;
 }
 
 interface OsReleaseInfo {
@@ -224,6 +252,7 @@ export class RosWorkspace {
     private _terminalSeq = 1;
     private _preferredTerminalId: string | undefined;
     private _runTerminalTarget = 'auto';
+    private _pendingTrackedTerminalReplay: TrackedTerminalReplay | undefined;
     private _terminalsEmitter = new vscode.EventEmitter<TrackedTerminalInfo[]>();
     public readonly onTerminalsChanged = this._terminalsEmitter.event;
 
@@ -255,6 +284,10 @@ export class RosWorkspace {
         vscode.window.onDidEndTerminalShellExecution?.((event) => {
             for (const [id, tracked] of this._trackedTerminals.entries()) {
                 if (tracked.kind === 'integrated' && tracked.terminal === event.terminal && tracked.status === 'running') {
+                    if (tracked.persistentShell) {
+                        this._emitTerminalsChanged();
+                        break;
+                    }
                     tracked.status = 'closed';
                     if (tracked.ctrlCSent && tracked.terminal) {
                         tracked.terminal.dispose();
@@ -2528,8 +2561,18 @@ int main(int argc, char * argv[]) {
         const runCmd = this.buildRunCommandWithWslPackageFallback(pkg, baseRunCmd, runTarget);
         const normalizedArgsLabel = argsLabel?.trim();
         const normalizedNodePath = nodePath?.trim() ? nodePath : undefined;
+        const normalizedArgs = String(args || '').trim();
         const labelSuffix = normalizedArgsLabel ? ` [${normalizedArgsLabel}]` : '';
         const nodeLabel = `${pkg} / ${normalizedExecutableLabel}${labelSuffix}`;
+        const replay: TrackedTerminalReplay = {
+            kind: 'node',
+            pkg,
+            executable,
+            nodePath: normalizedNodePath,
+            args: normalizedArgs,
+            argsLabel: normalizedArgsLabel,
+            runTarget,
+        };
 
         // Smart-build check before running
         const result = await this.preLaunchBuildCheck(pkg);
@@ -2539,12 +2582,16 @@ int main(int argc, char * argv[]) {
         }
 
         if (result.action === 'build-and-launch') {
-            this.buildThenRun(result.stalePackages!, runCmd, nodeLabel, normalizedNodePath, runTarget);
+            this.withPendingTrackedTerminalReplay(replay, () => {
+                this.buildThenRun(result.stalePackages!, runCmd, nodeLabel, normalizedNodePath, runTarget);
+            });
             return;
         }
 
         // No build needed — run directly
-        this.runInConfiguredLaunchTerminal(runCmd, nodeLabel, normalizedNodePath, undefined, runTarget);
+        this.withPendingTrackedTerminalReplay(replay, () => {
+            this.runInConfiguredLaunchTerminal(runCmd, nodeLabel, normalizedNodePath, undefined, runTarget);
+        });
     }
 
     /**
@@ -2616,9 +2663,20 @@ int main(int argc, char * argv[]) {
             ? `ros2 launch ${pkg} ${normalizedLaunchFile}${argString}`
             : `roslaunch ${pkg} ${normalizedLaunchFile}${argString}`;
         const launchCmd = this.buildRunCommandWithWslPackageFallback(pkg, baseLaunchCmd, runTarget);
-
-        const labelSuffix = argsLabel ? ` [${argsLabel}]` : '';
+        const normalizedArgs = String(args || '').trim();
+        const normalizedLaunchPath = launchPath?.trim() ? launchPath : undefined;
+        const normalizedArgsLabel = argsLabel?.trim() || undefined;
+        const labelSuffix = normalizedArgsLabel ? ` [${normalizedArgsLabel}]` : '';
         const launchLabel = `${pkg} / ${normalizedLaunchFile}${labelSuffix}`;
+        const replay: TrackedTerminalReplay = {
+            kind: 'launch',
+            pkg,
+            launchFile: normalizedLaunchFile,
+            launchPath: normalizedLaunchPath,
+            args: normalizedArgs,
+            argsLabel: normalizedArgsLabel,
+            runTarget,
+        };
 
         // Smart-build check before launching
         const result = await this.preLaunchBuildCheck(pkg);
@@ -2628,12 +2686,28 @@ int main(int argc, char * argv[]) {
         }
 
         if (result.action === 'build-and-launch') {
-            this.buildThenRun(result.stalePackages!, launchCmd, launchLabel, launchPath, runTarget);
+            this.withPendingTrackedTerminalReplay(replay, () => {
+                this.buildThenRun(
+                    result.stalePackages!,
+                    launchCmd,
+                    launchLabel,
+                    normalizedLaunchPath,
+                    runTarget,
+                );
+            });
             return;
         }
 
         // No build needed — launch directly
-        this.runInConfiguredLaunchTerminal(launchCmd, launchLabel, launchPath, undefined, runTarget);
+        this.withPendingTrackedTerminalReplay(replay, () => {
+            this.runInConfiguredLaunchTerminal(
+                launchCmd,
+                launchLabel,
+                normalizedLaunchPath,
+                undefined,
+                runTarget,
+            );
+        });
     }
 
     /**
@@ -2869,6 +2943,7 @@ int main(int argc, char * argv[]) {
         tracked.launchPath = launchPath;
         tracked.ctrlCSent = false;
         tracked.status = 'running';
+        tracked.replay = this.getResolvedPendingTrackedTerminalReplay(tracked);
 
         if (!tracked.terminal) {
             return;
@@ -2892,6 +2967,7 @@ int main(int argc, char * argv[]) {
             createdAt: t.createdAt,
             lastUsed: t.lastUsed,
             isPreferred: t.id === this._preferredTerminalId,
+            canRelaunch: Boolean(t.replay),
         }));
     }
 
@@ -2913,6 +2989,16 @@ int main(int argc, char * argv[]) {
         if (tracked?.kind === 'integrated' && tracked.terminal) {
             tracked.terminal.show();
         }
+    }
+
+    async relaunchTrackedTerminal(id: string): Promise<void> {
+        const replay = this.cloneTrackedTerminalReplay(this._trackedTerminals.get(id)?.replay);
+        if (!replay) {
+            return;
+        }
+
+        await this.terminateTrackedTerminalForRelaunch(id);
+        await this.runTrackedTerminalReplay(replay);
     }
 
     async killTrackedTerminal(id: string): Promise<void> {
@@ -3233,6 +3319,7 @@ int main(int argc, char * argv[]) {
             wslPidFile,
             ctrlCSent: false,
         };
+        tracked.replay = this.getResolvedPendingTrackedTerminalReplay(tracked);
 
         this._trackedTerminals.set(tracked.id, tracked);
         this._emitTerminalsChanged();
@@ -5586,9 +5673,30 @@ int main(int argc, char * argv[]) {
         }
     }
 
-    openSourcedTerminal(): void {
-        const terminal = this.ensureTerminal(this.resolveCommandExecutionContext());
-        terminal.show();
+    openSourcedTerminal(runTargetOverride?: string): void {
+        const context = this.resolveCommandExecutionContext(runTargetOverride);
+        const tracked = this.createLaunchTerminal(this.getTrackedTerminalProfileForContext(context), 'ROS Terminal');
+        const bootstrapCommand = this.buildSourcedShellBootstrapCommand(context);
+
+        tracked.cmd = 'ROS shell';
+        tracked.lastUsed = Date.now();
+        tracked.launchLabel = 'ROS Terminal';
+        tracked.launchPath = undefined;
+        tracked.ctrlCSent = false;
+        tracked.status = 'running';
+        tracked.persistentShell = true;
+        tracked.replay = {
+            kind: 'sourcedTerminal',
+            runTarget: this.resolveTrackedTerminalRunTarget(tracked, context.runTarget),
+        };
+
+        if (!tracked.terminal) {
+            return;
+        }
+
+        tracked.terminal.show();
+        tracked.terminal.sendText(bootstrapCommand);
+        this._emitTerminalsChanged();
     }
 
     private ensureTerminal(context: CommandExecutionContext): vscode.Terminal {
@@ -5626,6 +5734,168 @@ int main(int argc, char * argv[]) {
             this._terminalRunTarget = currentTarget;
         }
         return this._terminal;
+    }
+
+    private withPendingTrackedTerminalReplay<T>(
+        replay: TrackedTerminalReplay | undefined,
+        action: () => T,
+    ): T {
+        const previousReplay = this._pendingTrackedTerminalReplay;
+        this._pendingTrackedTerminalReplay = replay
+            ? this.cloneTrackedTerminalReplay(replay)
+            : undefined;
+        try {
+            return action();
+        } finally {
+            this._pendingTrackedTerminalReplay = previousReplay;
+        }
+    }
+
+    private getResolvedPendingTrackedTerminalReplay(tracked: TrackedTerminal): TrackedTerminalReplay | undefined {
+        if (!this._pendingTrackedTerminalReplay) {
+            return undefined;
+        }
+
+        const replay = this.cloneTrackedTerminalReplay(this._pendingTrackedTerminalReplay);
+        if (!replay) {
+            return undefined;
+        }
+        replay.runTarget = this.resolveTrackedTerminalRunTarget(tracked, replay.runTarget);
+        return replay;
+    }
+
+    private cloneTrackedTerminalReplay(
+        replay: TrackedTerminalReplay | undefined,
+    ): TrackedTerminalReplay | undefined {
+        if (!replay) {
+            return undefined;
+        }
+
+        switch (replay.kind) {
+            case 'launch':
+                return {
+                    kind: 'launch',
+                    pkg: replay.pkg,
+                    launchFile: replay.launchFile,
+                    launchPath: replay.launchPath,
+                    args: replay.args,
+                    argsLabel: replay.argsLabel,
+                    runTarget: replay.runTarget,
+                };
+            case 'node':
+                return {
+                    kind: 'node',
+                    pkg: replay.pkg,
+                    executable: replay.executable,
+                    nodePath: replay.nodePath,
+                    args: replay.args,
+                    argsLabel: replay.argsLabel,
+                    runTarget: replay.runTarget,
+                };
+            case 'sourcedTerminal':
+                return {
+                    kind: 'sourcedTerminal',
+                    runTarget: replay.runTarget,
+                };
+        }
+    }
+
+    private resolveTrackedTerminalRunTarget(tracked: TrackedTerminal, fallbackRunTarget: string): string {
+        if (tracked.kind === 'external') {
+            if (tracked.wslPidFile !== undefined || tracked.wslDistro !== undefined) {
+                return `wsl-external:${tracked.wslDistro || 'default'}`;
+            }
+            return 'external';
+        }
+
+        if (tracked.wslIntegrated) {
+            return `wsl-integrated:${tracked.wslDistro || 'default'}`;
+        }
+
+        if (tracked.kind === 'integrated') {
+            return 'integrated';
+        }
+
+        return this.normalizeRunTerminalTarget(fallbackRunTarget);
+    }
+
+    private async runTrackedTerminalReplay(replay: TrackedTerminalReplay): Promise<void> {
+        switch (replay.kind) {
+            case 'launch':
+                await this.launchFile(
+                    replay.pkg,
+                    replay.launchFile,
+                    replay.args,
+                    replay.launchPath,
+                    replay.argsLabel,
+                    replay.runTarget,
+                );
+                return;
+            case 'node':
+                await this.runNode(
+                    replay.pkg,
+                    replay.executable,
+                    replay.args,
+                    replay.nodePath,
+                    replay.argsLabel,
+                    replay.runTarget,
+                );
+                return;
+            case 'sourcedTerminal':
+                this.openSourcedTerminal(replay.runTarget);
+                return;
+        }
+    }
+
+    private async terminateTrackedTerminalForRelaunch(id: string): Promise<void> {
+        const tracked = this._trackedTerminals.get(id);
+        if (!tracked) {
+            return;
+        }
+
+        if (tracked.kind === 'integrated') {
+            if (tracked.terminal) {
+                if (tracked.status === 'running' && tracked.terminal.exitStatus === undefined) {
+                    tracked.terminal.sendText('\x03', false);
+                }
+                tracked.terminal.dispose();
+            }
+            this._trackedTerminals.delete(id);
+            if (this._preferredTerminalId === id) {
+                this._preferredTerminalId = undefined;
+            }
+            this._emitTerminalsChanged();
+            return;
+        }
+
+        if (process.platform === 'win32' && tracked.wslPidFile) {
+            this.tryInterruptWslTrackedTerminal(tracked);
+        } else {
+            const innerPid = this.readInnerPid(tracked, false);
+            if (innerPid) {
+                this.interruptProcess(innerPid, true);
+            }
+        }
+
+        this.forceCloseTrackedExternalTerminal(tracked);
+        this.cleanupPidFile(tracked);
+        this._trackedTerminals.delete(id);
+        if (this._preferredTerminalId === id) {
+            this._preferredTerminalId = undefined;
+        }
+        this._emitTerminalsChanged();
+    }
+
+    private getTrackedTerminalProfileForContext(
+        context: CommandExecutionContext,
+    ): { wslIntegrated?: boolean; wslDistro?: string } | undefined {
+        if (process.platform === 'win32' && context.useWsl) {
+            return {
+                wslIntegrated: true,
+                wslDistro: context.wslDistro,
+            };
+        }
+        return undefined;
     }
 
     private getTerminalEnv(): Record<string, string> {
@@ -5689,6 +5959,10 @@ int main(int argc, char * argv[]) {
             return this.buildSourcedCommandForRunTarget(cmd, context.runTarget);
         }
         return this.buildSourcedCommand(cmd);
+    }
+
+    private buildSourcedShellBootstrapCommand(context: CommandExecutionContext): string {
+        return this.buildSourcedCommandForContext('printf "ROS environment ready\\n"', context);
     }
 
     private buildSourcedCommandForRunTarget(cmd: string, runTarget: string): string {
@@ -5800,8 +6074,8 @@ int main(int argc, char * argv[]) {
         return distro || undefined;
     }
 
-    private resolveCommandExecutionContext(): CommandExecutionContext {
-        const selectedTarget = this.normalizeRunTerminalTarget(this.getRunTerminalTarget());
+    private resolveCommandExecutionContext(runTargetOverride?: string): CommandExecutionContext {
+        const selectedTarget = this.normalizeRunTerminalTarget(runTargetOverride || this.getRunTerminalTarget());
         if (process.platform !== 'win32') {
             return {
                 useWsl: false,
