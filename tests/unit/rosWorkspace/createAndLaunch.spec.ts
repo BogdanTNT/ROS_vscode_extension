@@ -1,3 +1,4 @@
+import fs from 'node:fs';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
@@ -120,6 +121,25 @@ describe('RosWorkspace create and launch commands', () => {
         expect(cmd).toContain("--maintainer-email 'test@example.com'");
         expect(cmd).toContain("--license 'GPL-3.0'");
         expect(cmd).toContain("--description 'TO DO: A very good package description'");
+    });
+
+    it('creates the workspace src directory on demand during package creation', async () => {
+        workspaceRoot = createTempWorkspace({});
+        __setWorkspaceFolder(workspaceRoot);
+        setMaintainerDefaults();
+
+        const srcPath = path.join(workspaceRoot, 'src');
+        expect(fs.existsSync(srcPath)).toBe(false);
+
+        const ros = new RosWorkspace();
+        const runSpy = vi.spyOn(ros, 'runInTerminal').mockImplementation(() => {});
+
+        const result = await ros.createPackage('demo_pkg', 'ament_python', []);
+
+        expect(result).toBe(true);
+        expect(fs.existsSync(srcPath)).toBe(true);
+        expect(runSpy).toHaveBeenCalledTimes(1);
+        expect(runSpy.mock.calls[0][0] as string).toContain(`cd "${srcPath}" && ros2 pkg create demo_pkg`);
     });
 
     it('uses WSL-style workspace paths for createPackage when a WSL target is selected on Windows', async () => {

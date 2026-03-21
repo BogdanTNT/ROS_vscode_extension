@@ -124,6 +124,27 @@ setup(
         expect(fs.existsSync(srcPath)).toBe(false);
     });
 
+    it('does not create src/ during smart-build startup setup when the workspace lacks it', () => {
+        workspaceRoot = createTempWorkspace({
+            'bringup/package.xml': '<package><name>bringup</name></package>',
+        });
+
+        const srcPath = path.join(workspaceRoot, 'src');
+        expect(fs.existsSync(srcPath)).toBe(false);
+
+        __setWorkspaceFolder(workspaceRoot);
+        const ros = new RosWorkspace();
+
+        ros.initSmartBuild({
+            workspaceState: {
+                get: () => undefined,
+                update: () => undefined,
+            },
+        } as never);
+
+        expect(fs.existsSync(srcPath)).toBe(false);
+    });
+
     it('loads non-workspace package details with launch files and ROS CLI executables', async () => {
         workspaceRoot = createTempWorkspace({
             'opt/share/other_pkg/package.xml': '<package><name>other_pkg</name></package>',

@@ -747,7 +747,7 @@ export class RosWorkspace {
         license?: string,
         description?: string,
     ): Promise<boolean> {
-        const srcDir = this.getSrcDir();
+        const srcDir = this.ensureSrcDir();
         if (!srcDir) {
             vscode.window.showErrorMessage('Could not determine workspace src directory.');
             return false;
@@ -5521,10 +5521,27 @@ int main(int argc, char * argv[]) {
     getSrcDir(): string | undefined {
         const wsPath = this.getWorkspacePath();
         const srcPath = path.join(wsPath, 'src');
+        if (!fs.existsSync(srcPath)) {
+            return undefined;
+        }
+        return srcPath;
         if (fs.existsSync(srcPath)) {
             return srcPath;
         }
         // Fallback – create the src directory
+        try {
+            fs.mkdirSync(srcPath, { recursive: true });
+            return srcPath;
+        } catch {
+            return undefined;
+        }
+    }
+
+    private ensureSrcDir(): string | undefined {
+        const srcPath = path.join(this.getWorkspacePath(), 'src');
+        if (fs.existsSync(srcPath)) {
+            return srcPath;
+        }
         try {
             fs.mkdirSync(srcPath, { recursive: true });
             return srcPath;
