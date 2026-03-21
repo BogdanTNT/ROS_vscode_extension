@@ -218,6 +218,15 @@
                 if (d.toggleBuildCheck) {
                     d.toggleBuildCheck.checked = Boolean(msg.enabled);
                 }
+                if (d.toggleBuildCheckLaunchFiles) {
+                    d.toggleBuildCheckLaunchFiles.checked = msg.scopes?.launchFile !== false;
+                }
+                if (d.toggleBuildCheckRunNodes) {
+                    d.toggleBuildCheckRunNodes.checked = msg.scopes?.runNode !== false;
+                }
+                if (window.PM.handlers?.renderBuildCheckSettingsState) {
+                    window.PM.handlers.renderBuildCheckSettingsState();
+                }
                 break;
             }
             case toWebview.ADD_NODE_DONE: {

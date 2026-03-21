@@ -16,6 +16,7 @@ const LAUNCH_ARG_CONFIGS_KEY = 'launchArgConfigs';
 const LEGACY_LAUNCH_ARGS_KEY = 'launchArgs';
 const RUN_TERMINAL_TARGET_KEY = 'runTerminalTarget';
 const ENVIRONMENT_DIALOG_CACHE_KEY = 'rosDevToolkit.environmentDialogCache';
+const BUILD_CHECK_SCOPES_KEY = 'packageManagerBuildCheckScopes';
 const DEFAULT_CREATE_PACKAGE_DESCRIPTION = 'TO DO: A very good package description';
 const PACKAGE_MANAGER_BASE_TITLE = 'Package Manager';
 // TODO(remove-by: v0.3.0 / 2026-06-30): Remove migration from legacy launch args.
@@ -25,6 +26,11 @@ interface EnvironmentDialogCacheSnapshot {
     targetOptions: RunTerminalTargetOption[];
     autoLaunchInExternalTerminal: boolean;
     refreshedAt: number;
+}
+
+interface BuildCheckScopes {
+    launchFile: boolean;
+    runNode: boolean;
 }
 
 /**
@@ -127,6 +133,11 @@ export class PackageManagerViewProvider implements vscode.WebviewViewProvider {
                     break;
                 case PMToHostCommand.TOGGLE_BUILD_CHECK:
                     await this._toggleBuildCheck(msg.enabled);
+                    this._sendBuildCheckState();
+                    break;
+                case PMToHostCommand.SET_BUILD_CHECK_SCOPES:
+                    await this._setBuildCheckScopes(msg.scopes);
+                    this._sendBuildCheckState();
                     break;
                 case PMToHostCommand.ADD_NODE:
                     await this._handleAddNode(msg.pkg, msg.nodeName, msg.pkgPath, msg.nodeTemplate, msg.nodeTopic);
@@ -192,10 +203,28 @@ export class PackageManagerViewProvider implements vscode.WebviewViewProvider {
         const enabled = vscode.workspace
             .getConfiguration('rosDevToolkit')
             .get<boolean>('preLaunchBuildCheck', true);
+        const scopes = this._getBuildCheckScopes();
         this._view?.webview.postMessage({
             command: PMToWebviewCommand.BUILD_CHECK_STATE,
             enabled,
+            scopes,
         });
+    }
+
+    private _getBuildCheckScopes(): BuildCheckScopes {
+        const stored = this._context.globalState.get<Partial<BuildCheckScopes>>(BUILD_CHECK_SCOPES_KEY, {});
+        return {
+            launchFile: stored?.launchFile !== false,
+            runNode: stored?.runNode !== false,
+        };
+    }
+
+    private async _setBuildCheckScopes(scopes: unknown) {
+        const next: BuildCheckScopes = {
+            launchFile: (scopes as BuildCheckScopes | undefined)?.launchFile !== false,
+            runNode: (scopes as BuildCheckScopes | undefined)?.runNode !== false,
+        };
+        await this._context.globalState.update(BUILD_CHECK_SCOPES_KEY, next);
     }
 
     private _getUiPreferences(): WebviewUiPreferences {
@@ -765,12 +794,17 @@ export class PackageManagerViewProvider implements vscode.WebviewViewProvider {
         const argsLabel = argsNameOverride ?? undefined;
         const normalizedRunTarget = this._normalizeRunTerminalTargetId(runTargetOverride);
         const effectiveRunTarget = normalizedRunTarget !== 'auto' ? normalizedRunTarget : undefined;
+        const buildCheckEnabled = vscode.workspace
+            .getConfiguration('rosDevToolkit')
+            .get<boolean>('preLaunchBuildCheck', true);
+        const buildCheckScopes = this._getBuildCheckScopes();
+        const shouldCheckBeforeLaunch = buildCheckEnabled && buildCheckScopes.launchFile;
 
         if (effectiveRunTarget) {
-            this._ros.launchFile(pkg, file, args, path, argsLabel, effectiveRunTarget);
+            this._ros.launchFile(pkg, file, args, path, argsLabel, effectiveRunTarget, shouldCheckBeforeLaunch ? undefined : false);
             return;
         }
-        this._ros.launchFile(pkg, file, args, path, argsLabel);
+        this._ros.launchFile(pkg, file, args, path, argsLabel, undefined, shouldCheckBeforeLaunch ? undefined : false);
     }
 
     private async _runNode(
@@ -791,11 +825,16 @@ export class PackageManagerViewProvider implements vscode.WebviewViewProvider {
         const nodePath = sourcePath?.trim() ? sourcePath : undefined;
         const normalizedRunTarget = this._normalizeRunTerminalTargetId(runTargetOverride);
         const effectiveRunTarget = normalizedRunTarget !== 'auto' ? normalizedRunTarget : undefined;
+        const buildCheckEnabled = vscode.workspace
+            .getConfiguration('rosDevToolkit')
+            .get<boolean>('preLaunchBuildCheck', true);
+        const buildCheckScopes = this._getBuildCheckScopes();
+        const shouldCheckBeforeRunNode = buildCheckEnabled && buildCheckScopes.runNode;
         if (effectiveRunTarget) {
-            this._ros.runNode(pkg, executable, args, nodePath, argsLabel, effectiveRunTarget);
+            this._ros.runNode(pkg, executable, args, nodePath, argsLabel, effectiveRunTarget, shouldCheckBeforeRunNode ? undefined : false);
             return;
         }
-        this._ros.runNode(pkg, executable, args, nodePath, argsLabel);
+        this._ros.runNode(pkg, executable, args, nodePath, argsLabel, undefined, shouldCheckBeforeRunNode ? undefined : false);
     }
 
     private async _killTerminal(id: string) {
@@ -856,7 +895,6 @@ export class PackageManagerViewProvider implements vscode.WebviewViewProvider {
         };
 
         await this._context.globalState.update(LAUNCH_ARG_CONFIGS_KEY, current);
-        await this._sendPackageList();
     }
 
 
@@ -878,27 +916,6 @@ export class PackageManagerViewProvider implements vscode.WebviewViewProvider {
     private _getHtml(webview: vscode.Webview): string {
         const body = /* html */ `
 <div class="section">
-    <div class="toolbar">
-        <button id="btnOpenCreate">＋ New Package</button>
-        <button class="secondary small" id="btnRefresh">↻ Refresh</button>
-        <button class="secondary small" id="btnShowEnvironment">Environment Info</button>
-    </div>
-
-    <div class="toggle-row">
-        <label for="toggleBuildCheck">⚡ Auto build check before launch</label>
-        <span class="toggle-switch">
-            <input type="checkbox" id="toggleBuildCheck" checked />
-            <span class="toggle-slider"></span>
-        </span>
-    </div>
-
-    <div class="search-row">
-        <input type="text" id="pkgFilter" placeholder="Filter packages, launch files, or nodes…" />
-        <span id="pkgCount" class="badge info">0</span>
-    </div>
-
-    <div id="pkgStatus" class="text-muted text-sm mb"></div>
-
     <div class="subsection">
         <div class="section-header">
             <div class="section-header-main">
@@ -920,6 +937,20 @@ export class PackageManagerViewProvider implements vscode.WebviewViewProvider {
             <li class="text-muted">No pinned items</li>
         </ul>
     </div>
+
+    <div class="toolbar">
+        <button id="btnOpenCreate">＋ New Package</button>
+        <button class="secondary small" id="btnRefresh">↻ Refresh</button>
+        <button class="secondary small" id="btnOpenBuildCheckSettings">Auto Build Settings</button>
+        <button class="secondary small" id="btnShowEnvironment">Environment Info</button>
+    </div>
+
+    <div class="search-row">
+        <input type="text" id="pkgFilter" placeholder="Filter packages, launch files, or nodes…" />
+        <span id="pkgCount" class="badge info">0</span>
+    </div>
+
+    <div id="pkgStatus" class="text-muted text-sm hidden"></div>
 
     <div class="subsection">
         <div class="section-header">
@@ -946,6 +977,47 @@ export class PackageManagerViewProvider implements vscode.WebviewViewProvider {
         <ul class="item-list" id="otherPkgList">
             <li class="text-muted">Not loaded</li>
         </ul>
+    </div>
+</div>
+
+<div class="modal hidden" id="buildCheckSettingsModal" role="dialog" aria-modal="true">
+    <div class="modal-backdrop" id="buildCheckSettingsBackdrop"></div>
+    <div class="modal-card">
+        <div class="modal-header">
+            <h3>Auto Build Settings</h3>
+            <button class="secondary small" id="btnCloseBuildCheckSettings">✕</button>
+        </div>
+        <div class="modal-body">
+            <div class="toggle-row">
+                <label for="toggleBuildCheck">⚡ Auto build check before run/launch</label>
+                <span class="toggle-switch">
+                    <input type="checkbox" id="toggleBuildCheck" checked />
+                    <span class="toggle-slider"></span>
+                </span>
+            </div>
+
+            <div id="buildCheckScopeSettings" class="mt">
+                <div class="toggle-row">
+                    <label for="toggleBuildCheckLaunchFiles">Check before launch files</label>
+                    <span class="toggle-switch">
+                        <input type="checkbox" id="toggleBuildCheckLaunchFiles" checked />
+                        <span class="toggle-slider"></span>
+                    </span>
+                </div>
+                <div class="toggle-row">
+                    <label for="toggleBuildCheckRunNodes">Check before run nodes</label>
+                    <span class="toggle-switch">
+                        <input type="checkbox" id="toggleBuildCheckRunNodes" checked />
+                        <span class="toggle-slider"></span>
+                    </span>
+                </div>
+            </div>
+            <div class="text-muted text-sm mt">When disabled, selected actions skip stale-package auto build checks.</div>
+        </div>
+        <div class="modal-footer">
+            <button class="secondary" id="btnCancelBuildCheckSettings">Close</button>
+            <button id="btnSaveBuildCheckSettings">Save settings</button>
+        </div>
     </div>
 </div>
 
@@ -1025,7 +1097,7 @@ export class PackageManagerViewProvider implements vscode.WebviewViewProvider {
             </div>
         </div>
         <div class="modal-footer">
-            <button class="secondary" id="btnCancelArgs">Cancel</button>
+            <button class="secondary" id="btnCancelArgs">Close</button>
             <button id="btnSaveArgs">Save</button>
         </div>
     </div>

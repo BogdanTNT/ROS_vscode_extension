@@ -19,6 +19,7 @@ export const PMToHostCommand = {
     SET_PREFERRED_TERMINAL: 'setPreferredTerminal',
     OPEN_SOURCED_TERMINAL: 'openSourcedTerminal',
     TOGGLE_BUILD_CHECK: 'toggleBuildCheck',
+    SET_BUILD_CHECK_SCOPES: 'setBuildCheckScopes',
     ADD_NODE: 'addNode',
     REMOVE_NODE: 'removeNode',
     CREATE_LAUNCH: 'createLaunch',

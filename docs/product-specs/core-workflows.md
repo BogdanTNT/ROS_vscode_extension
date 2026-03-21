@@ -85,7 +85,8 @@ Defines acceptance criteria for workflows currently advertised in `README.md`:
 
 ### User Actions
 1. Trigger run/launch.
-2. Optional: toggle auto build check in UI.
+2. Optional: open `Auto Build Settings` in Package Manager.
+3. Optional: toggle global auto build check and per-action scopes (`launch file`, `run node`).
 
 ### Acceptance Criteria
 - When disabled:
@@ -94,6 +95,8 @@ Defines acceptance criteria for workflows currently advertised in `README.md`:
   - stale package evaluation runs for selected package closure.
   - if stale packages exist, build is chained before run/launch.
   - if no stale packages exist, run/launch starts immediately.
+- When enabled but a per-action scope is disabled in Package Manager:
+  - the scoped action skips stale-package evaluation and runs/launches directly.
 - For ROS 2 builds:
   - `--symlink-install` usage follows setting.
   - stale build/install dirs are cleaned before build.

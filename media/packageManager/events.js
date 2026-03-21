@@ -10,6 +10,9 @@
         ament_python: 'rclpy std_msgs',
     };
     const defaultPackageDescription = 'TO DO: A very good package description';
+    const ARGS_AUTOSAVE_DELAY_MS = 180;
+    let argsAutosaveTimer = 0;
+    let argsSummaryRefreshPending = false;
 
     const getDefaultDeps = (buildType) => defaultDepsByBuildType[buildType] || '';
     const bindRecursiveToggleTrigger = (element, onToggle, onRecursiveToggle) => {
@@ -246,6 +249,11 @@
         if (!argsKey) {
             return;
         }
+        if (argsAutosaveTimer) {
+            window.clearTimeout(argsAutosaveTimer);
+            argsAutosaveTimer = 0;
+        }
+        argsSummaryRefreshPending = false;
         state.currentArgsKey = argsKey;
         const cfg = state.launchArgConfigs[argsKey] || {
             configs: [{ id: 'default', name: 'default', args: '', runTarget: 'auto' }],
@@ -276,7 +284,154 @@
         }
     };
 
-    const closeArgsModal = () => {
+    const renderArgsConfigSummaries = () => {
+        render.renderPackages();
+        render.renderOtherPackages();
+        render.renderPinned();
+    };
+
+    const clearArgsAutosaveTimer = () => {
+        if (!argsAutosaveTimer) {
+            return false;
+        }
+        window.clearTimeout(argsAutosaveTimer);
+        argsAutosaveTimer = 0;
+        return true;
+    };
+
+    const persistLaunchArgConfigs = (argsKey) => {
+        const normalizedArgsKey = String(argsKey || '').trim();
+        if (!normalizedArgsKey) {
+            return;
+        }
+        const cfg = state.launchArgConfigs[normalizedArgsKey];
+        if (!cfg || !Array.isArray(cfg.configs)) {
+            return;
+        }
+        actions.setLaunchArgConfigs(normalizedArgsKey, cfg.configs.map((config, index) => {
+            const id = String(config?.id || `cfg-${index + 1}`).trim() || `cfg-${index + 1}`;
+            const normalizedName = String(config?.name || '').trim() || (id === 'default' ? 'default' : 'config');
+            return {
+                id,
+                name: normalizedName,
+                args: String(config?.args || ''),
+                runTarget: normalizeConfigRunTarget(config?.runTarget || 'auto'),
+            };
+        }));
+    };
+
+    const updateCurrentArgsConfigDraft = () => {
+        const argsKey = String(state.currentArgsKey || '').trim();
+        if (!argsKey) {
+            return { argsKey: '', changed: false };
+        }
+        const cfg = state.launchArgConfigs[argsKey];
+        if (!cfg || !Array.isArray(cfg.configs) || !cfg.configs.length) {
+            return { argsKey, changed: false };
+        }
+
+        const currentCfg = getCurrentArgsConfig();
+        if (!currentCfg) {
+            return { argsKey, changed: false };
+        }
+
+        const configIndex = cfg.configs.findIndex((config) => config.id === currentCfg.id);
+        if (configIndex < 0) {
+            return { argsKey, changed: false };
+        }
+
+        const normalizedCurrentName = String(currentCfg.name || '').trim() || (currentCfg.id === 'default' ? 'default' : 'config');
+        const normalizedCurrentArgs = String(currentCfg.args || '');
+        const normalizedCurrentRunTarget = normalizeConfigRunTarget(currentCfg.runTarget || 'auto');
+
+        const nextName = String(dom.configName?.value ?? currentCfg.name ?? '').trim()
+            || (currentCfg.id === 'default' ? 'default' : 'config');
+        const nextArgs = String(dom.argsInput?.value ?? currentCfg.args ?? '');
+        const nextRunTarget = normalizeConfigRunTarget(dom.configRunTarget?.value || currentCfg.runTarget || 'auto');
+
+        const changed = normalizedCurrentName !== nextName
+            || normalizedCurrentArgs !== nextArgs
+            || normalizedCurrentRunTarget !== nextRunTarget;
+
+        if (!changed) {
+            return { argsKey, changed: false };
+        }
+
+        cfg.configs[configIndex] = {
+            ...currentCfg,
+            name: nextName,
+            args: nextArgs,
+            runTarget: nextRunTarget,
+        };
+        state.launchArgConfigs[argsKey] = cfg;
+
+        return {
+            argsKey,
+            changed: true,
+            summaryChanged: normalizedCurrentName !== nextName,
+        };
+    };
+
+    const flushArgsAutosave = (options = {}) => {
+        const draft = updateCurrentArgsConfigDraft();
+        if (options.refreshConfigTabs && draft.changed) {
+            render.renderConfigTabs();
+        }
+        if (options.refreshConfigSummaries && draft.changed) {
+            argsSummaryRefreshPending = true;
+        }
+
+        const hadPendingAutosave = clearArgsAutosaveTimer();
+        const argsKey = String(draft.argsKey || state.currentArgsKey || '').trim();
+        if (!argsKey || (!draft.changed && !hadPendingAutosave && !argsSummaryRefreshPending)) {
+            return;
+        }
+
+        if (argsSummaryRefreshPending) {
+            renderArgsConfigSummaries();
+            argsSummaryRefreshPending = false;
+        }
+        persistLaunchArgConfigs(argsKey);
+    };
+
+    const queueArgsAutosave = (options = {}) => {
+        const draft = updateCurrentArgsConfigDraft();
+        if (options.refreshConfigTabs && draft.changed) {
+            render.renderConfigTabs();
+        }
+        if (options.refreshConfigSummaries && draft.changed) {
+            argsSummaryRefreshPending = true;
+        }
+
+        const argsKey = String(draft.argsKey || state.currentArgsKey || '').trim();
+        const hadPendingAutosave = clearArgsAutosaveTimer();
+        if (!argsKey || (!draft.changed && !hadPendingAutosave)) {
+            return;
+        }
+
+        if (options.immediate) {
+            if (argsSummaryRefreshPending) {
+                renderArgsConfigSummaries();
+                argsSummaryRefreshPending = false;
+            }
+            persistLaunchArgConfigs(argsKey);
+            return;
+        }
+
+        argsAutosaveTimer = window.setTimeout(() => {
+            argsAutosaveTimer = 0;
+            if (argsSummaryRefreshPending) {
+                renderArgsConfigSummaries();
+                argsSummaryRefreshPending = false;
+            }
+            persistLaunchArgConfigs(argsKey);
+        }, ARGS_AUTOSAVE_DELAY_MS);
+    };
+
+    const closeArgsModal = (options = {}) => {
+        if (options.persist !== false) {
+            flushArgsAutosave({ refreshConfigSummaries: true });
+        }
         dom.argsModal.classList.add('hidden');
     };
 
@@ -680,6 +835,47 @@
         dom.environmentModal.classList.add('hidden');
     };
 
+    const renderBuildCheckSettingsState = () => {
+        const globalEnabled = Boolean(dom.toggleBuildCheck?.checked);
+        if (dom.buildCheckScopeSettings) {
+            dom.buildCheckScopeSettings.classList.toggle('disabled', !globalEnabled);
+            dom.buildCheckScopeSettings.setAttribute('aria-disabled', globalEnabled ? 'false' : 'true');
+        }
+        if (dom.toggleBuildCheckLaunchFiles) {
+            dom.toggleBuildCheckLaunchFiles.disabled = !globalEnabled;
+        }
+        if (dom.toggleBuildCheckRunNodes) {
+            dom.toggleBuildCheckRunNodes.disabled = !globalEnabled;
+        }
+    };
+
+    const openBuildCheckSettingsModal = () => {
+        if (!dom.buildCheckSettingsModal) {
+            return;
+        }
+        renderBuildCheckSettingsState();
+        dom.buildCheckSettingsModal.classList.remove('hidden');
+        if (dom.toggleBuildCheck) {
+            dom.toggleBuildCheck.focus();
+        }
+    };
+
+    const closeBuildCheckSettingsModal = () => {
+        if (!dom.buildCheckSettingsModal) {
+            return;
+        }
+        dom.buildCheckSettingsModal.classList.add('hidden');
+    };
+
+    const submitBuildCheckSettings = () => {
+        const enabled = Boolean(dom.toggleBuildCheck?.checked);
+        const launchFile = Boolean(dom.toggleBuildCheckLaunchFiles?.checked);
+        const runNode = Boolean(dom.toggleBuildCheckRunNodes?.checked);
+        actions.toggleBuildCheck(enabled);
+        actions.setBuildCheckScopes({ launchFile, runNode });
+        closeBuildCheckSettingsModal();
+    };
+
     const submitCreatePackage = () => {
         const rawName = dom.pkgNameInput ? dom.pkgNameInput.value : '';
         const name = normalizePackageName(rawName);
@@ -738,6 +934,31 @@
             actions.showEnvironmentInfo();
         });
     }
+    if (dom.btnOpenBuildCheckSettings) {
+        dom.btnOpenBuildCheckSettings.addEventListener('click', openBuildCheckSettingsModal);
+    }
+    if (dom.toggleBuildCheck) {
+        dom.toggleBuildCheck.addEventListener('change', renderBuildCheckSettingsState);
+    }
+    if (dom.btnSaveBuildCheckSettings) {
+        dom.btnSaveBuildCheckSettings.addEventListener('click', submitBuildCheckSettings);
+    }
+    if (dom.btnCancelBuildCheckSettings) {
+        dom.btnCancelBuildCheckSettings.addEventListener('click', closeBuildCheckSettingsModal);
+    }
+    if (dom.btnCloseBuildCheckSettings) {
+        dom.btnCloseBuildCheckSettings.addEventListener('click', closeBuildCheckSettingsModal);
+    }
+    if (dom.buildCheckSettingsBackdrop) {
+        dom.buildCheckSettingsBackdrop.addEventListener('click', closeBuildCheckSettingsModal);
+    }
+    if (uiInteractions?.bindModalEnterConfirm && dom.buildCheckSettingsModal && dom.btnSaveBuildCheckSettings) {
+        uiInteractions.bindModalEnterConfirm({
+            modal: dom.buildCheckSettingsModal,
+            confirmButton: dom.btnSaveBuildCheckSettings,
+        });
+    }
+    bindModalEscapeClose(dom.buildCheckSettingsModal, closeBuildCheckSettingsModal);
     if (dom.btnNewRosTerminal) {
         dom.btnNewRosTerminal.addEventListener('click', () => {
             actions.openSourcedTerminal();
@@ -870,10 +1091,6 @@
         );
     }
 
-    dom.toggleBuildCheck.addEventListener('change', () => {
-        actions.toggleBuildCheck(dom.toggleBuildCheck.checked);
-    });
-
     dom.btnInsertAll.addEventListener('click', () => {
         if (!state.argsOptions.length) {
             return;
@@ -883,26 +1100,16 @@
             .join(' ');
         const current = dom.argsInput.value.trim();
         dom.argsInput.value = current ? current + ' ' + values : values;
+        queueArgsAutosave({ immediate: true });
     });
 
     dom.btnSaveArgs.addEventListener('click', () => {
-        const cfg = state.launchArgConfigs[state.currentArgsKey] || { configs: [] };
-        const list = cfg.configs.length
-            ? cfg.configs
-            : [{ id: 'default', name: 'default', args: '', runTarget: 'auto' }];
-        const idx = list.findIndex((c) => c.id === state.currentConfigId);
-        if (idx >= 0) {
-            list[idx].args = dom.argsInput.value;
-            list[idx].name = dom.configName.value || list[idx].name || 'config';
-            list[idx].runTarget = normalizeConfigRunTarget(dom.configRunTarget?.value || list[idx].runTarget || 'auto');
-        }
-        cfg.configs = list;
-        state.launchArgConfigs[state.currentArgsKey] = cfg;
-        actions.setLaunchArgConfigs(state.currentArgsKey, cfg.configs);
-        closeArgsModal();
+        flushArgsAutosave({ refreshConfigTabs: true, refreshConfigSummaries: true });
+        closeArgsModal({ persist: false });
     });
 
     dom.btnAddConfig.addEventListener('click', () => {
+        flushArgsAutosave({ refreshConfigTabs: true, refreshConfigSummaries: true });
         const cfg = state.launchArgConfigs[state.currentArgsKey] || { configs: [] };
         const id = 'cfg-' + Date.now();
         const name = 'config ' + (cfg.configs.length + 1);
@@ -912,6 +1119,8 @@
         state.currentConfigId = id;
         syncArgsConfigEditor();
         render.renderConfigTabs();
+        renderArgsConfigSummaries();
+        persistLaunchArgConfigs(state.currentArgsKey);
     });
 
     dom.btnRemoveConfig.addEventListener('click', () => {
@@ -919,16 +1128,42 @@
         if (!cfg || cfg.configs.length <= 1) {
             return;
         }
+        flushArgsAutosave({ refreshConfigTabs: true, refreshConfigSummaries: true });
         cfg.configs = cfg.configs.filter((c) => c.id !== state.currentConfigId);
         state.currentConfigId = cfg.configs[0].id;
         state.launchArgConfigs[state.currentArgsKey] = cfg;
         syncArgsConfigEditor();
         render.renderConfigTabs();
+        renderArgsConfigSummaries();
+        persistLaunchArgConfigs(state.currentArgsKey);
     });
 
+    if (dom.argsInput) {
+        dom.argsInput.addEventListener('input', () => {
+            queueArgsAutosave();
+        });
+    }
+    if (dom.configName) {
+        dom.configName.addEventListener('input', () => {
+            queueArgsAutosave({
+                refreshConfigTabs: true,
+                refreshConfigSummaries: true,
+            });
+        });
+    }
+    if (dom.configList) {
+        dom.configList.addEventListener('click', (event) => {
+            const target = event.target;
+            if (!(target instanceof Element) || !target.closest('.config-pill')) {
+                return;
+            }
+            flushArgsAutosave();
+        }, true);
+    }
     if (dom.configRunTarget) {
         dom.configRunTarget.addEventListener('change', () => {
             renderConfigRunTargetState(dom.configRunTarget.value);
+            queueArgsAutosave({ immediate: true });
         });
     }
 
@@ -1159,6 +1394,9 @@
         openEnvironmentModal,
         closeEnvironmentModal,
         renderEnvironmentModalState,
+        renderBuildCheckSettingsState,
+        openBuildCheckSettingsModal,
+        closeBuildCheckSettingsModal,
         openAddNodeModal,
         closeAddNodeModal,
         openCreateLaunchModal,

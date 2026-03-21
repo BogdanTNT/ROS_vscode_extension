@@ -10,8 +10,10 @@
     const killFeedbackUntil = new Map();
     const KILL_FEEDBACK_MS = 1200;
     const COPY_FEEDBACK_MS = 2400;
+    const RUN_ACTION_COOLDOWN_MS = 2000;
     let copyPopupEl = null;
     let copyPopupTimeout = null;
+    let runActionCooldownActive = false;
 
     const getPkgList = () => document.getElementById('pkgList');
     const getOtherPkgList = () => document.getElementById('otherPkgList');
@@ -345,20 +347,58 @@
         };
     };
 
-    const launchFromItem = (launchItem, args, argsName, runTarget) => {
+    const triggerRunWithCooldown = (triggerElement, runAction) => {
+        if (runActionCooldownActive) {
+            return;
+        }
+
+        runActionCooldownActive = true;
+        document.body.classList.add('pm-run-cooldown');
+
+        let triggerLabel = '';
+        if (triggerElement instanceof HTMLElement) {
+            triggerElement.classList.add('is-run-cooldown-trigger');
+            if (triggerElement.classList.contains('launch-run') || triggerElement.classList.contains('node-run')) {
+                triggerLabel = triggerElement.textContent || '';
+                triggerElement.textContent = 'Starting...';
+            }
+        }
+
+        try {
+            runAction();
+        } finally {
+            window.setTimeout(() => {
+                runActionCooldownActive = false;
+                document.body.classList.remove('pm-run-cooldown');
+
+                if (triggerElement instanceof HTMLElement) {
+                    triggerElement.classList.remove('is-run-cooldown-trigger');
+                    if (triggerLabel) {
+                        triggerElement.textContent = triggerLabel;
+                    }
+                }
+            }, RUN_ACTION_COOLDOWN_MS);
+        }
+    };
+
+    const launchFromItem = (launchItem, args, argsName, runTarget, triggerElement) => {
         const { pkg, file, path } = getLaunchItemData(launchItem);
         if (!pkg || !file || !path) {
             return;
         }
-        actions.launchFile(pkg, file, path, args || '', argsName || '', runTarget || '');
+        triggerRunWithCooldown(triggerElement, () => {
+            actions.launchFile(pkg, file, path, args || '', argsName || '', runTarget || '');
+        });
     };
 
-    const runNodeFromItem = (nodeItem, args, argsName, runTarget) => {
+    const runNodeFromItem = (nodeItem, args, argsName, runTarget, triggerElement) => {
         const { pkg, executable, path } = getNodeItemData(nodeItem);
         if (!pkg || !executable) {
             return;
         }
-        actions.runNode(pkg, executable, args || '', argsName || '', path || '', runTarget || '');
+        triggerRunWithCooldown(triggerElement, () => {
+            actions.runNode(pkg, executable, args || '', argsName || '', path || '', runTarget || '');
+        });
     };
 
     const openFromItem = (launchItem) => {
@@ -421,7 +461,13 @@
         const cfg = state.launchArgConfigs[argsKey];
         const match = cfg?.configs?.find((c) => c.id === id);
         const runTarget = String(match?.runTarget || '').trim();
-        launchFromItem(launchItem, match?.args || '', match?.name || '', runTarget !== 'auto' ? runTarget : '');
+        launchFromItem(
+            launchItem,
+            match?.args || '',
+            match?.name || '',
+            runTarget !== 'auto' ? runTarget : '',
+            configBtn,
+        );
     };
 
     const runNodeFromConfigButton = (configBtn, nodeItem) => {
@@ -433,7 +479,13 @@
         const cfg = state.launchArgConfigs[argsKey];
         const match = cfg?.configs?.find((c) => c.id === id);
         const runTarget = String(match?.runTarget || '').trim();
-        runNodeFromItem(nodeItem, match?.args || '', match?.name || '', runTarget !== 'auto' ? runTarget : '');
+        runNodeFromItem(
+            nodeItem,
+            match?.args || '',
+            match?.name || '',
+            runTarget !== 'auto' ? runTarget : '',
+            configBtn,
+        );
     };
 
     const handleLaunchListClick = (event) => {
@@ -531,7 +583,7 @@
             }
 
             if (target.closest('.launch-run')) {
-                launchFromItem(launchItem, '', '');
+                launchFromItem(launchItem, '', '', '', target.closest('.launch-run'));
                 return;
             }
 
@@ -562,7 +614,7 @@
             }
 
             if (target.closest('.node-run')) {
-                runNodeFromItem(nodeItem, '', '');
+                runNodeFromItem(nodeItem, '', '', '', target.closest('.node-run'));
                 return;
             }
 
@@ -611,7 +663,7 @@
         if (launchItem) {
             if (target.closest('.launch-run')) {
                 event.preventDefault();
-                launchFromItem(launchItem, '', '');
+                launchFromItem(launchItem, '', '', '', target.closest('.launch-run'));
                 return;
             }
 
@@ -626,7 +678,7 @@
         if (nodeItem) {
             if (target.closest('.node-run')) {
                 event.preventDefault();
-                runNodeFromItem(nodeItem, '', '');
+                runNodeFromItem(nodeItem, '', '', '', target.closest('.node-run'));
                 return;
             }
             if (target.closest('.node-open') && !target.closest('.node-open.disabled')) {

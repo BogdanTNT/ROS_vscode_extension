@@ -2551,6 +2551,7 @@ int main(int argc, char * argv[]) {
         nodePath?: string,
         argsLabel?: string,
         runTargetOverride?: string,
+        preLaunchBuildCheckOverride?: boolean,
     ): Promise<void> {
         const normalizedExecutableLabel = path.basename(String(executable || '').replace(/\\/g, '/')) || executable;
         const argString = args?.trim() ? ` ${args.trim()}` : '';
@@ -2575,7 +2576,7 @@ int main(int argc, char * argv[]) {
         };
 
         // Smart-build check before running
-        const result = await this.preLaunchBuildCheck(pkg);
+        const result = await this.preLaunchBuildCheck(pkg, preLaunchBuildCheckOverride);
 
         if (result.action === 'cancel') {
             return;
@@ -2652,6 +2653,7 @@ int main(int argc, char * argv[]) {
         launchPath?: string,
         argsLabel?: string,
         runTargetOverride?: string,
+        preLaunchBuildCheckOverride?: boolean,
     ): Promise<void> {
         const normalizedLaunchFile = path.basename(String(launchFile || '').replace(/\\/g, '/'));
         if (!normalizedLaunchFile) {
@@ -2679,7 +2681,7 @@ int main(int argc, char * argv[]) {
         };
 
         // Smart-build check before launching
-        const result = await this.preLaunchBuildCheck(pkg);
+        const result = await this.preLaunchBuildCheck(pkg, preLaunchBuildCheckOverride);
 
         if (result.action === 'cancel') {
             return;
@@ -2718,10 +2720,12 @@ int main(int argc, char * argv[]) {
      *
      * Returns a structured result so the caller can chain build + launch.
      */
-    async preLaunchBuildCheck(pkg: string): Promise<PreLaunchBuildResult> {
-        const enabled = vscode.workspace
-            .getConfiguration('rosDevToolkit')
-            .get<boolean>('preLaunchBuildCheck', true);
+    async preLaunchBuildCheck(pkg: string, enabledOverride?: boolean): Promise<PreLaunchBuildResult> {
+        const enabled = typeof enabledOverride === 'boolean'
+            ? enabledOverride
+            : vscode.workspace
+                .getConfiguration('rosDevToolkit')
+                .get<boolean>('preLaunchBuildCheck', true);
         if (!enabled) {
             return { action: 'launch' };
         }

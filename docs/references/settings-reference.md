@@ -19,6 +19,7 @@ Source of truth: `package.json` -> `contributes.configuration.properties`.
 
 ## Behavior Notes
 - `preLaunchBuildCheck` can be toggled from Package Manager UI and is persisted in VS Code settings.
+- Package Manager `Auto Build Settings` modal also stores per-action scope preferences (`launch file`, `run node`) in extension global state; these scopes only affect Package Manager run/launch actions.
 - `nodeVisualizerAutoRefreshIntervalMs` is runtime-clamped even if user sets out-of-range values.
 - Node Visualizer panel can edit `nodeVisualizerAutoRefreshIntervalMs`; host persists edits at workspace scope.
 - `launchInExternalTerminal` applies only when run target is `auto`; explicit run target overrides it.

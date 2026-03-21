@@ -619,6 +619,39 @@ button.small {
     border-color: var(--accent);
 }
 
+body.pm-run-cooldown .launch-run,
+body.pm-run-cooldown .node-run,
+body.pm-run-cooldown .config-pill {
+    pointer-events: none;
+    opacity: 0.6;
+}
+
+.is-run-cooldown-trigger {
+    position: relative;
+    overflow: hidden;
+}
+
+.is-run-cooldown-trigger::after {
+    content: '';
+    position: absolute;
+    inset: 0;
+    background: linear-gradient(
+        110deg,
+        rgba(255, 255, 255, 0) 8%,
+        rgba(255, 255, 255, 0.28) 45%,
+        rgba(255, 255, 255, 0) 82%
+    );
+    transform: translateX(-130%);
+    animation: runCooldownSweep 1.05s linear infinite;
+    pointer-events: none;
+}
+
+@keyframes runCooldownSweep {
+    to {
+        transform: translateX(130%);
+    }
+}
+
 .item-list li.pkg-item {
     cursor: pointer;
 }
@@ -1267,6 +1300,9 @@ button.term-kill.is-pending {
     display: flex;
     align-items: center;
     justify-content: center;
+    padding: 12px;
+    overflow-y: auto;
+    overscroll-behavior: contain;
 }
 
 .modal-backdrop {
@@ -1278,11 +1314,18 @@ button.term-kill.is-pending {
 .modal-card {
     position: relative;
     width: min(520px, 92vw);
+    max-width: calc(100vw - 24px);
+    max-width: calc(100dvw - 24px);
+    max-height: calc(100vh - 24px);
+    max-height: calc(100dvh - 24px);
+    display: flex;
+    flex-direction: column;
     background: var(--panel-bg);
     border: 1px solid var(--border);
     border-radius: 6px;
     padding: 12px;
     z-index: 1001;
+    overflow: hidden;
 }
 
 .modal-header {
@@ -1293,7 +1336,10 @@ button.term-kill.is-pending {
 }
 
 .modal-body {
+    flex: 1 1 auto;
+    min-height: 0;
     margin-bottom: 10px;
+    overflow-y: auto;
 }
 
 .modal-footer {
@@ -1413,6 +1459,15 @@ button.term-kill.is-pending {
 .toggle-switch input:checked + .toggle-slider::before {
     transform: translateX(14px);
     background: var(--btn-fg, #fff);
+}
+
+#buildCheckScopeSettings.disabled {
+    opacity: 0.55;
+    pointer-events: none;
+}
+
+#buildCheckScopeSettings {
+    transition: opacity 0.18s ease;
 }
 /* ── Utility ───────────────────────────────────────────────── */
 

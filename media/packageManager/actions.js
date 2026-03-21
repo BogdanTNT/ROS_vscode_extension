@@ -55,6 +55,10 @@
             name,
         }),
         toggleBuildCheck: (enabled) => vscode.postMessage({ command: toHost.TOGGLE_BUILD_CHECK, enabled }),
+        setBuildCheckScopes: (scopes) => vscode.postMessage({
+            command: toHost.SET_BUILD_CHECK_SCOPES,
+            scopes,
+        }),
         createPackage: (name, buildType, deps, license, description) => vscode.postMessage({
             command: toHost.CREATE_PACKAGE,
             name,

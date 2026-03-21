@@ -52,6 +52,10 @@ Source files:
   - if disabled -> `{ action: 'launch' }`
   - else calls `evaluateBuildNeeds([pkg])`
   - stale packages -> `{ action: 'build-and-launch', stalePackages }`
+- Package Manager can pass a per-action override to skip `preLaunchBuildCheck` for specific actions:
+  - `launch file` scope
+  - `run node` scope
+  - scope preferences are stored in extension global state and only affect Package Manager-triggered actions.
 
 ### Build and execute
 - `RosWorkspace.buildThenRun(...)` composes:
