@@ -931,6 +931,14 @@
         );
     };
 
+    const getPinnedItemSnapshot = (pinKey) => {
+        if (!pinKey || !state.pinnedItemSnapshots || typeof state.pinnedItemSnapshots !== 'object') {
+            return undefined;
+        }
+        const snapshot = state.pinnedItemSnapshots[pinKey];
+        return snapshot && typeof snapshot === 'object' ? snapshot : undefined;
+    };
+
     const buildPackageDropdownHtml = ({
         packageName,
         sectionKey,
@@ -1055,6 +1063,65 @@
         };
     };
 
+    const autoSizeArgEntryInput = (input) => {
+        if (!(input instanceof HTMLTextAreaElement)) {
+            return;
+        }
+        input.style.height = 'auto';
+        input.style.height = Math.max(input.scrollHeight, 34) + 'px';
+    };
+
+    const renderSelectedArgsList = () => {
+        if (!dom.selectedArgsList) {
+            return;
+        }
+
+        const entries = Array.isArray(state.currentArgEntries)
+            ? state.currentArgEntries
+            : [];
+
+        if (!entries.length) {
+            dom.selectedArgsList.innerHTML = '<li class="text-muted">No arguments added</li>';
+            return;
+        }
+
+        dom.selectedArgsList.innerHTML = entries
+            .map((entry, index) => (
+                '<li class="arg-item">' +
+                '<div class="arg-item-main">' +
+                '<span class="arg-item-label">Argument ' + String(index + 1) + '</span>' +
+                '<textarea class="arg-entry-input" data-index="' + String(index) + '" rows="1" placeholder="use_sim_time:=true namespace:=robot1">' +
+                escapeHtml(String(entry || '')) +
+                '</textarea>' +
+                '</div>' +
+                '<button class="secondary small arg-entry-remove" type="button" data-index="' + String(index) + '">Remove</button>' +
+                '</li>'
+            ))
+            .join('');
+
+        dom.selectedArgsList.querySelectorAll('.arg-entry-input').forEach((el) => {
+            autoSizeArgEntryInput(el);
+            el.addEventListener('input', () => {
+                const index = Number(el.dataset.index);
+                if (!Number.isInteger(index) || !window.PM.handlers?.updateArgEntryAt) {
+                    return;
+                }
+                window.PM.handlers.updateArgEntryAt(index, el.value);
+                autoSizeArgEntryInput(el);
+            });
+        });
+
+        dom.selectedArgsList.querySelectorAll('.arg-entry-remove').forEach((el) => {
+            el.addEventListener('click', () => {
+                const index = Number(el.dataset.index);
+                if (!Number.isInteger(index) || !window.PM.handlers?.removeArgEntryAt) {
+                    return;
+                }
+                window.PM.handlers.removeArgEntryAt(index);
+            });
+        });
+    };
+
     const renderArgsOptions = () => {
         if (!state.argsOptions.length) {
             dom.argsList.innerHTML = '<li class="text-muted">No arguments detected</li>';
@@ -1078,11 +1145,10 @@
             const btn = el.querySelector('button');
             btn.addEventListener('click', () => {
                 const val = el.dataset.value;
-                if (!val) {
+                if (!val || !window.PM.handlers?.appendArgEntry) {
                     return;
                 }
-                const current = dom.argsInput.value.trim();
-                dom.argsInput.value = current ? current + ' ' + val : val;
+                window.PM.handlers.appendArgEntry(val);
             });
         });
     };
@@ -1115,8 +1181,11 @@
                     window.PM.handlers.syncArgsConfigEditor();
                 } else {
                     const cfgItem = cfg.configs.find((c) => c.id === state.currentConfigId);
-                    dom.argsInput.value = cfgItem?.args || '';
+                    state.currentArgEntries = Array.isArray(cfgItem?.args)
+                        ? cfgItem.args
+                        : (cfgItem?.args ? [cfgItem.args] : []);
                     dom.configName.value = cfgItem?.name || '';
+                    renderSelectedArgsList();
                 }
                 renderConfigTabs();
             });
@@ -1181,12 +1250,15 @@
                         : '';
                 const isKillFeedbackActive = (killFeedbackUntil.get(t.id) || 0) > now;
                 const isClosed = t.status !== 'running';
+                const terminalStatusClass = isClosed ? ' not-running' : ' running';
                 const killBtnClass = 'danger small term-kill' + (isKillFeedbackActive ? ' is-pending' : '');
                 const killBtnDisabled = isKillFeedbackActive ? ' disabled' : '';
                 const killBtnLabel = isKillFeedbackActive ? 'Sent' : (isClosed ? 'Close' : 'Kill');
 
                 return (
-                    '<li class="terminal-item" data-id="' +
+                    '<li class="terminal-item' +
+                    terminalStatusClass +
+                    '" data-id="' +
                     escapeAttr(t.id) +
                     '">' +
                     '<div class="terminal-main">' +
@@ -1429,25 +1501,45 @@
                 const nodeMatch = allKnownPackages
                     .flatMap((pkg) => (pkg.nodes || []).map((node) => ({ pkg, node })))
                     .find(({ pkg, node }) => ('node::' + pkg.name + '::' + node.name) === pinKey);
-                if (!nodeMatch) {
+                if (nodeMatch) {
+                    const normalizedNodeName = getFileName(nodeMatch.node.name) || nodeMatch.node.name;
+                    const nodeLabel = nodeMatch.pkg.name + ' / ' + normalizedNodeName;
+                    const legacyNodeLabel = nodeMatch.pkg.name + ' / ' + nodeMatch.node.name;
+                    const canRemovePinnedNode = (state.allPackages || [])
+                        .some((workspacePkg) => workspacePkg.name === nodeMatch.pkg.name);
+                    pinnedItems.push(buildNodeItemHtml({
+                        packageName: nodeMatch.pkg.name,
+                        packagePath: nodeMatch.pkg.packagePath,
+                        nodeName: nodeMatch.node.name,
+                        sourcePath: nodeMatch.node.sourcePath,
+                        openLabel: nodeLabel,
+                        isPinned: true,
+                        isRunning: running.has(nodeLabel)
+                            || running.has(legacyNodeLabel)
+                            || (nodeMatch.node.sourcePath && running.has(nodeMatch.node.sourcePath)),
+                        canRemove: canRemovePinnedNode,
+                    }));
                     continue;
                 }
-                const normalizedNodeName = getFileName(nodeMatch.node.name) || nodeMatch.node.name;
-                const nodeLabel = nodeMatch.pkg.name + ' / ' + normalizedNodeName;
-                const legacyNodeLabel = nodeMatch.pkg.name + ' / ' + nodeMatch.node.name;
-                const canRemovePinnedNode = (state.allPackages || [])
-                    .some((workspacePkg) => workspacePkg.name === nodeMatch.pkg.name);
+
+                const snapshot = getPinnedItemSnapshot(pinKey);
+                if (!snapshot || snapshot.kind !== 'node') {
+                    continue;
+                }
+                const normalizedNodeName = getFileName(snapshot.nodeName) || snapshot.nodeName;
+                const nodeLabel = snapshot.packageName + ' / ' + normalizedNodeName;
+                const legacyNodeLabel = snapshot.packageName + ' / ' + snapshot.nodeName;
                 pinnedItems.push(buildNodeItemHtml({
-                    packageName: nodeMatch.pkg.name,
-                    packagePath: nodeMatch.pkg.packagePath,
-                    nodeName: nodeMatch.node.name,
-                    sourcePath: nodeMatch.node.sourcePath,
+                    packageName: snapshot.packageName,
+                    packagePath: snapshot.packagePath,
+                    nodeName: snapshot.nodeName,
+                    sourcePath: snapshot.sourcePath || '',
                     openLabel: nodeLabel,
                     isPinned: true,
                     isRunning: running.has(nodeLabel)
                         || running.has(legacyNodeLabel)
-                        || (nodeMatch.node.sourcePath && running.has(nodeMatch.node.sourcePath)),
-                    canRemove: canRemovePinnedNode,
+                        || (snapshot.sourcePath && running.has(snapshot.sourcePath)),
+                    canRemove: false,
                 }));
                 continue;
             }
@@ -1455,17 +1547,31 @@
             const launchMatch = allKnownPackages
                 .flatMap((pkg) => (pkg.launchFiles || []).map((filePath) => ({ pkg, filePath })))
                 .find(({ filePath }) => filePath === pinKey);
-            if (!launchMatch) {
+            if (launchMatch) {
+                pinnedItems.push(buildLaunchItemHtml({
+                    packageName: launchMatch.pkg.name,
+                    packagePath: launchMatch.pkg.packagePath,
+                    filePath: launchMatch.filePath,
+                    openLabel: launchMatch.pkg.name + ' / ' + getFileName(launchMatch.filePath),
+                    isPinned: true,
+                    isRunning: running.has(launchMatch.filePath),
+                    canRemove: (state.allPackages || []).some((workspacePkg) => workspacePkg.name === launchMatch.pkg.name),
+                }));
+                continue;
+            }
+
+            const snapshot = getPinnedItemSnapshot(pinKey);
+            if (!snapshot || snapshot.kind !== 'launch') {
                 continue;
             }
             pinnedItems.push(buildLaunchItemHtml({
-                packageName: launchMatch.pkg.name,
-                packagePath: launchMatch.pkg.packagePath,
-                filePath: launchMatch.filePath,
-                openLabel: launchMatch.pkg.name + ' / ' + getFileName(launchMatch.filePath),
+                packageName: snapshot.packageName,
+                packagePath: snapshot.packagePath,
+                filePath: snapshot.filePath,
+                openLabel: snapshot.packageName + ' / ' + getFileName(snapshot.filePath),
                 isPinned: true,
-                isRunning: running.has(launchMatch.filePath),
-                canRemove: (state.allPackages || []).some((workspacePkg) => workspacePkg.name === launchMatch.pkg.name),
+                isRunning: running.has(snapshot.filePath),
+                canRemove: false,
             }));
         }
 
@@ -1485,6 +1591,7 @@
     };
 
     window.PM.render = {
+        renderSelectedArgsList,
         renderArgsOptions,
         renderConfigTabs,
         renderPackages,

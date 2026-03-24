@@ -1,7 +1,6 @@
+import * as path from 'path';
 import { BuildStampManager } from './buildStampManager';
 import { DependencyResolver, DependencyGraph } from './dependencyResolver';
-
-// ── Public types ───────────────────────────────────────────────
 
 /** User-selectable smart-build behaviour. */
 export type SmartBuildPolicy = 'always' | 'ask' | 'never';
@@ -42,25 +41,24 @@ export interface BuildPolicyConfig {
     policy: SmartBuildPolicy;
     /**
      * When `true`, propagate rebuild only when a dependency changed
-     * interface files (msg, srv, action, include, CMakeLists.txt …).
+     * interface files (msg, srv, action, include, CMakeLists.txt, etc.).
      * When `false`, any change in a dependency causes dependents to rebuild.
      */
     fastDependencyMode: boolean;
+    /** Reflects whether builds currently use ROS 2 `--symlink-install`. */
+    symlinkInstall?: boolean;
 }
-
-// ── Default config ─────────────────────────────────────────────
 
 export const DEFAULT_BUILD_POLICY_CONFIG: Readonly<BuildPolicyConfig> = {
     policy: 'ask',
     fastDependencyMode: true,
+    symlinkInstall: true,
 };
-
-// ── Implementation ─────────────────────────────────────────────
 
 /**
  * Evaluates which packages need rebuilding before a launch or explicit
  * build, considering build stamps, source mtimes, dependency propagation,
- * and the symlink-install shortcut for `ament_python` packages.
+ * and symlink-install shortcuts for runtime-served files.
  */
 export class BuildPolicy {
     constructor(
@@ -85,10 +83,6 @@ export class BuildPolicy {
         const needsBuild: string[] = [];
         const upToDate: string[] = [];
 
-        // Track which packages have their own source changes
-        const directlyDirty = new Set<string>();
-
-        // First pass — evaluate each package independently
         for (const name of closure) {
             const pkg = graph.get(name);
             if (!pkg) {
@@ -97,27 +91,18 @@ export class BuildPolicy {
 
             const status = this._evaluatePackage(name, pkg.packagePath, pkg.buildType);
             details.set(name, status);
-
-            if (status.needsBuild) {
-                directlyDirty.add(name);
-            }
         }
 
-        // NOTE: We intentionally do NOT propagate rebuilds to dependents.
-        // Only packages whose own source files changed are rebuilt.
-        // ROS 2 colcon workspaces with --symlink-install handle runtime
-        // dependencies fine without rebuilding the whole dependency tree.
-
-        // Second pass — apply symlink-install shortcut
+        // We intentionally do not propagate rebuilds to dependents. Only
+        // packages whose own source files changed are rebuilt.
         for (const [name, status] of details) {
-            if (status.needsBuild && this._canSkipViaSymlink(name, status, graph)) {
+            if (status.needsBuild && this._canSkipViaSymlink(name, status, config)) {
                 status.needsBuild = false;
-                status.reason = 'Symlink-install: only .py/launch/config changed — skip build';
+                status.reason = 'Symlink-install: only runtime-served files changed - skip build';
                 status.reasonCode = 'symlink-skip';
             }
         }
 
-        // Collect final lists in topological order
         for (const name of closure) {
             const status = details.get(name);
             if (!status) {
@@ -132,8 +117,6 @@ export class BuildPolicy {
 
         return { packagesNeedingBuild: needsBuild, upToDate, details };
     }
-
-    // ── Private helpers ────────────────────────────────────────
 
     private _evaluatePackage(
         name: string,
@@ -194,7 +177,6 @@ export class BuildPolicy {
             const isLaunchDep = pkg.launchFileDeps?.includes(dep) ?? false;
 
             if (config.fastDependencyMode) {
-                // Only propagate if the dep changed interface/resource files
                 const stamp = this._stamps.getStamp(dep);
                 const since = stamp?.lastSuccessfulBuild ?? 0;
                 if (this._resolver.hasInterfaceChanges(depPkg.packagePath, since)) {
@@ -208,9 +190,7 @@ export class BuildPolicy {
                             : 'dependency-interface-changed',
                     };
                 }
-                // In fast mode, non-interface dep changes don't propagate
             } else {
-                // Conservative: any dep change propagates
                 const label = isLaunchDep
                     ? `Launch-referenced package "${dep}" has source changes`
                     : `Dependency "${dep}" has source changes`;
@@ -225,22 +205,18 @@ export class BuildPolicy {
     }
 
     /**
-     * For `ament_python` packages with `--symlink-install`, pure
-     * .py / launch / config edits don't actually require a rebuild.
-     *
-     * We check if the *only* changed files since the last build are
-     * in categories that symlink-install handles at runtime.
+     * With `--symlink-install`, runtime-served file changes can often be
+     * consumed directly from the source tree without re-running colcon.
      */
     private _canSkipViaSymlink(
         name: string,
         status: PackageBuildStatus,
-        graph: DependencyGraph,
+        config: BuildPolicyConfig,
     ): boolean {
-        if (status.buildType !== 'ament_python') {
+        if (!(config.symlinkInstall ?? DEFAULT_BUILD_POLICY_CONFIG.symlinkInstall)) {
             return false;
         }
 
-        // Only applies when the package itself changed, not dep propagation
         if (
             status.reasonCode !== 'source-changed' &&
             status.reasonCode !== 'never-built'
@@ -248,7 +224,6 @@ export class BuildPolicy {
             return false;
         }
 
-        // Never-built packages must always be built at least once
         if (status.reasonCode === 'never-built') {
             return false;
         }
@@ -258,11 +233,32 @@ export class BuildPolicy {
             return false;
         }
 
-        // If interface files changed, rebuild is needed
-        if (this._resolver.hasInterfaceChanges(status.packagePath, stamp.lastSuccessfulBuild)) {
+        const changedFiles = this._stamps.getChangedFilesSince(
+            status.packagePath,
+            stamp.lastSuccessfulBuild,
+        );
+        if (changedFiles.length === 0) {
             return false;
         }
 
-        return true;
+        return changedFiles.every((relativePath) =>
+            this._isSymlinkSafeChange(relativePath, status.buildType),
+        );
+    }
+
+    private _isSymlinkSafeChange(relativePath: string, buildType: string): boolean {
+        const normalizedPath = relativePath.replace(/\\/g, '/').toLowerCase();
+        const extension = path.posix.extname(normalizedPath);
+        const baseName = path.posix.basename(normalizedPath);
+
+        if (extension === '.yaml' || extension === '.yml') {
+            return true;
+        }
+
+        if (buildType === 'ament_python' && extension === '.py' && baseName !== 'setup.py') {
+            return true;
+        }
+
+        return false;
     }
 }

@@ -258,7 +258,7 @@ pkg = FindPackageShare('robot_description')
         expect(result.upToDate).toContain('bringup');
     });
 
-    it('does NOT rebuild nav when only config yaml in nav_params changes', () => {
+    it('skips build when only config yaml in nav_params changes and symlinkInstall is enabled', () => {
         const { stamps, policy, srcDir } = setup({
             'src/nav/package.xml': '<package><name>nav</name><depend>nav_params</depend></package>',
             'src/nav/src/main.cpp': '// nav source',
@@ -275,10 +275,42 @@ pkg = FindPackageShare('robot_description')
         const futureTime = (now + 50_000) / 1000;
         fs.utimesSync(yamlPath, futureTime, futureTime);
 
-        const config: BuildPolicyConfig = { policy: 'ask', fastDependencyMode: true };
+        const config: BuildPolicyConfig = {
+            policy: 'ask',
+            fastDependencyMode: true,
+            symlinkInstall: true,
+        };
         const result = policy.evaluateBuildNeeds(srcDir, ['nav'], config);
 
-        // Only nav_params needs build, nav does NOT
+        expect(result.packagesNeedingBuild).toEqual([]);
+        expect(result.upToDate).toContain('nav');
+        expect(result.upToDate).toContain('nav_params');
+        expect(result.details.get('nav_params')?.reasonCode).toBe('symlink-skip');
+    });
+
+    it('still rebuilds yaml-only changes when symlinkInstall is disabled', () => {
+        const { stamps, policy, srcDir } = setup({
+            'src/nav/package.xml': '<package><name>nav</name><depend>nav_params</depend></package>',
+            'src/nav/src/main.cpp': '// nav source',
+            'src/nav_params/package.xml': '<package><name>nav_params</name></package>',
+            'src/nav_params/config/params.yaml': 'speed: 1.0',
+        });
+
+        const now = Date.now();
+        stamps.markBuilt('nav_params', 'ament_cmake', now + 500);
+        stamps.markBuilt('nav', 'ament_cmake', now + 100_000);
+
+        const yamlPath = path.join(srcDir, 'nav_params/config/params.yaml');
+        const futureTime = (now + 50_000) / 1000;
+        fs.utimesSync(yamlPath, futureTime, futureTime);
+
+        const config: BuildPolicyConfig = {
+            policy: 'ask',
+            fastDependencyMode: true,
+            symlinkInstall: false,
+        };
+        const result = policy.evaluateBuildNeeds(srcDir, ['nav'], config);
+
         expect(result.packagesNeedingBuild).toContain('nav_params');
         expect(result.packagesNeedingBuild).not.toContain('nav');
         expect(result.upToDate).toContain('nav');

@@ -10,8 +10,24 @@ import {
 
 type LaunchArgConfig = { id: string; name: string; args: string; runTarget?: string };
 type LaunchArgConfigMap = Record<string, { configs: LaunchArgConfig[] }>;
+type PinnedItemSnapshot =
+    | {
+        kind: 'launch';
+        packageName: string;
+        packagePath: string;
+        filePath: string;
+    }
+    | {
+        kind: 'node';
+        packageName: string;
+        packagePath: string;
+        nodeName: string;
+        sourcePath?: string;
+    };
+type PinnedItemSnapshotMap = Record<string, PinnedItemSnapshot>;
 
 const PINNED_LAUNCH_FILES_KEY = 'pinnedLaunchFiles';
+const PINNED_ITEM_SNAPSHOTS_KEY = 'packageManagerPinnedItemSnapshots';
 const LAUNCH_ARG_CONFIGS_KEY = 'launchArgConfigs';
 const LEGACY_LAUNCH_ARGS_KEY = 'launchArgs';
 const RUN_TERMINAL_TARGET_KEY = 'runTerminalTarget';
@@ -39,6 +55,7 @@ interface BuildCheckScopes {
 export class PackageManagerViewProvider implements vscode.WebviewViewProvider {
     private _view?: vscode.WebviewView;
     private _pinnedLaunchFiles: string[] = [];
+    private _pinnedItemSnapshots: PinnedItemSnapshotMap = {};
     private _launchArgConfigs: LaunchArgConfigMap = {};
     private _cachedOtherPackages?: string[];
     private _cachedOtherPackageDetails = new Map<string, RosWorkspacePackageDetails>();
@@ -637,10 +654,12 @@ export class PackageManagerViewProvider implements vscode.WebviewViewProvider {
         this._pinnedLaunchFiles = this._context.globalState.get<string[]>(PINNED_LAUNCH_FILES_KEY, []);
         this._launchArgConfigs = await this._loadLaunchArgConfigsWithLegacyMigration();
         const packages = await this._ros.listWorkspacePackageDetails();
+        this._pinnedItemSnapshots = await this._refreshPinnedItemSnapshots(this._pinnedLaunchFiles, packages);
         this._view?.webview.postMessage({
             command: PMToWebviewCommand.PACKAGE_LIST,
             packages,
             pinned: this._pinnedLaunchFiles,
+            pinnedItemSnapshots: this._pinnedItemSnapshots,
             launchArgConfigs: this._launchArgConfigs,
             terminals: this._ros.getTrackedTerminals(),
             preferredTerminalId: this._ros.getPreferredTerminalId(),
@@ -876,6 +895,137 @@ export class PackageManagerViewProvider implements vscode.WebviewViewProvider {
         await this._sendPackageList();
     }
 
+    private _readPinnedItemSnapshots(): PinnedItemSnapshotMap {
+        const raw = this._context.globalState.get<Record<string, Partial<PinnedItemSnapshot>>>(
+            PINNED_ITEM_SNAPSHOTS_KEY,
+            {},
+        );
+        const normalized: PinnedItemSnapshotMap = {};
+
+        for (const [pinKey, snapshot] of Object.entries(raw || {})) {
+            const next = this._normalizePinnedItemSnapshot(snapshot);
+            if (next) {
+                normalized[pinKey] = next;
+            }
+        }
+
+        return normalized;
+    }
+
+    private _normalizePinnedItemSnapshot(
+        snapshot: Partial<PinnedItemSnapshot> | undefined,
+    ): PinnedItemSnapshot | undefined {
+        if (!snapshot || typeof snapshot !== 'object') {
+            return undefined;
+        }
+
+        const kind = String(snapshot.kind || '').trim();
+        const packageName = String(snapshot.packageName || '').trim();
+        const packagePath = String(snapshot.packagePath || '').trim();
+
+        if (kind === 'launch') {
+            const filePath = String((snapshot as { filePath?: string }).filePath || '').trim();
+            if (!packageName || !filePath) {
+                return undefined;
+            }
+            return {
+                kind: 'launch',
+                packageName,
+                packagePath,
+                filePath,
+            };
+        }
+
+        if (kind === 'node') {
+            const nodeName = String((snapshot as { nodeName?: string }).nodeName || '').trim();
+            const sourcePath = String((snapshot as { sourcePath?: string }).sourcePath || '').trim();
+            if (!packageName || !nodeName) {
+                return undefined;
+            }
+            return {
+                kind: 'node',
+                packageName,
+                packagePath,
+                nodeName,
+                sourcePath: sourcePath || undefined,
+            };
+        }
+
+        return undefined;
+    }
+
+    private async _refreshPinnedItemSnapshots(
+        pinnedKeys: string[],
+        workspacePackages: RosWorkspacePackageDetails[],
+    ): Promise<PinnedItemSnapshotMap> {
+        const stored = this._readPinnedItemSnapshots();
+        const next: PinnedItemSnapshotMap = {};
+
+        for (const pinKey of pinnedKeys) {
+            const liveSnapshot = this._resolvePinnedItemSnapshot(pinKey, workspacePackages);
+            const fallbackSnapshot = stored[pinKey];
+            const snapshot = liveSnapshot ?? fallbackSnapshot;
+            if (snapshot) {
+                next[pinKey] = snapshot;
+            }
+        }
+
+        if (JSON.stringify(next) !== JSON.stringify(stored)) {
+            await this._context.globalState.update(PINNED_ITEM_SNAPSHOTS_KEY, next);
+        }
+
+        return next;
+    }
+
+    private _resolvePinnedItemSnapshot(
+        pinKey: string,
+        workspacePackages: RosWorkspacePackageDetails[],
+    ): PinnedItemSnapshot | undefined {
+        if (!pinKey || pinKey.startsWith('pkg::')) {
+            return undefined;
+        }
+
+        const knownPackages = [
+            ...workspacePackages,
+            ...Array.from(this._cachedOtherPackageDetails.values()),
+        ];
+
+        if (pinKey.startsWith('node::')) {
+            for (const pkg of knownPackages) {
+                for (const node of pkg.nodes || []) {
+                    const nodePinKey = `node::${pkg.name}::${node.name}`;
+                    if (nodePinKey !== pinKey) {
+                        continue;
+                    }
+                    return {
+                        kind: 'node',
+                        packageName: pkg.name,
+                        packagePath: pkg.packagePath || '',
+                        nodeName: node.name,
+                        sourcePath: node.sourcePath?.trim() || undefined,
+                    };
+                }
+            }
+            return undefined;
+        }
+
+        for (const pkg of knownPackages) {
+            for (const launchFile of pkg.launchFiles || []) {
+                if (launchFile !== pinKey) {
+                    continue;
+                }
+                return {
+                    kind: 'launch',
+                    packageName: pkg.name,
+                    packagePath: pkg.packagePath || '',
+                    filePath: launchFile,
+                };
+            }
+        }
+
+        return undefined;
+    }
+
     private async _setLaunchArgConfigs(
         path: string,
         configs: LaunchArgConfig[],
@@ -1085,15 +1235,25 @@ export class PackageManagerViewProvider implements vscode.WebviewViewProvider {
                     <select id="configRunTarget"></select>
                     <div id="configRunTargetDescription" class="text-muted text-sm mb"></div>
 
-            <label for="argsInput">Arguments</label>
-            <input type="text" id="argsInput" placeholder="use_sim_time:=true namespace:=robot1" />
+            <div class="config-row">
+                <label>Arguments to launch with</label>
+                <div class="config-actions">
+                    <button class="secondary small" id="btnAddCustomArg">+ Add custom</button>
+                </div>
+            </div>
+            <ul class="arg-list selected-arg-list" id="selectedArgsList">
+                <li class="text-muted">No arguments added</li>
+            </ul>
+            <div class="text-muted text-sm mb">
+                Add discovered launch arguments below or create a custom argument entry.
+            </div>
 
-            <label>Available arguments</label>
+            <label>Discovered arguments</label>
             <ul class="arg-list" id="argsList">
                 <li class="text-muted">No arguments detected</li>
             </ul>
             <div class="btn-row mt">
-                <button class="secondary small" id="btnInsertAll">Insert all defaults</button>
+                <button class="secondary small" id="btnInsertAll">Add all discovered</button>
             </div>
         </div>
         <div class="modal-footer">

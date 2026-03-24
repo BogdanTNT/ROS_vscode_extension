@@ -66,7 +66,7 @@ The extension adds a **ROS Dev Toolkit** activity bar container with:
 
 - `rosDevToolkit.rosSetupPath`: Absolute path to your ROS `setup.bash`.
 - `rosDevToolkit.preLaunchBuildCheck`: Enable smart build check before run/launch.
-- `rosDevToolkit.symlinkInstall`: Use `--symlink-install` for faster Python iteration.
+- `rosDevToolkit.symlinkInstall`: Use `--symlink-install` so smart build can skip runtime-only changes such as Python or YAML config edits.
 - `rosDevToolkit.launchInExternalTerminal`: Use an external terminal for GUI apps (RViz, Gazebo, rqt).
 - `rosDevToolkit.nodeVisualizerAutoRefreshIntervalMs`: Default Node Visualizer auto-refresh interval.
 - `rosDevToolkit.nodeVisualizerUsePersistentWslShell`: Keep a warm WSL shell for graph refresh on Windows+WSL (enabled by default; set `false` to disable).
