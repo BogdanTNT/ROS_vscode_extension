@@ -606,7 +606,6 @@ button.small {
 .config-actions {
     display: flex;
     gap: 6px;
-    align-items: center;
 }
 
 .args-btn:hover,
@@ -1397,21 +1396,7 @@ button.term-kill.is-pending {
 .selected-arg-list {
     display: flex;
     flex-direction: column;
-    gap: 4px;
-    max-height: 240px;
-    padding: 0;
-}
-
-.args-editor-section {
-    margin-bottom: 12px;
-}
-
-.args-editor-section:last-child {
-    margin-bottom: 0;
-}
-
-.args-section-hint {
-    margin-top: 6px;
+    gap: 8px;
 }
 
 .arg-item {
@@ -1429,18 +1414,9 @@ button.term-kill.is-pending {
 }
 
 .selected-arg-list .arg-item {
-    flex-direction: column;
-    align-items: stretch;
-    gap: 4px;
-    padding: 0;
-    border: none;
-    border-bottom: 1px solid var(--border);
-    border-radius: 0;
-    background: transparent;
-}
-
-.selected-arg-list .arg-item:last-child {
+    align-items: flex-start;
     border-bottom: none;
+    padding: 0;
 }
 
 .arg-item-main {
@@ -1448,41 +1424,9 @@ button.term-kill.is-pending {
     min-width: 0;
 }
 
-.arg-entry-header {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 6px;
-}
-
 .arg-item-label {
     display: block;
-    font-size: 0.78em;
-    color: var(--text-muted);
-    margin: 0;
-}
-
-.arg-option-item {
-    align-items: center;
-}
-
-.arg-option-main {
-    display: flex;
-    flex: 1 1 auto;
-    min-width: 0;
-    flex-direction: column;
-    gap: 2px;
-}
-
-.arg-option-name {
-    font-weight: 600;
-    min-width: 0;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-}
-
-.arg-option-meta {
+    margin-bottom: 4px;
     font-size: 0.78em;
     color: var(--text-muted);
 }
@@ -1490,7 +1434,6 @@ button.term-kill.is-pending {
 .arg-entry-input {
     width: 100%;
     min-height: 34px;
-    margin-bottom: 0;
     resize: none;
     overflow: hidden;
     white-space: pre-wrap;
@@ -1499,7 +1442,6 @@ button.term-kill.is-pending {
 
 .arg-entry-remove {
     flex: 0 0 auto;
-    align-self: center;
 }
 
 @keyframes spin {

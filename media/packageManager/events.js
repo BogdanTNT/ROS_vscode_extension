@@ -287,27 +287,11 @@
         return entries;
     };
 
-    const normalizeArgEntryValue = (entry) => {
-        if (entry && typeof entry === 'object' && !Array.isArray(entry)) {
-            const name = String(entry.name ?? '').trim();
-            const value = String(entry.value ?? '').trim();
-            if (!name && !value) {
-                return '';
-            }
-            if (!name) {
-                return ':=' + value;
-            }
-            return name + ':=' + value;
-        }
-
-        return String(entry ?? '');
-    };
-
     const serializeArgEntries = (entries) => (
         Array.isArray(entries)
             ? entries
-                .map((entry) => normalizeArgEntryValue(entry).trim())
-                .filter((entry) => String(entry || '').trim())
+                .map((entry) => String(entry || '').trim())
+                .filter(Boolean)
                 .join(' ')
             : ''
     );
@@ -327,7 +311,7 @@
 
     const setCurrentArgEntries = (entries, options = {}) => {
         state.currentArgEntries = Array.isArray(entries)
-            ? entries.map((entry) => normalizeArgEntryValue(entry))
+            ? entries.map((entry) => String(entry ?? ''))
             : [];
         render.renderSelectedArgsList?.();
         if (Number.isInteger(options.focusIndex) && options.focusIndex >= 0) {
@@ -349,9 +333,7 @@
 
     const appendArgEntries = (values, options = {}) => {
         const nextValues = Array.isArray(values)
-            ? values
-                .map((value) => normalizeArgEntryValue(value))
-                .filter((entry) => entry.trim())
+            ? values.map((value) => String(value || '')).filter((value) => value.trim())
             : [];
         if (!nextValues.length) {
             return;
@@ -362,10 +344,7 @@
         setCurrentArgEntries(entries, {
             focusIndex: options.focusLast ? entries.length - 1 : undefined,
         });
-        queueArgsAutosave({
-            immediate: options.immediate === true,
-            refreshConfigSummaries: true,
-        });
+        queueArgsAutosave(options.immediate ? { immediate: true } : {});
     };
 
     const appendArgEntry = (value) => {
@@ -382,7 +361,7 @@
         }
         entries[index] = String(value ?? '');
         state.currentArgEntries = entries;
-        queueArgsAutosave({ refreshConfigSummaries: true });
+        queueArgsAutosave();
     };
 
     const removeArgEntryAt = (index) => {
@@ -398,7 +377,7 @@
             ? Math.min(index, entries.length - 1)
             : undefined;
         setCurrentArgEntries(entries, { focusIndex: nextFocusIndex });
-        queueArgsAutosave({ immediate: true, refreshConfigSummaries: true });
+        queueArgsAutosave({ immediate: true });
     };
 
     const openArgsModal = (argsKey, sourcePath) => {
@@ -466,7 +445,6 @@
         }
         const cfg = state.launchArgConfigs[normalizedArgsKey];
         if (!cfg || !Array.isArray(cfg.configs)) {
-            actions.setLaunchArgConfigs(normalizedArgsKey, []);
             return;
         }
         actions.setLaunchArgConfigs(normalizedArgsKey, cfg.configs.map((config, index) => {
@@ -543,9 +521,6 @@
         }
 
         const hadPendingAutosave = clearArgsAutosaveTimer();
-        if (options.refreshConfigSummaries && hadPendingAutosave) {
-            argsSummaryRefreshPending = true;
-        }
         const argsKey = String(draft.argsKey || state.currentArgsKey || '').trim();
         if (!argsKey || (!draft.changed && !hadPendingAutosave && !argsSummaryRefreshPending)) {
             return;
@@ -1292,29 +1267,18 @@
     });
 
     dom.btnRemoveConfig.addEventListener('click', () => {
-        const argsKey = String(state.currentArgsKey || '').trim();
-        const existingCfg = state.launchArgConfigs[argsKey];
-        if (!argsKey || !existingCfg || !existingCfg.configs.length) {
+        const cfg = state.launchArgConfigs[state.currentArgsKey];
+        if (!cfg || cfg.configs.length <= 1) {
             return;
         }
         flushArgsAutosave({ refreshConfigTabs: true, refreshConfigSummaries: true });
-        const cfg = state.launchArgConfigs[argsKey];
-        if (!cfg || !cfg.configs.length) {
-            return;
-        }
-
         cfg.configs = cfg.configs.filter((c) => c.id !== state.currentConfigId);
-        if (cfg.configs.length) {
-            state.currentConfigId = cfg.configs[0].id;
-            state.launchArgConfigs[argsKey] = cfg;
-        } else {
-            delete state.launchArgConfigs[argsKey];
-            state.currentConfigId = '';
-        }
+        state.currentConfigId = cfg.configs[0].id;
+        state.launchArgConfigs[state.currentArgsKey] = cfg;
         syncArgsConfigEditor();
         render.renderConfigTabs();
         renderArgsConfigSummaries();
-        persistLaunchArgConfigs(argsKey);
+        persistLaunchArgConfigs(state.currentArgsKey);
     });
 
     if (dom.configName) {

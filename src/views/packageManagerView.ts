@@ -738,15 +738,14 @@ export class PackageManagerViewProvider implements vscode.WebviewViewProvider {
         }
 
         for (const [argsKey, configSet] of Object.entries(launchArgConfigs)) {
-            if (!Array.isArray(configSet?.configs)) {
+            const existing = Array.isArray(configSet?.configs) ? configSet.configs : [];
+            if (!existing.length) {
                 launchArgConfigs[argsKey] = {
                     configs: [{ id: 'default', name: 'default', args: '', runTarget: 'auto' }],
                 };
                 migrated = true;
                 continue;
             }
-
-            const existing = configSet.configs;
 
             const normalized = existing.map((config, index) => {
                 const id = String(config?.id || `cfg-${index + 1}`).trim() || `cfg-${index + 1}`;
@@ -1036,22 +1035,15 @@ export class PackageManagerViewProvider implements vscode.WebviewViewProvider {
         }
 
         const current = this._context.globalState.get<LaunchArgConfigMap>(LAUNCH_ARG_CONFIGS_KEY, {});
-        const normalizedConfigs = configs.map((c) => ({
-            id: c.id,
-            name: c.name?.trim() || 'config',
-            args: c.args?.trim() || '',
-            runTarget: this._normalizeRunTerminalTargetId(c.runTarget),
-        }));
+        current[path] = {
+            configs: configs.map((c) => ({
+                id: c.id,
+                name: c.name?.trim() || 'config',
+                args: c.args?.trim() || '',
+                runTarget: this._normalizeRunTerminalTargetId(c.runTarget),
+            })),
+        };
 
-        if (normalizedConfigs.length) {
-            current[path] = {
-                configs: normalizedConfigs,
-            };
-        } else {
-            delete current[path];
-        }
-
-        this._launchArgConfigs = current;
         await this._context.globalState.update(LAUNCH_ARG_CONFIGS_KEY, current);
     }
 
@@ -1227,10 +1219,9 @@ export class PackageManagerViewProvider implements vscode.WebviewViewProvider {
             <button class="secondary small" id="btnCloseArgs">✕</button>
         </div>
         <div class="modal-body">
-            <div class="args-editor-section">
-                <div class="config-row">
-                    <label>Configurations</label>
-                    <div class="config-actions">
+                    <div class="config-row">
+                        <label>Configurations</label>
+                        <div class="config-actions">
                             <button class="secondary small" id="btnAddConfig">＋ Add</button>
                             <button class="secondary small" id="btnRemoveConfig">－ Remove</button>
                         </div>
@@ -1242,34 +1233,27 @@ export class PackageManagerViewProvider implements vscode.WebviewViewProvider {
 
                     <label for="configRunTarget">Run terminal</label>
                     <select id="configRunTarget"></select>
-                    <div id="configRunTargetDescription" class="text-muted text-sm"></div>
-            </div>
+                    <div id="configRunTargetDescription" class="text-muted text-sm mb"></div>
 
-            <div class="args-editor-section">
-                <div class="config-row">
-                    <label>Arguments to launch with</label>
-                    <div class="config-actions">
-                        <button class="secondary small" id="btnAddCustomArg">+ Add custom</button>
-                    </div>
-                </div>
-                <ul class="arg-list selected-arg-list" id="selectedArgsList">
-                    <li class="text-muted">No arguments added</li>
-                </ul>
-                <div class="text-muted text-sm args-section-hint">
-                    Add discovered launch arguments below or create a custom name/value entry.
+            <div class="config-row">
+                <label>Arguments to launch with</label>
+                <div class="config-actions">
+                    <button class="secondary small" id="btnAddCustomArg">+ Add custom</button>
                 </div>
             </div>
+            <ul class="arg-list selected-arg-list" id="selectedArgsList">
+                <li class="text-muted">No arguments added</li>
+            </ul>
+            <div class="text-muted text-sm mb">
+                Add discovered launch arguments below or create a custom argument entry.
+            </div>
 
-            <div class="args-editor-section">
-                <div class="config-row">
-                    <label>Discovered arguments</label>
-                    <div class="config-actions">
-                        <button class="secondary small" id="btnInsertAll">Add all discovered</button>
-                    </div>
-                </div>
-                <ul class="arg-list" id="argsList">
-                    <li class="text-muted">No arguments detected</li>
-                </ul>
+            <label>Discovered arguments</label>
+            <ul class="arg-list" id="argsList">
+                <li class="text-muted">No arguments detected</li>
+            </ul>
+            <div class="btn-row mt">
+                <button class="secondary small" id="btnInsertAll">Add all discovered</button>
             </div>
         </div>
         <div class="modal-footer">
