@@ -1215,7 +1215,7 @@ export class PackageManagerViewProvider implements vscode.WebviewViewProvider {
     <div class="modal-backdrop" id="argsBackdrop"></div>
     <div class="modal-card">
         <div class="modal-header">
-            <h3>Launch file arguments</h3>
+            <h3>Launch and run arguments</h3>
             <button class="secondary small" id="btnCloseArgs">✕</button>
         </div>
         <div class="modal-body">
@@ -1235,17 +1235,16 @@ export class PackageManagerViewProvider implements vscode.WebviewViewProvider {
                     <select id="configRunTarget"></select>
                     <div id="configRunTargetDescription" class="text-muted text-sm mb"></div>
 
-            <div class="config-row">
-                <label>Arguments to launch with</label>
-                <div class="config-actions">
-                    <button class="secondary small" id="btnAddCustomArg">+ Add custom</button>
-                </div>
-            </div>
-            <ul class="arg-list selected-arg-list" id="selectedArgsList">
-                <li class="text-muted">No arguments added</li>
-            </ul>
+            <label for="configArgsInput">Arguments</label>
+            <textarea
+                id="configArgsInput"
+                class="args-textarea"
+                rows="1"
+                spellcheck="false"
+                placeholder="use_sim_time:=true namespace:=robot1"
+            ></textarea>
             <div class="text-muted text-sm mb">
-                Add discovered launch arguments below or create a custom argument entry.
+                Type a single argument string or add detected arguments below.
             </div>
 
             <label>Discovered arguments</label>

@@ -1393,12 +1393,6 @@ button.term-kill.is-pending {
     background: var(--input-bg);
 }
 
-.selected-arg-list {
-    display: flex;
-    flex-direction: column;
-    gap: 8px;
-}
-
 .arg-item {
     display: flex;
     align-items: center;
@@ -1413,35 +1407,13 @@ button.term-kill.is-pending {
     border-bottom: none;
 }
 
-.selected-arg-list .arg-item {
-    align-items: flex-start;
-    border-bottom: none;
-    padding: 0;
-}
-
-.arg-item-main {
-    flex: 1 1 auto;
-    min-width: 0;
-}
-
-.arg-item-label {
-    display: block;
-    margin-bottom: 4px;
-    font-size: 0.78em;
-    color: var(--text-muted);
-}
-
-.arg-entry-input {
+.args-textarea {
     width: 100%;
-    min-height: 34px;
+    min-height: 38px;
     resize: none;
     overflow: hidden;
     white-space: pre-wrap;
     overflow-wrap: anywhere;
-}
-
-.arg-entry-remove {
-    flex: 0 0 auto;
 }
 
 @keyframes spin {

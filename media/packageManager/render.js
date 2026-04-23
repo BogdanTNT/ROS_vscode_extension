@@ -1063,63 +1063,12 @@
         };
     };
 
-    const autoSizeArgEntryInput = (input) => {
+    const autoSizeArgsInput = (input) => {
         if (!(input instanceof HTMLTextAreaElement)) {
             return;
         }
         input.style.height = 'auto';
-        input.style.height = Math.max(input.scrollHeight, 34) + 'px';
-    };
-
-    const renderSelectedArgsList = () => {
-        if (!dom.selectedArgsList) {
-            return;
-        }
-
-        const entries = Array.isArray(state.currentArgEntries)
-            ? state.currentArgEntries
-            : [];
-
-        if (!entries.length) {
-            dom.selectedArgsList.innerHTML = '<li class="text-muted">No arguments added</li>';
-            return;
-        }
-
-        dom.selectedArgsList.innerHTML = entries
-            .map((entry, index) => (
-                '<li class="arg-item">' +
-                '<div class="arg-item-main">' +
-                '<span class="arg-item-label">Argument ' + String(index + 1) + '</span>' +
-                '<textarea class="arg-entry-input" data-index="' + String(index) + '" rows="1" placeholder="use_sim_time:=true namespace:=robot1">' +
-                escapeHtml(String(entry || '')) +
-                '</textarea>' +
-                '</div>' +
-                '<button class="secondary small arg-entry-remove" type="button" data-index="' + String(index) + '">Remove</button>' +
-                '</li>'
-            ))
-            .join('');
-
-        dom.selectedArgsList.querySelectorAll('.arg-entry-input').forEach((el) => {
-            autoSizeArgEntryInput(el);
-            el.addEventListener('input', () => {
-                const index = Number(el.dataset.index);
-                if (!Number.isInteger(index) || !window.PM.handlers?.updateArgEntryAt) {
-                    return;
-                }
-                window.PM.handlers.updateArgEntryAt(index, el.value);
-                autoSizeArgEntryInput(el);
-            });
-        });
-
-        dom.selectedArgsList.querySelectorAll('.arg-entry-remove').forEach((el) => {
-            el.addEventListener('click', () => {
-                const index = Number(el.dataset.index);
-                if (!Number.isInteger(index) || !window.PM.handlers?.removeArgEntryAt) {
-                    return;
-                }
-                window.PM.handlers.removeArgEntryAt(index);
-            });
-        });
+        input.style.height = Math.max(input.scrollHeight, 38) + 'px';
     };
 
     const renderArgsOptions = () => {
@@ -1181,11 +1130,12 @@
                     window.PM.handlers.syncArgsConfigEditor();
                 } else {
                     const cfgItem = cfg.configs.find((c) => c.id === state.currentConfigId);
-                    state.currentArgEntries = Array.isArray(cfgItem?.args)
-                        ? cfgItem.args
-                        : (cfgItem?.args ? [cfgItem.args] : []);
+                    state.currentArgsText = String(cfgItem?.args || '');
                     dom.configName.value = cfgItem?.name || '';
-                    renderSelectedArgsList();
+                    if (dom.configArgsInput) {
+                        dom.configArgsInput.value = state.currentArgsText;
+                        autoSizeArgsInput(dom.configArgsInput);
+                    }
                 }
                 renderConfigTabs();
             });
@@ -1591,7 +1541,7 @@
     };
 
     window.PM.render = {
-        renderSelectedArgsList,
+        autoSizeArgsInput,
         renderArgsOptions,
         renderConfigTabs,
         renderPackages,

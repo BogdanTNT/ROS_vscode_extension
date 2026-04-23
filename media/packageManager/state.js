@@ -26,7 +26,7 @@
         launchArgConfigs: {},
         argsOptions: [],
         currentArgsKey: '',
-        currentArgEntries: [],
+        currentArgsText: '',
         terminals: [],
         terminalsVisible: true,
         preferredTerminalId: '',
