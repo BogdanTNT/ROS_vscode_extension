@@ -1071,6 +1071,22 @@
         input.style.height = Math.max(input.scrollHeight, 34) + 'px';
     };
 
+    const normalizeArgEntryValue = (entry) => {
+        if (entry && typeof entry === 'object' && !Array.isArray(entry)) {
+            const name = String(entry.name ?? '').trim();
+            const value = String(entry.value ?? '').trim();
+            if (!name && !value) {
+                return '';
+            }
+            if (!name) {
+                return ':=' + value;
+            }
+            return name + ':=' + value;
+        }
+
+        return String(entry ?? '');
+    };
+
     const renderSelectedArgsList = () => {
         if (!dom.selectedArgsList) {
             return;
@@ -1088,13 +1104,13 @@
         dom.selectedArgsList.innerHTML = entries
             .map((entry, index) => (
                 '<li class="arg-item">' +
-                '<div class="arg-item-main">' +
+                '<div class="arg-entry-header">' +
                 '<span class="arg-item-label">Argument ' + String(index + 1) + '</span>' +
-                '<textarea class="arg-entry-input" data-index="' + String(index) + '" rows="1" placeholder="use_sim_time:=true namespace:=robot1">' +
-                escapeHtml(String(entry || '')) +
-                '</textarea>' +
-                '</div>' +
                 '<button class="secondary small arg-entry-remove" type="button" data-index="' + String(index) + '">Remove</button>' +
+                '</div>' +
+                '<textarea class="arg-entry-input" data-index="' + String(index) + '" rows="1" placeholder="use_sim_time:=true namespace:=robot1">' +
+                escapeHtml(normalizeArgEntryValue(entry)) +
+                '</textarea>' +
                 '</li>'
             ))
             .join('');
@@ -1131,11 +1147,14 @@
         dom.argsList.innerHTML = state.argsOptions
             .map((opt) => {
                 const value = opt.defaultValue ? opt.name + ':=' + opt.defaultValue : opt.name + ':=';
-                const label = opt.defaultValue ? opt.name + ' (default ' + opt.defaultValue + ')' : opt.name + ' (no default)';
+                const metaLabel = opt.defaultValue ? ('Default: ' + opt.defaultValue) : 'No default value';
                 return (
-                    '<li class="arg-item" data-value="' + escapeAttr(value) + '">' +
-                    '<span>' + escapeHtml(label) + '</span>' +
-                    '<button class="secondary small">Add</button>' +
+                    '<li class="arg-item arg-option-item" data-value="' + escapeAttr(value) + '">' +
+                    '<div class="arg-option-main">' +
+                    '<span class="arg-option-name">' + escapeHtml(opt.name) + '</span>' +
+                    '<span class="arg-option-meta">' + escapeHtml(metaLabel) + '</span>' +
+                    '</div>' +
+                    '<button class="secondary small" type="button">Add</button>' +
                     '</li>'
                 );
             })
