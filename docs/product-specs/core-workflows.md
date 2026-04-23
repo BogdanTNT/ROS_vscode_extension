@@ -99,7 +99,6 @@ Defines acceptance criteria for workflows currently advertised in `README.md`:
   - the scoped action skips stale-package evaluation and runs/launches directly.
 - For ROS 2 builds:
   - `--symlink-install` usage follows setting.
-  - when `--symlink-install` is enabled, YAML-only package changes are treated as runtime-served and do not trigger a colcon rebuild.
   - stale build/install dirs are cleaned before build.
 - For Windows+WSL run targets:
   - if the selected package is missing from sourced environment at runtime, fallback build runs with `--packages-up-to <pkg>` so workspace-local dependencies are also built.

@@ -1,4 +1,3 @@
-import fs from 'node:fs';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createTempWorkspace, removeTempWorkspace } from '../../helpers/workspaceFactory/tempWorkspace';
@@ -171,29 +170,6 @@ describe('BuildStampManager', () => {
 
         // Even though egg-info files exist, they should be ignored
         expect(manager.needsBuild('my_pkg', pkgPath)).toBe(false);
-    });
-
-    it('returns changed source files since a timestamp and ignores build artifacts', () => {
-        workspaceRoot = createTempWorkspace({
-            'src/my_pkg/package.xml': '<package><name>my_pkg</name></package>',
-            'src/my_pkg/config/params.yaml': 'speed: 1.0',
-            'src/my_pkg/build/stale.o': 'object file',
-        });
-
-        const storage = createMockStorage();
-        const manager = new BuildStampManager(storage);
-        const pkgPath = path.join(workspaceRoot, 'src/my_pkg');
-
-        const now = Date.now();
-        const yamlPath = path.join(pkgPath, 'config/params.yaml');
-        const buildArtifactPath = path.join(pkgPath, 'build/stale.o');
-        const futureTime = (now + 50_000) / 1000;
-        fs.utimesSync(yamlPath, futureTime, futureTime);
-        fs.utimesSync(buildArtifactPath, futureTime, futureTime);
-
-        expect(manager.getChangedFilesSince(pkgPath, now + 500)).toEqual([
-            'config/params.yaml',
-        ]);
     });
 
     it('getNewestSourceMtime returns 0 for empty or nonexistent directory', () => {

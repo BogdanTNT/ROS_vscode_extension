@@ -97,16 +97,6 @@ export class BuildStampManager {
         return this._walkMtime(packagePath, 10);
     }
 
-    /**
-     * Return workspace-relative file paths whose mtimes are newer than
-     * `sinceTimestamp`, excluding ignored build-artifact directories.
-     */
-    getChangedFilesSince(packagePath: string, sinceTimestamp: number): string[] {
-        const changed: string[] = [];
-        this._collectChangedFiles(packagePath, packagePath, sinceTimestamp, 10, changed);
-        return changed;
-    }
-
     // ── Mutations ──────────────────────────────────────────────
 
     /** Record a successful build at the current time. */
@@ -174,49 +164,6 @@ export class BuildStampManager {
         }
 
         return newest;
-    }
-
-    private _collectChangedFiles(
-        rootDir: string,
-        dir: string,
-        sinceTimestamp: number,
-        depth: number,
-        changed: string[],
-    ): void {
-        if (depth < 0 || !this._exists(dir)) {
-            return;
-        }
-
-        let entries: fs.Dirent[];
-        try {
-            entries = this._readDir(dir);
-        } catch {
-            return;
-        }
-
-        for (const entry of entries) {
-            if (entry.name.startsWith('.') && IGNORED_DIRS.has(entry.name)) {
-                continue;
-            }
-
-            const fullPath = path.join(dir, entry.name);
-
-            if (entry.isDirectory()) {
-                if (IGNORED_DIRS.has(entry.name) || entry.name.endsWith('.egg-info')) {
-                    continue;
-                }
-                this._collectChangedFiles(rootDir, fullPath, sinceTimestamp, depth - 1, changed);
-            } else if (entry.isFile()) {
-                try {
-                    if (this._stat(fullPath).mtimeMs > sinceTimestamp) {
-                        const relativePath = path.relative(rootDir, fullPath).split(path.sep).join('/');
-                        changed.push(relativePath);
-                    }
-                } catch {
-                    // unreadable file - skip
-                }
-            }
-        }
     }
 
     private _persist(): void {

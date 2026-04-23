@@ -8,7 +8,7 @@ Source of truth: `package.json` -> `contributes.configuration.properties`.
 | `rosDevToolkit.rosSetupPath` | `string` | `""` | Overrides ROS setup script used for sourcing commands. If empty, runtime auto-detect/fallback is used. | `src/ros/rosWorkspace.ts` |
 | `rosDevToolkit.launchInExternalTerminal` | `boolean` | `true` | Controls default run/launch terminal routing when run target is `auto`. | `src/ros/rosWorkspace.ts`, Package Manager environment UI |
 | `rosDevToolkit.preLaunchBuildCheck` | `boolean` | `true` | Enables smart prelaunch stale-package evaluation and build chaining before run/launch. | `src/ros/rosWorkspace.ts`, `src/views/packageManagerView.ts` |
-| `rosDevToolkit.symlinkInstall` | `boolean` | `true` | Adds/removes `--symlink-install` for ROS 2 builds. When enabled, smart-build can skip runtime-only file changes such as Python source or YAML config edits. | `src/ros/rosWorkspace.ts` |
+| `rosDevToolkit.symlinkInstall` | `boolean` | `true` | Adds/removes `--symlink-install` for ROS 2 builds. Affects rebuild speed and build artifact behavior. | `src/ros/rosWorkspace.ts` |
 | `rosDevToolkit.defaultMaintainerName` | `string` | `""` | Default maintainer name for package creation; prompts/user git fallback if empty. | `src/ros/rosWorkspace.ts` |
 | `rosDevToolkit.defaultMaintainerEmail` | `string` | `""` | Default maintainer email for package creation; prompts/user git fallback if empty. | `src/ros/rosWorkspace.ts` |
 | `rosDevToolkit.nodeVisualizerAutoRefreshIntervalMs` | `number` | `3000` | Node Visualizer auto-refresh interval; clamped in code to `[250, 120000]`. | `src/views/nodeVisualizerView.ts` |

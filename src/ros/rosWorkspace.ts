@@ -7,7 +7,6 @@ import { DependencyResolver } from './dependencyResolver';
 import {
     BuildPolicy,
     BuildEvaluation,
-    DEFAULT_BUILD_POLICY_CONFIG,
 } from './buildPolicy';
 import { WslPersistentGraphRunner } from './runtime/wslPersistentGraphRunner';
 
@@ -265,7 +264,6 @@ export class RosWorkspace {
     private _buildStatusEmitter = new vscode.EventEmitter<BuildEvaluation | undefined>();
     public readonly onBuildStatusChanged = this._buildStatusEmitter.event;
     private _cachedEvaluation: BuildEvaluation | undefined;
-    private _cachedEvaluationSymlinkInstall: boolean | undefined;
     private _evaluationDirty = true;
     private _wslGraphRunner?: WslPersistentGraphRunner;
     private _wslGraphRunnerDistro?: string;
@@ -357,17 +355,9 @@ export class RosWorkspace {
             return undefined;
         }
 
-        const symlinkInstall = vscode.workspace
-            .getConfiguration('rosDevToolkit')
-            .get<boolean>('symlinkInstall', true);
-
         // If no specific targets, evaluate all workspace packages
         if (!targetPackages || targetPackages.length === 0) {
-            if (
-                !this._evaluationDirty &&
-                this._cachedEvaluation &&
-                this._cachedEvaluationSymlinkInstall === symlinkInstall
-            ) {
+            if (!this._evaluationDirty && this._cachedEvaluation) {
                 return this._cachedEvaluation;
             }
 
@@ -375,13 +365,9 @@ export class RosWorkspace {
             targetPackages = Array.from(graph.keys());
         }
 
-        const evaluation = this._buildPolicy.evaluateBuildNeeds(srcDir, targetPackages, {
-            ...DEFAULT_BUILD_POLICY_CONFIG,
-            symlinkInstall,
-        });
+        const evaluation = this._buildPolicy.evaluateBuildNeeds(srcDir, targetPackages);
 
         this._cachedEvaluation = evaluation;
-        this._cachedEvaluationSymlinkInstall = symlinkInstall;
         this._evaluationDirty = false;
 
         return evaluation;

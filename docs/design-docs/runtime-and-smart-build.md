@@ -38,10 +38,7 @@ Source files:
      - else `up-to-date`
   3. Do not propagate rebuild to dependents (intentional current behavior).
   4. Apply symlink shortcut:
-     - when `symlinkInstall=true` and the only changed files are runtime-served files -> `symlink-skip`
-     - current safe set:
-       - `.py` files in `ament_python` packages (excluding `setup.py`)
-       - `.yaml` / `.yml` files in any package
+     - `ament_python` + `source-changed` + no interface/resource changes since last stamp -> `symlink-skip`
   5. Return:
      - `packagesNeedingBuild`
      - `upToDate`
@@ -86,7 +83,7 @@ Source files:
 
 ## Current Intentional Behavior
 - Dependents are not rebuilt automatically when only dependencies changed.
-- With `--symlink-install`, runtime-only Python and YAML changes can skip colcon rebuilds.
+- This favors faster iteration with `--symlink-install`, especially for Python packages.
 
 ## Implications and Risks
 - Fast local iteration is improved.
@@ -95,7 +92,7 @@ Source files:
 
 ## Invariants
 - Never-built package is always built at least once.
-- `symlinkInstall=false` disables the symlink-skip shortcut.
+- `ament_python` never-build shortcut is not allowed.
 - Result order is dependency-first.
 - Source scan excludes common build artifact folders.
 

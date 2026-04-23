@@ -692,16 +692,6 @@ body.pm-run-cooldown .config-pill {
     margin-bottom: 6px;
 }
 
-.terminal-item.running {
-    border-color: var(--success);
-    outline: 1px solid var(--success);
-}
-
-.terminal-item.not-running {
-    border-color: var(--danger);
-    outline: 1px solid var(--danger);
-}
-
 .terminal-main {
     display: flex;
     flex-direction: column;
@@ -1338,10 +1328,6 @@ button.term-kill.is-pending {
     overflow: hidden;
 }
 
-#argsModal .modal-card {
-    width: min(720px, 96vw);
-}
-
 .modal-header {
     display: flex;
     align-items: center;
@@ -1393,12 +1379,6 @@ button.term-kill.is-pending {
     background: var(--input-bg);
 }
 
-.selected-arg-list {
-    display: flex;
-    flex-direction: column;
-    gap: 8px;
-}
-
 .arg-item {
     display: flex;
     align-items: center;
@@ -1411,37 +1391,6 @@ button.term-kill.is-pending {
 
 .arg-item:last-child {
     border-bottom: none;
-}
-
-.selected-arg-list .arg-item {
-    align-items: flex-start;
-    border-bottom: none;
-    padding: 0;
-}
-
-.arg-item-main {
-    flex: 1 1 auto;
-    min-width: 0;
-}
-
-.arg-item-label {
-    display: block;
-    margin-bottom: 4px;
-    font-size: 0.78em;
-    color: var(--text-muted);
-}
-
-.arg-entry-input {
-    width: 100%;
-    min-height: 34px;
-    resize: none;
-    overflow: hidden;
-    white-space: pre-wrap;
-    overflow-wrap: anywhere;
-}
-
-.arg-entry-remove {
-    flex: 0 0 auto;
 }
 
 @keyframes spin {

@@ -245,141 +245,6 @@
         dom.createModal.classList.add('hidden');
     };
 
-    const parseArgsString = (value) => {
-        const input = String(value || '');
-        const entries = [];
-        let current = '';
-        let quote = '';
-
-        for (let index = 0; index < input.length; index += 1) {
-            const ch = input[index];
-            const prev = index > 0 ? input[index - 1] : '';
-
-            if (quote) {
-                current += ch;
-                if (ch === quote && prev !== '\\') {
-                    quote = '';
-                }
-                continue;
-            }
-
-            if (ch === '"' || ch === "'") {
-                quote = ch;
-                current += ch;
-                continue;
-            }
-
-            if (/\s/.test(ch)) {
-                if (current.trim()) {
-                    entries.push(current.trim());
-                    current = '';
-                }
-                continue;
-            }
-
-            current += ch;
-        }
-
-        if (current.trim()) {
-            entries.push(current.trim());
-        }
-
-        return entries;
-    };
-
-    const serializeArgEntries = (entries) => (
-        Array.isArray(entries)
-            ? entries
-                .map((entry) => String(entry || '').trim())
-                .filter(Boolean)
-                .join(' ')
-            : ''
-    );
-
-    const focusArgEntryAt = (index) => {
-        window.setTimeout(() => {
-            const selector = '.arg-entry-input[data-index="' + String(index) + '"]';
-            const input = dom.selectedArgsList?.querySelector(selector);
-            if (!(input instanceof HTMLTextAreaElement)) {
-                return;
-            }
-            input.focus();
-            const length = input.value.length;
-            input.setSelectionRange(length, length);
-        }, 0);
-    };
-
-    const setCurrentArgEntries = (entries, options = {}) => {
-        state.currentArgEntries = Array.isArray(entries)
-            ? entries.map((entry) => String(entry ?? ''))
-            : [];
-        render.renderSelectedArgsList?.();
-        if (Number.isInteger(options.focusIndex) && options.focusIndex >= 0) {
-            focusArgEntryAt(options.focusIndex);
-        }
-    };
-
-    const getCurrentArgEntries = () => (
-        Array.isArray(state.currentArgEntries)
-            ? state.currentArgEntries.slice()
-            : []
-    );
-
-    const addCustomArgEntry = () => {
-        const entries = getCurrentArgEntries();
-        entries.push('');
-        setCurrentArgEntries(entries, { focusIndex: entries.length - 1 });
-    };
-
-    const appendArgEntries = (values, options = {}) => {
-        const nextValues = Array.isArray(values)
-            ? values.map((value) => String(value || '')).filter((value) => value.trim())
-            : [];
-        if (!nextValues.length) {
-            return;
-        }
-
-        const entries = getCurrentArgEntries();
-        entries.push(...nextValues);
-        setCurrentArgEntries(entries, {
-            focusIndex: options.focusLast ? entries.length - 1 : undefined,
-        });
-        queueArgsAutosave(options.immediate ? { immediate: true } : {});
-    };
-
-    const appendArgEntry = (value) => {
-        appendArgEntries([value], { focusLast: true });
-    };
-
-    const updateArgEntryAt = (index, value) => {
-        if (!Number.isInteger(index) || index < 0) {
-            return;
-        }
-        const entries = getCurrentArgEntries();
-        if (index >= entries.length) {
-            return;
-        }
-        entries[index] = String(value ?? '');
-        state.currentArgEntries = entries;
-        queueArgsAutosave();
-    };
-
-    const removeArgEntryAt = (index) => {
-        if (!Number.isInteger(index) || index < 0) {
-            return;
-        }
-        const entries = getCurrentArgEntries();
-        if (index >= entries.length) {
-            return;
-        }
-        entries.splice(index, 1);
-        const nextFocusIndex = entries.length
-            ? Math.min(index, entries.length - 1)
-            : undefined;
-        setCurrentArgEntries(entries, { focusIndex: nextFocusIndex });
-        queueArgsAutosave({ immediate: true });
-    };
-
     const openArgsModal = (argsKey, sourcePath) => {
         if (!argsKey) {
             return;
@@ -413,11 +278,7 @@
         render.renderArgsOptions();
         render.renderConfigTabs();
         dom.argsModal.classList.remove('hidden');
-        if (state.currentArgEntries.length) {
-            focusArgEntryAt(0);
-        } else if (dom.btnAddCustomArg) {
-            dom.btnAddCustomArg.focus();
-        }
+        dom.argsInput.focus();
         if (state.currentArgsKey) {
             actions.requestLaunchArgs(state.currentArgsKey, sourcePath || '');
         }
@@ -485,7 +346,7 @@
 
         const nextName = String(dom.configName?.value ?? currentCfg.name ?? '').trim()
             || (currentCfg.id === 'default' ? 'default' : 'config');
-        const nextArgs = serializeArgEntries(state.currentArgEntries);
+        const nextArgs = String(dom.argsInput?.value ?? currentCfg.args ?? '');
         const nextRunTarget = normalizeConfigRunTarget(dom.configRunTarget?.value || currentCfg.runTarget || 'auto');
 
         const changed = normalizedCurrentName !== nextName
@@ -867,7 +728,9 @@
 
     const syncArgsConfigEditor = () => {
         const currentCfg = getCurrentArgsConfig();
-        setCurrentArgEntries(parseArgsString(currentCfg?.args || ''));
+        if (dom.argsInput) {
+            dom.argsInput.value = currentCfg?.args || '';
+        }
         if (dom.configName) {
             dom.configName.value = currentCfg?.name || '';
         }
@@ -1232,19 +1095,13 @@
         if (!state.argsOptions.length) {
             return;
         }
-        appendArgEntries(
-            state.argsOptions.map((opt) => (
-                opt.defaultValue ? opt.name + ':=' + opt.defaultValue : opt.name + ':='
-            )),
-            { immediate: true },
-        );
+        const values = state.argsOptions
+            .map((opt) => (opt.defaultValue ? opt.name + ':=' + opt.defaultValue : opt.name + ':='))
+            .join(' ');
+        const current = dom.argsInput.value.trim();
+        dom.argsInput.value = current ? current + ' ' + values : values;
+        queueArgsAutosave({ immediate: true });
     });
-
-    if (dom.btnAddCustomArg) {
-        dom.btnAddCustomArg.addEventListener('click', () => {
-            addCustomArgEntry();
-        });
-    }
 
     dom.btnSaveArgs.addEventListener('click', () => {
         flushArgsAutosave({ refreshConfigTabs: true, refreshConfigSummaries: true });
@@ -1281,6 +1138,11 @@
         persistLaunchArgConfigs(state.currentArgsKey);
     });
 
+    if (dom.argsInput) {
+        dom.argsInput.addEventListener('input', () => {
+            queueArgsAutosave();
+        });
+    }
     if (dom.configName) {
         dom.configName.addEventListener('input', () => {
             queueArgsAutosave({
@@ -1544,8 +1406,5 @@
         openRemoveNodeModal,
         closeRemoveNodeModal,
         syncArgsConfigEditor,
-        appendArgEntry,
-        updateArgEntryAt,
-        removeArgEntryAt,
     };
 })();

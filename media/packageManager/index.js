@@ -87,56 +87,6 @@
         detailsLoaded: existing?.detailsLoaded === true,
         detailsLoading: false,
     });
-    const normalizePinnedItemSnapshots = (value) => {
-        if (!value || typeof value !== 'object') {
-            return {};
-        }
-
-        const normalized = {};
-        Object.entries(value).forEach(([pinKey, snapshot]) => {
-            if (!pinKey || !snapshot || typeof snapshot !== 'object') {
-                return;
-            }
-
-            const kind = typeof snapshot.kind === 'string' ? snapshot.kind : '';
-            const packageName = typeof snapshot.packageName === 'string' ? snapshot.packageName.trim() : '';
-            const packagePath = typeof snapshot.packagePath === 'string' ? snapshot.packagePath : '';
-            if (!packageName) {
-                return;
-            }
-
-            if (kind === 'launch') {
-                const filePath = typeof snapshot.filePath === 'string' ? snapshot.filePath : '';
-                if (!filePath) {
-                    return;
-                }
-                normalized[pinKey] = {
-                    kind: 'launch',
-                    packageName,
-                    packagePath,
-                    filePath,
-                };
-                return;
-            }
-
-            if (kind === 'node') {
-                const nodeName = typeof snapshot.nodeName === 'string' ? snapshot.nodeName.trim() : '';
-                const sourcePath = typeof snapshot.sourcePath === 'string' ? snapshot.sourcePath : '';
-                if (!nodeName) {
-                    return;
-                }
-                normalized[pinKey] = {
-                    kind: 'node',
-                    packageName,
-                    packagePath,
-                    nodeName,
-                    sourcePath,
-                };
-            }
-        });
-
-        return normalized;
-    };
 
     const requestAutoRefresh = () => {
         const now = Date.now();
@@ -157,7 +107,6 @@
             case toWebview.PACKAGE_LIST: {
                 state.allPackages = msg.packages.slice().sort((a, b) => a.name.localeCompare(b.name));
                 state.pinnedPaths = msg.pinned || [];
-                state.pinnedItemSnapshots = normalizePinnedItemSnapshots(msg.pinnedItemSnapshots);
                 state.launchArgConfigs = msg.launchArgConfigs || {};
                 state.terminals = msg.terminals || [];
                 state.preferredTerminalId = msg.preferredTerminalId || '';
