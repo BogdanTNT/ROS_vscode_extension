@@ -10,6 +10,7 @@ import {
     DEFAULT_BUILD_POLICY_CONFIG,
 } from './buildPolicy';
 import { WslPersistentGraphRunner } from './runtime/wslPersistentGraphRunner';
+import { findNestedRosWorkspaceCandidates, findDuplicatePackageLocations } from './workspaceDiagnostics';
 
 export interface RosEnvironmentInfo {
     distro: string;   // e.g. "humble", "noetic"
@@ -267,6 +268,7 @@ export class RosWorkspace {
     private _cachedEvaluation: BuildEvaluation | undefined;
     private _cachedEvaluationSymlinkInstall: boolean | undefined;
     private _evaluationDirty = true;
+    private _autoDiagnosedMissingSrc = false;
     private _wslGraphRunner?: WslPersistentGraphRunner;
     private _wslGraphRunnerDistro?: string;
 
@@ -379,6 +381,27 @@ export class RosWorkspace {
             ...DEFAULT_BUILD_POLICY_CONFIG,
             symlinkInstall,
         });
+
+        // Build stamps are written optimistically as soon as a build command is
+        // dispatched to the terminal, not once colcon actually succeeds. If that
+        // build failed (e.g. a package moved and colcon refused to override it),
+        // the package stays stamped "up to date" forever even though it was never
+        // actually installed. Catch that by checking the install output exists.
+        if (this.isRos2()) {
+            const wsPath = this.getWorkspacePath();
+            for (const [name, status] of evaluation.details) {
+                if (status.needsBuild || fs.existsSync(path.join(wsPath, 'install', name))) {
+                    continue;
+                }
+                status.needsBuild = true;
+                status.reason = 'Package install output is missing (a previous build may have failed)';
+                status.reasonCode = 'never-built';
+                evaluation.upToDate = evaluation.upToDate.filter((n) => n !== name);
+                if (!evaluation.packagesNeedingBuild.includes(name)) {
+                    evaluation.packagesNeedingBuild.push(name);
+                }
+            }
+        }
 
         this._cachedEvaluation = evaluation;
         this._cachedEvaluationSymlinkInstall = symlinkInstall;
@@ -2503,6 +2526,21 @@ int main(int argc, char * argv[]) {
     }
 
     // ── Build ──────────────────────────────────────────────────
+    /**
+     * When enabled, colcon is told to allow overriding the given packages so
+     * a build still succeeds if a package's folder moved elsewhere in the
+     * workspace (colcon otherwise refuses with a package override error).
+     */
+    private getAllowOverridingFlag(packages: string[]): string {
+        if (packages.length === 0) {
+            return '';
+        }
+        const allowOverriding = vscode.workspace
+            .getConfiguration('rosDevToolkit')
+            .get<boolean>('allowOverridingPackages', true);
+        return allowOverriding ? ` --allow-overriding ${packages.join(' ')}` : '';
+    }
+
     buildPackages(packages: string[]): void {
         const context = this.resolveCommandExecutionContext();
         const wsPath = context.useWsl
@@ -2520,6 +2558,7 @@ int main(int argc, char * argv[]) {
             .getConfiguration('rosDevToolkit')
             .get<boolean>('symlinkInstall', true);
         const symlinkFlag = useSymlink ? ' --symlink-install' : '';
+        const overrideFlag = this.getAllowOverridingFlag(packages);
 
         // Clean stale build & install artifacts per-package before building.
         //   • install/<pkg>/ — prevents EEXIST when switching to --symlink-install
@@ -2542,7 +2581,7 @@ int main(int argc, char * argv[]) {
         const parts: string[] = [
             this.getRosSourceCommand(context.runTarget),
             `cd "${wsPath}"`,
-            `${cleanCmd}colcon build${symlinkFlag}${pkgArg}`,
+            `${cleanCmd}colcon build${symlinkFlag}${pkgArg}${overrideFlag}`,
             `source "${wsPath}/install/setup.bash"`,
         ];
 
@@ -2631,6 +2670,7 @@ int main(int argc, char * argv[]) {
             .getConfiguration('rosDevToolkit')
             .get<boolean>('symlinkInstall', true);
         const symlinkFlag = useSymlink ? ' --symlink-install' : '';
+        const overrideFlag = this.getAllowOverridingFlag(stalePackages);
 
         let cleanCmd = '';
         if (stalePackages.length > 0) {
@@ -2645,7 +2685,7 @@ int main(int argc, char * argv[]) {
         const parts: string[] = [
             this.getRosSourceCommand(runTarget),
             `cd "${wsPath}"`,
-            `${cleanCmd}colcon build${symlinkFlag}${pkgArg}`,
+            `${cleanCmd}colcon build${symlinkFlag}${pkgArg}${overrideFlag}`,
             `source "${wsPath}/install/setup.bash"`,
             runCmd,
         ];
@@ -2745,7 +2785,18 @@ int main(int argc, char * argv[]) {
         }
 
         const evaluation = this.evaluateBuildNeeds([pkg]);
-        if (!evaluation || evaluation.packagesNeedingBuild.length === 0) {
+        if (!evaluation) {
+            // No src/ found — likely a monorepo where the ROS workspace is
+            // nested in a subfolder. Surface a one-click fix without
+            // blocking this launch attempt, and only once per session so
+            // it doesn't nag on every subsequent launch.
+            if (!this._autoDiagnosedMissingSrc) {
+                this._autoDiagnosedMissingSrc = true;
+                void this.diagnoseWorkspace(false);
+            }
+            return { action: 'launch' };
+        }
+        if (evaluation.packagesNeedingBuild.length === 0) {
             return { action: 'launch' };
         }
 
@@ -5528,8 +5579,91 @@ int main(int argc, char * argv[]) {
     }
 
     getWorkspacePath(): string {
+        const base = this.getRawWorkspaceFolderPath();
+        const subRoot = vscode.workspace
+            .getConfiguration('rosDevToolkit')
+            .get<string>('workspaceRoot', '')
+            .trim();
+        return subRoot ? path.resolve(base, subRoot) : base;
+    }
+
+    /** The VS Code workspace folder itself, unaffected by `rosDevToolkit.workspaceRoot`. */
+    private getRawWorkspaceFolderPath(): string {
         const folders = vscode.workspace.workspaceFolders;
         return folders?.[0]?.uri.fsPath ?? process.cwd();
+    }
+
+    /**
+     * Looks for problems that commonly break builds/launches and offers the
+     * user a one-click fix:
+     *  - the configured workspace has no `src/` (often a monorepo where the
+     *    ROS workspace actually lives in a subfolder)
+     *  - the same package name resolves to more than one folder under
+     *    `src/` (colcon refuses to build until one copy is ignored)
+     *
+     * `interactive` controls whether a "no issues found" message is shown;
+     * pass `true` when the user explicitly asked for a diagnosis.
+     */
+    async diagnoseWorkspace(interactive: boolean): Promise<void> {
+        const srcDir = this.getSrcDir();
+
+        if (!srcDir) {
+            const rawRoot = this.getRawWorkspaceFolderPath();
+            const candidates = findNestedRosWorkspaceCandidates(rawRoot);
+
+            if (candidates.length === 0) {
+                if (interactive) {
+                    vscode.window.showInformationMessage(
+                        `No ROS packages (package.xml) were found anywhere under "${rawRoot}".`,
+                    );
+                }
+                return;
+            }
+
+            const items = candidates.map((candidatePath) => {
+                const relative = path.relative(rawRoot, candidatePath) || '.';
+                return `Use "${relative}" as ROS workspace root`;
+            });
+            const choice = await vscode.window.showWarningMessage(
+                `No "src/" folder found directly in this workspace. Found ${candidates.length} ` +
+                `possible ROS workspace${candidates.length > 1 ? 's' : ''} in subfolders instead — ` +
+                `this usually means the workspace folder is a monorepo and the ROS workspace is nested.`,
+                ...items,
+            );
+
+            const chosenIndex = items.indexOf(choice ?? '');
+            if (chosenIndex === -1) {
+                return;
+            }
+
+            const relative = path.relative(rawRoot, candidates[chosenIndex]) || '.';
+            await vscode.workspace
+                .getConfiguration('rosDevToolkit')
+                .update('workspaceRoot', relative, vscode.ConfigurationTarget.Workspace);
+            this._evaluationDirty = true;
+            this._buildStatusEmitter.fire(undefined);
+            vscode.window.showInformationMessage(
+                `ROS workspace root set to "${relative}". Try building/launching again.`,
+            );
+            return;
+        }
+
+        const duplicates = findDuplicatePackageLocations(srcDir);
+        if (duplicates.size === 0) {
+            if (interactive) {
+                vscode.window.showInformationMessage('No workspace issues detected.');
+            }
+            return;
+        }
+
+        const summary = Array.from(duplicates.entries())
+            .map(([name, paths]) => `"${name}" in ${paths.length} places`)
+            .join(', ');
+        await vscode.window.showWarningMessage(
+            `Duplicate package name(s) found: ${summary}. colcon will refuse to build until only one ` +
+            `copy of each remains (rename/move/delete the extra copy, or move a package back if it ` +
+            `changed folder and left a stale duplicate behind).`,
+        );
     }
 
     getSrcDir(): string | undefined {

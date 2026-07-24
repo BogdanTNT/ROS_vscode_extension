@@ -59,6 +59,14 @@
             command: toHost.SET_BUILD_CHECK_SCOPES,
             scopes,
         }),
+        toggleAllowOverriding: (enabled) => vscode.postMessage({
+            command: toHost.TOGGLE_ALLOW_OVERRIDING,
+            enabled,
+        }),
+        setWorkspaceRoot: (value) => vscode.postMessage({
+            command: toHost.SET_WORKSPACE_ROOT,
+            value,
+        }),
         createPackage: (name, buildType, deps, license, description) => vscode.postMessage({
             command: toHost.CREATE_PACKAGE,
             name,

@@ -275,6 +275,12 @@
                 if (d.toggleBuildCheckRunNodes) {
                     d.toggleBuildCheckRunNodes.checked = msg.scopes?.runNode !== false;
                 }
+                if (d.toggleAllowOverriding) {
+                    d.toggleAllowOverriding.checked = Boolean(msg.allowOverriding);
+                }
+                if (d.workspaceRootInput && document.activeElement !== d.workspaceRootInput) {
+                    d.workspaceRootInput.value = String(msg.workspaceRoot || '');
+                }
                 if (window.PM.handlers?.renderBuildCheckSettingsState) {
                     window.PM.handlers.renderBuildCheckSettingsState();
                 }

@@ -910,10 +910,15 @@
         const enabled = Boolean(dom.toggleBuildCheck?.checked);
         const launchFile = Boolean(dom.toggleBuildCheckLaunchFiles?.checked);
         const runNode = Boolean(dom.toggleBuildCheckRunNodes?.checked);
+        const allowOverriding = Boolean(dom.toggleAllowOverriding?.checked);
+        const workspaceRoot = dom.workspaceRootInput ? dom.workspaceRootInput.value.trim() : '';
         actions.toggleBuildCheck(enabled);
         actions.setBuildCheckScopes({ launchFile, runNode });
+        actions.toggleAllowOverriding(allowOverriding);
+        actions.setWorkspaceRoot(workspaceRoot);
         closeBuildCheckSettingsModal();
     };
+
 
     const submitCreatePackage = () => {
         const rawName = dom.pkgNameInput ? dom.pkgNameInput.value : '';

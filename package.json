@@ -2,7 +2,7 @@
   "name": "ros-dev-toolkit",
   "displayName": "ROS Dev Toolkit",
   "description": "A VS Code extension for ROS development – create packages, build & run nodes, and visualize the ROS graph.",
-  "version": "0.1.8",
+  "version": "0.1.9",
   "publisher": "BogdanRosca",
   "repository": {
     "type": "git",
@@ -47,6 +47,16 @@
           "type": "boolean",
           "default": true,
           "description": "Use --symlink-install when building with colcon. The smart build check can then skip rebuilds for runtime-served file changes such as Python source or YAML config updates."
+        },
+        "rosDevToolkit.allowOverridingPackages": {
+          "type": "boolean",
+          "default": true,
+          "description": "Always pass --allow-overriding for the packages being built with colcon. Disable this only if you want colcon to fail loudly when a package's folder moved within the workspace, instead of silently overriding it."
+        },
+        "rosDevToolkit.workspaceRoot": {
+          "type": "string",
+          "default": "",
+          "description": "Relative path from this VS Code workspace folder to the actual ROS/colcon workspace (the directory containing src/). Leave empty if the workspace folder itself is the ROS workspace root. Useful for monorepos where the ROS workspace lives in a subfolder — run \"ROS: Diagnose Workspace Issues\" to detect and set this automatically."
         },
         "rosDevToolkit.defaultMaintainerName": {
           "type": "string",
@@ -128,6 +138,10 @@
       {
         "command": "rosDevToolkit.refreshGraph",
         "title": "ROS: Refresh Node Graph"
+      },
+      {
+        "command": "rosDevToolkit.diagnoseWorkspace",
+        "title": "ROS: Diagnose Workspace Issues"
       }
     ]
   },

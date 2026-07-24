@@ -25,6 +25,8 @@
             OPEN_SOURCED_TERMINAL: 'openSourcedTerminal',
             TOGGLE_BUILD_CHECK: 'toggleBuildCheck',
             SET_BUILD_CHECK_SCOPES: 'setBuildCheckScopes',
+            TOGGLE_ALLOW_OVERRIDING: 'toggleAllowOverriding',
+            SET_WORKSPACE_ROOT: 'setWorkspaceRoot',
             ADD_NODE: 'addNode',
             REMOVE_NODE: 'removeNode',
             CREATE_LAUNCH: 'createLaunch',

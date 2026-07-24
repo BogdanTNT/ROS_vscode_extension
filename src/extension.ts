@@ -63,6 +63,9 @@ export function activate(context: vscode.ExtensionContext) {
         vscode.commands.registerCommand('rosDevToolkit.refreshGraph', () => {
             nodeVisualizerProvider.refreshGraph();
         }),
+        vscode.commands.registerCommand('rosDevToolkit.diagnoseWorkspace', () => {
+            void rosWorkspace.diagnoseWorkspace(true);
+        }),
     );
 
     // Detect ROS distro on startup

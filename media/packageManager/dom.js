@@ -56,6 +56,8 @@
         toggleBuildCheck: document.getElementById('toggleBuildCheck'),
         toggleBuildCheckLaunchFiles: document.getElementById('toggleBuildCheckLaunchFiles'),
         toggleBuildCheckRunNodes: document.getElementById('toggleBuildCheckRunNodes'),
+        toggleAllowOverriding: document.getElementById('toggleAllowOverriding'),
+        workspaceRootInput: document.getElementById('workspaceRootInput'),
         addNodeModal: document.getElementById('addNodeModal'),
         addNodeBackdrop: document.getElementById('addNodeBackdrop'),
         addNodePkg: document.getElementById('addNodePkg'),

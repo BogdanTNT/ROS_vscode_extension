@@ -156,6 +156,14 @@ export class PackageManagerViewProvider implements vscode.WebviewViewProvider {
                     await this._setBuildCheckScopes(msg.scopes);
                     this._sendBuildCheckState();
                     break;
+                case PMToHostCommand.TOGGLE_ALLOW_OVERRIDING:
+                    await this._toggleAllowOverriding(msg.enabled);
+                    this._sendBuildCheckState();
+                    break;
+                case PMToHostCommand.SET_WORKSPACE_ROOT:
+                    await this._setWorkspaceRoot(msg.value);
+                    this._sendBuildCheckState();
+                    break;
                 case PMToHostCommand.ADD_NODE:
                     await this._handleAddNode(msg.pkg, msg.nodeName, msg.pkgPath, msg.nodeTemplate, msg.nodeTopic);
                     break;
@@ -182,6 +190,10 @@ export class PackageManagerViewProvider implements vscode.WebviewViewProvider {
                 command: PMToWebviewCommand.TERMINAL_LIST,
                 terminals,
             });
+        });
+
+        this._ros.onBuildStatusChanged(() => {
+            this._sendBuildCheckState();
         });
 
         webviewView.onDidChangeVisibility(() => {
@@ -221,10 +233,18 @@ export class PackageManagerViewProvider implements vscode.WebviewViewProvider {
             .getConfiguration('rosDevToolkit')
             .get<boolean>('preLaunchBuildCheck', true);
         const scopes = this._getBuildCheckScopes();
+        const allowOverriding = vscode.workspace
+            .getConfiguration('rosDevToolkit')
+            .get<boolean>('allowOverridingPackages', true);
+        const workspaceRoot = vscode.workspace
+            .getConfiguration('rosDevToolkit')
+            .get<string>('workspaceRoot', '');
         this._view?.webview.postMessage({
             command: PMToWebviewCommand.BUILD_CHECK_STATE,
             enabled,
             scopes,
+            allowOverriding,
+            workspaceRoot,
         });
     }
 
@@ -420,6 +440,20 @@ export class PackageManagerViewProvider implements vscode.WebviewViewProvider {
         await vscode.workspace
             .getConfiguration('rosDevToolkit')
             .update('preLaunchBuildCheck', enabled, vscode.ConfigurationTarget.Global);
+    }
+
+    private async _toggleAllowOverriding(enabled: boolean) {
+        await vscode.workspace
+            .getConfiguration('rosDevToolkit')
+            .update('allowOverridingPackages', enabled, vscode.ConfigurationTarget.Global);
+    }
+
+    private async _setWorkspaceRoot(value: unknown) {
+        const normalized = String(value ?? '').trim();
+        await vscode.workspace
+            .getConfiguration('rosDevToolkit')
+            .update('workspaceRoot', normalized, vscode.ConfigurationTarget.Workspace);
+        await this._sendPackageList();
     }
 
     private _getStoredRunTerminalTarget(): string {
@@ -1163,6 +1197,21 @@ export class PackageManagerViewProvider implements vscode.WebviewViewProvider {
                 </div>
             </div>
             <div class="text-muted text-sm mt">When disabled, selected actions skip stale-package auto build checks.</div>
+
+            <div class="toggle-row mt">
+                <label for="toggleAllowOverriding">📦 Always allow overriding relocated packages</label>
+                <span class="toggle-switch">
+                    <input type="checkbox" id="toggleAllowOverriding" checked />
+                    <span class="toggle-slider"></span>
+                </span>
+            </div>
+            <div class="text-muted text-sm mt">When enabled, colcon build always passes --allow-overriding for the packages being built, so a build still succeeds if a package's folder moved instead of failing with a package-not-found/override error.</div>
+
+            <div class="mt">
+                <label for="workspaceRootInput">📁 ROS workspace root (relative path, leave empty if this is it)</label>
+                <input type="text" id="workspaceRootInput" placeholder="e.g. ars-motus" />
+            </div>
+            <div class="text-muted text-sm mt">If your ROS workspace (the folder containing src/) is a subfolder of this VS Code workspace — common in monorepos — point the extension at it here. Run "ROS: Diagnose Workspace Issues" to detect this automatically.</div>
         </div>
         <div class="modal-footer">
             <button class="secondary" id="btnCancelBuildCheckSettings">Close</button>
