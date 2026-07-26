@@ -2,7 +2,6 @@ import * as vscode from 'vscode';
 import {
     RosActionGoalResult,
     RosActionGoalTemplateResult,
-    RosGraphSnapshotResult,
     RosNodeGraphInfo,
     RosTopicMessageSubscription,
     RosTopicPublishResult,

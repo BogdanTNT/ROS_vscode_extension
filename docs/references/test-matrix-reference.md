@@ -11,15 +11,15 @@ Source of truth:
 | `npm run test:unit` | `tests/unit` | Unit behavior of runtime/view helpers. |
 | `npm run test:webview` | `tests/unit/webview` | Webview-side DOM/message smoke tests. |
 | `npm run test:integration` | `tests/integration` | Extension-host behavior and integrated flows. |
-| `npm run test:matrix` | selected extension-host specs | Runtime/terminal matrix + user-flow smoke. |
-| `npm run test:ui-click` | `tests/integration/uiClick` | Literal button-click level webview interaction checks. |
+| `npm run lint` / `npm run lint:fix` | `src/**/*.ts` | ESLint (flat config, `typescript-eslint`). |
 | `npm run test:watch` | watch mode | Local iterative testing. |
 
-## Extension-Host Matrix Targets
-`npm run test:matrix` currently runs:
-- `tests/integration/extensionHost/runtimeMatrix.spec.ts`
-- `tests/integration/extensionHost/packageManagerUserFlow.spec.ts`
-- `tests/integration/extensionHost/nodeVisualizerUserFlow.spec.ts`
+> Removed: `test:matrix` and `test:ui-click` previously pointed at spec files and
+> directories that were never created (`runtimeMatrix.spec.ts`,
+> `packageManagerUserFlow.spec.ts`, `nodeVisualizerUserFlow.spec.ts`,
+> `tests/integration/uiClick/`). Building those extension-host user-flow suites is
+> tracked as future work; until then, `test:integration` covers the real
+> extension-host specs.
 
 ## Local E2E Scripts
 These are local operations and not part of committed CI surface by default:
@@ -31,9 +31,9 @@ These are local operations and not part of committed CI surface by default:
 ## Recommended Selection by Change Type
 | Change Type | Fast Loop | Merge Gate |
 | --- | --- | --- |
-| Runtime (`src/ros/**`) | `npm run test:unit -- tests/unit/rosWorkspace` | `npm run test:matrix` |
+| Runtime (`src/ros/**`) | `npm run test:unit -- tests/unit/ros` | `npm test` + `npm run lint` |
 | Host view controllers (`src/views/**`) | `npm run test:unit` | `npm run test:integration` |
-| Package Manager webview (`media/packageManager/**`) | `npm run test:webview` | `npm run test:ui-click` |
-| Node Visualizer webview (`media/nodeVisualizer/**`) | `npm run test:unit` | `npm run test:ui-click` |
+| Package Manager webview (`media/packageManager/**`) | `npm run test:webview` | `npm run test:webview` |
+| Node Visualizer webview (`media/nodeVisualizer/**`) | `npm run test:unit` | `npm run test:integration` |
 | Command/activation/settings wiring (`src/extension.ts`, `package.json`) | `npm run test:integration -- tests/integration/extensionHost/smoke.spec.ts` | `npm run test:integration` |
 

@@ -35,8 +35,6 @@ Source of truth: `package.json` scripts.
   - `npm run test:unit`
   - `npm run test:webview`
   - `npm run test:integration`
-  - `npm run test:matrix`
-  - `npm run test:ui-click`
 - Local E2E orchestration
   - `npm run e2e:smoke`
   - `npm run e2e:full`
@@ -48,11 +46,11 @@ Run at least the first column for fast feedback, then the second column before m
 
 | Change Area | Run First | Run Before Merge | Notes |
 | --- | --- | --- | --- |
-| `src/ros/**` | `npm run test:unit -- tests/unit/rosWorkspace` | `npm run test:matrix` | `RosWorkspace` and smart-build behavior drive run/launch outcomes. |
-| `src/views/packageManagerView.ts` or `src/views/packageManagerMessages.ts` | `npm run test:unit` | `npm run test:matrix` | Covers host-side package-manager flows and contracts. |
-| `src/views/nodeVisualizerView.ts` | `npm run test:unit` | `npm run test:matrix` | Covers graph refresh, topic tools, and action flows. |
-| `media/packageManager/**` | `npm run test:webview` | `npm run test:ui-click` | Webview DOM and message wiring changes. |
-| `media/nodeVisualizer/**` | `npm run test:unit` | `npm run test:ui-click` | Node visualizer interaction and message payload changes. |
+| `src/ros/**` | `npm run test:unit -- tests/unit/ros` | `npm test` + `npm run lint` | `RosWorkspace` and smart-build behavior drive run/launch outcomes. |
+| `src/views/packageManagerView.ts` or `src/views/packageManagerMessages.ts` | `npm run test:unit` | `npm run test:integration` | Covers host-side package-manager flows and contracts. |
+| `src/views/nodeVisualizerView.ts` | `npm run test:unit` | `npm run test:integration` | Covers graph refresh, topic tools, and action flows. |
+| `media/packageManager/**` | `npm run test:webview` | `npm run test:webview` | Webview DOM and message wiring changes. |
+| `media/nodeVisualizer/**` | `npm run test:unit` | `npm run test:integration` | Node visualizer interaction and message payload changes. |
 | `media/shared/**` or `src/views/uiPreferences.ts` | `npm run test:unit -- tests/unit/views/uiPreferences.spec.ts` | `npm run test:unit` | Shared UI preference behavior is consumed by both panels. |
 | `src/extension.ts` or command/settings wiring in `package.json` | `npm run test:integration -- tests/integration/extensionHost/smoke.spec.ts` | `npm run test:integration` | Verifies activation wiring and command routing. |
 | `tests/**` only | Targeted changed tests | `npm run test` | Keep suite structure and naming consistent with `tests/README.md`. |

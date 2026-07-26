@@ -29,12 +29,28 @@ The architecture has 3 main layers:
   - Broadcasts shared UI preferences across both webviews.
 
 ### 2) Runtime Service Layer
-- Files:
-  - `src/ros/rosWorkspace.ts`
+- Facade / orchestration:
+  - `src/ros/rosWorkspace.ts` — still the primary orchestrator; holds terminal
+    state, run/launch flows, command-execution context, and graph orchestration.
+- Smart-build subsystem:
   - `src/ros/buildStampManager.ts`
   - `src/ros/dependencyResolver.ts`
   - `src/ros/buildPolicy.ts`
-- Responsibilities:
+- Extracted pure / stateless helper modules (side-effect-free, directly
+  unit-tested — the workspace class still performs the `exec`/`fs` calls and
+  hands raw output to these):
+  - `src/ros/utils/strings.ts` — regex/name/quote escaping helpers.
+  - `src/ros/templates/nodeTemplates.ts` — Python/C++ node source templates.
+  - `src/ros/build/cmakeEditor.ts` — `CMakeLists.txt` text transforms.
+  - `src/ros/build/pythonSetupEditor.ts` — `setup.py`/`setup.cfg` transforms.
+  - `src/ros/graph/rosGraphParsing.ts` — parsers for ROS 1/2 CLI output.
+  - `src/ros/launch/launchArgsParsing.ts` — Python/XML launch-argument parsers.
+  - `src/ros/environment/wslEnvironment.ts` — WSL/os-release parsing/formatting.
+  - `src/ros/runtime/processUtils.ts` — POSIX process-tree signalling helpers.
+- Stateful runtime helper:
+  - `src/ros/runtime/wslPersistentGraphRunner.ts` — warm WSL bash process for
+    batched graph snapshot commands.
+- Responsibilities (of the facade):
   - ROS environment detection and command execution context resolution.
   - Workspace/package discovery and package details extraction.
   - Package/node creation and removal.
@@ -125,20 +141,39 @@ The architecture has 3 main layers:
   - Managed in Package Manager environment dialog and applied through `RosWorkspace.setRunTerminalTarget(...)`.
 
 ## Known Drift and Debt
-- `src/views/buildRunView.ts` is present but not wired in `src/extension.ts` activation.
-  - It is currently an inactive implementation path.
-- `RosWorkspace` is a high-complexity monolith and the primary modularization target.
+- `RosWorkspace` is a high-complexity monolith (~5.1k lines) and the primary
+  modularization target. Pure/stateless concerns have been peeled off into the
+  helper modules listed above; the remaining stateful clusters (terminal
+  management, run/launch orchestration, command-execution context, graph
+  orchestration) are tightly coupled and still live in the facade. See
+  `docs/exec-plans/active/rosworkspace-modularization.md` for the extraction plan.
+- Terminal/process orchestration has no automated integration coverage; changes
+  there must be verified manually in a running VS Code host.
 
 ## Test Coverage Map
+Run with `npm test` (all suites), or the scoped scripts in `package.json`.
+
 - Activation and command wiring:
   - `tests/integration/extensionHost/smoke.spec.ts`
-- Package manager user flow:
-  - `tests/integration/extensionHost/packageManagerUserFlow.spec.ts`
-- Node visualizer user flow:
-  - `tests/integration/extensionHost/nodeVisualizerUserFlow.spec.ts`
-- Runtime matrix:
-  - `tests/integration/extensionHost/runtimeMatrix.spec.ts`
-- Smart-build/dependency/build stamps:
+- Extracted pure helper modules (characterization tests):
+  - `tests/unit/ros/strings.spec.ts`
+  - `tests/unit/ros/nodeTemplates.spec.ts`
+  - `tests/unit/ros/cmakeEditor.spec.ts`
+  - `tests/unit/ros/pythonSetupEditor.spec.ts`
+  - `tests/unit/ros/rosGraphParsing.spec.ts`
+  - `tests/unit/ros/launchArgsParsing.spec.ts`
+  - `tests/unit/ros/wslEnvironment.spec.ts`
+  - `tests/unit/ros/processUtils.spec.ts`
+- Smart-build / dependency / build stamps / workspace flows:
   - `tests/unit/rosWorkspace/*.spec.ts`
-- Webview helper/package manager DOM:
-  - `tests/unit/webview/packageManager/*.spec.ts`
+- Persistent WSL graph runner:
+  - `tests/unit/rosWorkspace/wslPersistentGraphRunner.spec.ts`
+- View helpers and UI preferences:
+  - `tests/unit/views/uiPreferences.spec.ts`
+- Webview DOM / modal styles:
+  - `tests/unit/webview/packageManager/smoke.spec.ts`
+  - `tests/unit/webview/modalStyles.spec.ts`
+
+> Note: the `packageManagerUserFlow` / `nodeVisualizerUserFlow` / `runtimeMatrix`
+> extension-host specs referenced by earlier drafts were never implemented and
+> are not part of the suite. Building them out is tracked as future work.

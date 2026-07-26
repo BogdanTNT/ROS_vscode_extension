@@ -1,6 +1,6 @@
 import * as path from 'path';
 import { BuildStampManager } from './buildStampManager';
-import { DependencyResolver, DependencyGraph } from './dependencyResolver';
+import { DependencyResolver } from './dependencyResolver';
 
 /** User-selectable smart-build behaviour. */
 export type SmartBuildPolicy = 'always' | 'ask' | 'never';
@@ -155,53 +155,6 @@ export class BuildPolicy {
             reason: 'Up to date',
             reasonCode: 'up-to-date',
         };
-    }
-
-    private _checkDependencyPropagation(
-        _name: string,
-        pkg: { localDeps: string[]; launchFileDeps?: string[] },
-        graph: DependencyGraph,
-        dirtySet: Set<string>,
-        config: BuildPolicyConfig,
-    ): { reason: string; reasonCode: BuildReason } | undefined {
-        for (const dep of pkg.localDeps) {
-            if (!dirtySet.has(dep)) {
-                continue;
-            }
-
-            const depPkg = graph.get(dep);
-            if (!depPkg) {
-                continue;
-            }
-
-            const isLaunchDep = pkg.launchFileDeps?.includes(dep) ?? false;
-
-            if (config.fastDependencyMode) {
-                const stamp = this._stamps.getStamp(dep);
-                const since = stamp?.lastSuccessfulBuild ?? 0;
-                if (this._resolver.hasInterfaceChanges(depPkg.packagePath, since)) {
-                    const label = isLaunchDep
-                        ? `Launch-referenced package "${dep}" changed resource/interface files`
-                        : `Dependency "${dep}" changed interface files`;
-                    return {
-                        reason: label,
-                        reasonCode: isLaunchDep
-                            ? 'dependency-resource-changed'
-                            : 'dependency-interface-changed',
-                    };
-                }
-            } else {
-                const label = isLaunchDep
-                    ? `Launch-referenced package "${dep}" has source changes`
-                    : `Dependency "${dep}" has source changes`;
-                return {
-                    reason: label,
-                    reasonCode: 'dependency-changed',
-                };
-            }
-        }
-
-        return undefined;
     }
 
     /**

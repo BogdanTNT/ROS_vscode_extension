@@ -60,6 +60,7 @@ describe('extension activation wiring', () => {
         const focusCreateSpy = vi.spyOn(PackageManagerViewProvider.prototype, 'focusCreateForm').mockImplementation(() => {});
         const openSourcedTerminalSpy = vi.spyOn(RosWorkspace.prototype, 'openSourcedTerminal').mockImplementation(() => {});
         const refreshGraphSpy = vi.spyOn(NodeVisualizerViewProvider.prototype, 'refreshGraph').mockImplementation(() => {});
+        const diagnoseWorkspaceSpy = vi.spyOn(RosWorkspace.prototype, 'diagnoseWorkspace').mockResolvedValue(undefined);
 
         const context = {
             extensionUri: Uri.file('/tmp/ros-dev-toolkit-ext'),
@@ -80,22 +81,26 @@ describe('extension activation wiring', () => {
             'rosNodeVisualizer',
         ]);
 
-        expect(registerCommandSpy).toHaveBeenCalledTimes(3);
+        expect(registerCommandSpy).toHaveBeenCalledTimes(4);
         expect(Array.from(commandHandlers.keys()).sort()).toEqual([
             'rosDevToolkit.createPackage',
+            'rosDevToolkit.diagnoseWorkspace',
             'rosDevToolkit.openSourcedTerminal',
             'rosDevToolkit.refreshGraph',
         ]);
 
-        expect(context.subscriptions).toHaveLength(5);
+        expect(context.subscriptions).toHaveLength(6);
 
         commandHandlers.get('rosDevToolkit.createPackage')?.();
         commandHandlers.get('rosDevToolkit.openSourcedTerminal')?.();
         commandHandlers.get('rosDevToolkit.refreshGraph')?.();
+        commandHandlers.get('rosDevToolkit.diagnoseWorkspace')?.();
 
         expect(focusCreateSpy).toHaveBeenCalledTimes(1);
         expect(openSourcedTerminalSpy).toHaveBeenCalledTimes(1);
         expect(refreshGraphSpy).toHaveBeenCalledTimes(1);
+        expect(diagnoseWorkspaceSpy).toHaveBeenCalledTimes(1);
+        expect(diagnoseWorkspaceSpy).toHaveBeenCalledWith(true);
 
         const cmakeConfig = workspace.getConfiguration('cmake');
         expect(cmakeConfig.get('configureOnOpen')).toBe(false);

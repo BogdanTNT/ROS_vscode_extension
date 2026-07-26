@@ -150,13 +150,12 @@
     "postinstall": "npm run compile",
     "compile": "tsc -p ./",
     "watch": "tsc -watch -p ./",
-    "lint": "eslint src --ext ts",
+    "lint": "eslint src",
+    "lint:fix": "eslint src --fix",
     "test": "vitest run",
     "test:unit": "vitest run tests/unit",
     "test:webview": "vitest run tests/unit/webview",
     "test:integration": "vitest run tests/integration",
-    "test:matrix": "vitest run tests/integration/extensionHost/runtimeMatrix.spec.ts tests/integration/extensionHost/packageManagerUserFlow.spec.ts tests/integration/extensionHost/nodeVisualizerUserFlow.spec.ts",
-    "test:ui-click": "vitest run tests/integration/uiClick",
     "e2e:smoke": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/e2e-run.ps1 -Profile smoke",
     "e2e:full": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/e2e-run.ps1 -Profile full",
     "e2e:build-goldens": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/e2e-build-goldens.ps1 -Mode all",
@@ -164,12 +163,15 @@
     "test:watch": "vitest"
   },
   "devDependencies": {
+    "@eslint/js": "^9.39.5",
     "@vscode/test-electron": "^2.5.2",
     "@types/node": "^20.11.0",
     "@types/vscode": "^1.85.0",
+    "eslint": "^9.39.5",
     "js-yaml": "^4.1.0",
     "jsdom": "^28.0.0",
     "typescript": "^5.3.3",
+    "typescript-eslint": "^8.65.0",
     "vitest": "^4.0.18"
   }
 }

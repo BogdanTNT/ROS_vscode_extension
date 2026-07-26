@@ -105,5 +105,4 @@ Source files:
   - `tests/unit/rosWorkspace/dependencyResolver.spec.ts`
   - `tests/unit/rosWorkspace/buildPolicy.spec.ts`
 - Integration:
-  - `tests/integration/extensionHost/packageManagerUserFlow.spec.ts`
-  - `tests/integration/extensionHost/runtimeMatrix.spec.ts`
+  - `tests/integration/extensionHost/smoke.spec.ts` (activation/command wiring)

@@ -10,7 +10,6 @@ Defines acceptance criteria for workflows currently advertised in `README.md`:
 
 ## Out of Scope
 - Local E2E golden-image orchestration (`e2e/`, `goldens/`, local `scripts/`)
-- Unwired Build/Run sidebar (`src/views/buildRunView.ts`)
 
 ## Workflow A: Create Package
 

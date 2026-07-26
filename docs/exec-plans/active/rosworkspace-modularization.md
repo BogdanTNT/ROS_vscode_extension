@@ -42,6 +42,21 @@ Split `src/ros/rosWorkspace.ts` into focused internal services without changing 
 - `src/ros/runtime/pubsubService.ts`
   - Topic echo subscriptions, publish template/publish result, action goal template/send.
 
+## Progress Log
+- **Phase 1 (pure helpers): in progress.** Extracted, each with direct unit tests:
+  - `utils/strings.ts`, `templates/nodeTemplates.ts`,
+    `build/cmakeEditor.ts`, `build/pythonSetupEditor.ts`,
+    `graph/rosGraphParsing.ts`, `launch/launchArgsParsing.ts`,
+    `environment/wslEnvironment.ts`, `runtime/processUtils.ts`.
+  - Remaining Phase-1 item: a shared runtime-context object for the stateful
+    command-execution helpers (`exec`, `buildSourcedCommand*`, run-target
+    resolution) — not yet extracted because these are coupled to terminal state.
+- Removed dead code surfaced along the way (`killProcessTree`,
+  `pickLaunchTerminal`, `matchesIntegratedLaunchTerminalProfile`,
+  `_checkDependencyPropagation`) and enabled `noUnusedLocals` to guard against
+  re-accumulation.
+- `rosWorkspace.ts`: ~5.3k → ~5.1k lines so far.
+
 ## Phase Plan
 
 ### Phase 1: Extract Shared Runtime Context and Utilities
@@ -49,7 +64,7 @@ Split `src/ros/rosWorkspace.ts` into focused internal services without changing 
   - workspace path getters
   - ROS source command builders
   - command execution helpers (`exec`, `execFileSafe`, shell escaping)
-- Move pure helper functions first (no stateful logic).
+- Move pure helper functions first (no stateful logic). ✅ done (see Progress Log)
 - Keep facade method signatures unchanged.
 
 ### Phase 2: Extract TerminalService
@@ -59,6 +74,31 @@ Split `src/ros/rosWorkspace.ts` into focused internal services without changing 
   - PID file handling and close-state transitions
 - Keep event emitter contract:
   - `onTerminalsChanged`
+
+#### Phase 2 coupling analysis (blueprint)
+This is the highest-risk phase. A grep of `this.*` calls out of the
+terminal/run-launch cluster shows it depends on ~15 non-terminal methods, so
+`TerminalService` cannot be a clean leaf — it needs a host-context interface
+injected at construction. Proposed `TerminalHostContext`:
+
+- Command building: `buildSourcedCommand`, `buildSourcedCommandForRunTarget`,
+  `buildSourcedCommandForContext`, `getRosSourceCommand`,
+  `getWorkspaceOverlayCommand`, `resolveRosSetupPath`.
+- Run-target / WSL resolution: `normalizeRunTerminalTarget`,
+  `isWindowsWslTarget`, `isWindowsWslIntegratedTarget`, `getWslDistroFromTarget`,
+  `resolveInstalledWslDistro`, `getWorkspacePathForRunTarget`.
+- Shell/env: `resolveBashPath`, `getTerminalEnv`, `buildCleanEnv`,
+  `resolveExternalTerminal`, `buildExternalTerminalArgs`.
+- Process signalling is already extracted → `runtime/processUtils.ts`.
+
+Sequencing note: extract a `RunTargetResolver` + `CommandRunner`/context object
+(the remaining Phase-1 item) **before** `TerminalService`, so the host-context
+interface is small and stable rather than a grab-bag of facade methods.
+
+**Verification for this phase is not covered by unit tests.** After extraction,
+manually exercise in a running VS Code host: create/focus/kill/relaunch tracked
+terminals; integrated + external launch; on Windows, WSL integrated + external
+launch and Ctrl-C interrupt of both `ros2 run` and `ros2 launch`.
 
 ### Phase 3: Extract Workspace Package and Scaffolding Services
 - Move package listing/detail and package/node create/remove flows.
@@ -89,10 +129,14 @@ Split `src/ros/rosWorkspace.ts` into focused internal services without changing 
 ## Verification Strategy
 - Per phase:
   - `npm run test:unit`
+  - `npm run lint`
   - targeted subset for touched domain
 - Gate before final merge:
-  - `npm run test:matrix`
+  - `npm test` (full suite)
   - `npm run test:integration`
+- Terminal/run-launch phases (Phase 2) additionally require **manual verification
+  in a running VS Code host** — create/kill/relaunch terminals, external + WSL
+  launch paths — because that subsystem has no automated integration coverage.
 
 ## Rollback Plan
 - Refactor lands in small commits per phase.

@@ -10,7 +10,58 @@ import {
     DEFAULT_BUILD_POLICY_CONFIG,
 } from './buildPolicy';
 import { WslPersistentGraphRunner } from './runtime/wslPersistentGraphRunner';
+import {
+    getProcessName,
+    isShellLikeProcess,
+    getDescendantPids,
+    interruptProcess,
+} from './runtime/processUtils';
+import { parsePythonLaunchArgs, parseXmlLaunchArgs } from './launch/launchArgsParsing';
 import { findNestedRosWorkspaceCandidates, findDuplicatePackageLocations } from './workspaceDiagnostics';
+import { escapeRegex } from './utils/strings';
+import {
+    RosNodeTemplateKind,
+    normalizeNodeTemplateKind,
+    normalizeNodeTemplateTopic,
+    buildPythonNodeTemplate,
+    buildCppNodeTemplate,
+    getCppTemplateDependencies,
+} from './templates/nodeTemplates';
+import {
+    ensureCppNodeRegisteredInCmake,
+    ensureLaunchDirectoryInstalledInCmake,
+    removeTargetFromCmake,
+} from './build/cmakeEditor';
+import {
+    ensurePythonLaunchInstallInSetupPy,
+    ensurePythonLaunchInstallInSetupCfg,
+    removeNodeFromSetupPyConsoleScripts,
+    removeNodeFromSetupCfgConsoleScripts,
+} from './build/pythonSetupEditor';
+import {
+    parseEntityList,
+    parseNodeList,
+    parseRos2ParameterList,
+    parseRos1ParameterList,
+    parseNodeGraphInfo,
+    parseRos2TopicRoles,
+    parseRos1TopicRoles,
+    isValidRosResourceName,
+    isValidRosTypeName,
+    buildMessageDefaultsFromInterface,
+    extractFirstInterfaceSection,
+} from './graph/rosGraphParsing';
+import {
+    OsReleaseInfo,
+    sanitizeWslDistroName,
+    decodeWslCliOutput,
+    parseWslList,
+    parseOsReleaseInfo,
+    formatLinuxDistro,
+    formatRosEnvironment,
+    extractEnvVar,
+    escapeShellArg,
+} from './environment/wslEnvironment';
 
 export interface RosEnvironmentInfo {
     distro: string;   // e.g. "humble", "noetic"
@@ -188,20 +239,6 @@ interface TrackedTerminal extends TrackedTerminalInfo {
     replay?: TrackedTerminalReplay;
 }
 
-interface OsReleaseInfo {
-    name?: string;
-    version?: string;
-    versionId?: string;
-    prettyName?: string;
-}
-
-interface WslDistroSummary {
-    name: string;
-    state: string;
-    version: string;
-    isDefault: boolean;
-}
-
 interface ExecFileResult {
     ok: boolean;
     stdout: string;
@@ -214,14 +251,6 @@ interface CommandExecutionContext {
     runTarget: string;
     wslDistro?: string;
 }
-
-type RosNodeTemplateKind =
-    | 'none'
-    | 'publisher'
-    | 'subscriber'
-    | 'service'
-    | 'client'
-    | 'timer';
 
 type GraphSnapshotKey = keyof RosGraphSnapshotScope;
 
@@ -496,8 +525,8 @@ export class RosWorkspace {
 
         if (platform === 'linux') {
             const osInfo = this.readOsReleaseFile('/etc/os-release');
-            lines.push(`Linux distro: ${osInfo ? this.formatLinuxDistro(osInfo) : 'unavailable'}`);
-            lines.push(`ROS environment vars: ${this.formatRosEnvironment(process.env.ROS_DISTRO, process.env.ROS_VERSION)}`);
+            lines.push(`Linux distro: ${osInfo ? formatLinuxDistro(osInfo) : 'unavailable'}`);
+            lines.push(`ROS environment vars: ${formatRosEnvironment(process.env.ROS_DISTRO, process.env.ROS_VERSION)}`);
             const rosInstalls = this.listRosInstallations('/opt/ros');
             lines.push(`ROS installs in /opt/ros: ${rosInstalls.length > 0 ? rosInstalls.join(', ') : 'none detected'}`);
 
@@ -511,7 +540,7 @@ export class RosWorkspace {
         }
 
         if (platform === 'win32') {
-            lines.push(`Windows ROS environment vars: ${this.formatRosEnvironment(process.env.ROS_DISTRO, process.env.ROS_VERSION)}`);
+            lines.push(`Windows ROS environment vars: ${formatRosEnvironment(process.env.ROS_DISTRO, process.env.ROS_VERSION)}`);
 
             const listResult = await this.execFileSafe('wsl.exe', ['-l', '-v'], 5000);
             if (!listResult.ok) {
@@ -520,7 +549,7 @@ export class RosWorkspace {
                 return lines.join('\n');
             }
 
-            const distros = this.parseWslList(listResult.stdout);
+            const distros = parseWslList(listResult.stdout);
             if (distros.length === 0) {
                 lines.push('WSL distros: none detected');
                 const stderr = listResult.stderr.trim();
@@ -542,14 +571,14 @@ export class RosWorkspace {
                 }
 
                 lines.push(`  Linux: ${probe.linuxDistro || 'unavailable'}`);
-                lines.push(`  ROS environment vars: ${this.formatRosEnvironment(probe.rosDistro, probe.rosVersion)}`);
+                lines.push(`  ROS environment vars: ${formatRosEnvironment(probe.rosDistro, probe.rosVersion)}`);
                 lines.push(`  /opt/ros distros: ${probe.rosInstalls.length > 0 ? probe.rosInstalls.join(', ') : 'none detected'}`);
             }
 
             return lines.join('\n');
         }
 
-        lines.push(`ROS environment vars: ${this.formatRosEnvironment(process.env.ROS_DISTRO, process.env.ROS_VERSION)}`);
+        lines.push(`ROS environment vars: ${formatRosEnvironment(process.env.ROS_DISTRO, process.env.ROS_VERSION)}`);
         return lines.join('\n');
     }
 
@@ -591,7 +620,7 @@ export class RosWorkspace {
             return options;
         }
 
-        const distros = this.parseWslList(wslList.stdout);
+        const distros = parseWslList(wslList.stdout);
         if (!distros.length) {
             options.push({
                 id: 'integrated',
@@ -617,7 +646,7 @@ export class RosWorkspace {
             description: 'Open a native terminal window in the default WSL distro and run commands with bash.',
         });
         for (const distro of distros) {
-            const distroName = this.sanitizeWslDistroName(distro.name);
+            const distroName = sanitizeWslDistroName(distro.name);
             if (!distroName) {
                 continue;
             }
@@ -765,10 +794,10 @@ export class RosWorkspace {
         try {
             const content = fs.readFileSync(filePath, 'utf8');
             if (ext === '.py') {
-                return this.parsePythonLaunchArgs(content);
+                return parsePythonLaunchArgs(content);
             }
             if (ext === '.xml' || ext === '.launch') {
-                return this.parseXmlLaunchArgs(content);
+                return parseXmlLaunchArgs(content);
             }
         } catch {
             return [];
@@ -816,13 +845,13 @@ export class RosWorkspace {
 
         const mergedDeps = [...defaultDeps, ...normalizedDeps].filter((dep, idx, arr) => arr.indexOf(dep) === idx);
         const depString = mergedDeps.length > 0 ? ` --dependencies ${mergedDeps.join(' ')}` : '';
-        const maintainerNameArg = this.escapeShellArg(maintainer.name);
-        const maintainerEmailArg = this.escapeShellArg(maintainer.email);
-        const ros1MaintainerArg = this.escapeShellArg(`${maintainer.name} <${maintainer.email}>`);
+        const maintainerNameArg = escapeShellArg(maintainer.name);
+        const maintainerEmailArg = escapeShellArg(maintainer.email);
+        const ros1MaintainerArg = escapeShellArg(`${maintainer.name} <${maintainer.email}>`);
         const normalizedLicense = String(license || '').trim() || DEFAULT_CREATE_PACKAGE_LICENSE;
         const normalizedDescription = String(description || '').trim() || DEFAULT_CREATE_PACKAGE_DESCRIPTION;
-        const licenseArg = this.escapeShellArg(normalizedLicense);
-        const descriptionArg = this.escapeShellArg(normalizedDescription);
+        const licenseArg = escapeShellArg(normalizedLicense);
+        const descriptionArg = escapeShellArg(normalizedDescription);
         const ros1DepsArg = mergedDeps.join(' ');
 
         const cmd = this.isRos2()
@@ -988,7 +1017,7 @@ export class RosWorkspace {
             if (fs.existsSync(setupPyPath)) {
                 try {
                     const setupPy = fs.readFileSync(setupPyPath, 'utf8');
-                    const updated = this.ensurePythonLaunchInstallInSetupPy(setupPy, safePackageName);
+                    const updated = ensurePythonLaunchInstallInSetupPy(setupPy, safePackageName);
                     if (updated !== setupPy) {
                         fs.writeFileSync(setupPyPath, updated, 'utf8');
                     }
@@ -999,7 +1028,7 @@ export class RosWorkspace {
             } else if (fs.existsSync(setupCfgPath)) {
                 try {
                     const setupCfg = fs.readFileSync(setupCfgPath, 'utf8');
-                    const updated = this.ensurePythonLaunchInstallInSetupCfg(setupCfg, safePackageName);
+                    const updated = ensurePythonLaunchInstallInSetupCfg(setupCfg, safePackageName);
                     if (updated !== setupCfg) {
                         fs.writeFileSync(setupCfgPath, updated, 'utf8');
                     }
@@ -1013,7 +1042,7 @@ export class RosWorkspace {
         if (hasCmakeBuildFile) {
             try {
                 const cmake = fs.readFileSync(cmakePath, 'utf8');
-                const updated = this.ensureLaunchDirectoryInstalledInCmake(cmake);
+                const updated = ensureLaunchDirectoryInstalledInCmake(cmake);
                 if (updated !== cmake) {
                     fs.writeFileSync(cmakePath, updated, 'utf8');
                 }
@@ -1155,91 +1184,6 @@ def generate_launch_description():
 `;
     }
 
-    private ensurePythonLaunchInstallInSetupPy(setupPy: string, packageName: string): string {
-        let updated = setupPy;
-        const hasFromGlobImport = /^\s*from\s+glob\s+import\s+glob\b/m.test(updated);
-        if (!hasFromGlobImport) {
-            updated = `from glob import glob\n${updated}`;
-        }
-
-        const escapedPkgName = this.escapeRegex(packageName);
-        const hasLaunchDataFilesEntry = new RegExp(`['"]share/${escapedPkgName}/launch['"]`).test(updated);
-        if (hasLaunchDataFilesEntry) {
-            return updated;
-        }
-
-        const launchEntry = `        ('share/${packageName}/launch', glob('launch/*')),`;
-        const dataFilesBlockPattern = /(data_files\s*=\s*\[)([\s\S]*?)(\]\s*,)/m;
-        if (dataFilesBlockPattern.test(updated)) {
-            return updated.replace(
-                dataFilesBlockPattern,
-                (_full, prefix: string, body: string, suffix: string) => {
-                    const trimmedBody = body.replace(/\s*$/, '');
-                    const nextBody = trimmedBody
-                        ? `${trimmedBody}\n${launchEntry}\n`
-                        : `\n${launchEntry}\n`;
-                    return `${prefix}${nextBody}${suffix}`;
-                },
-            );
-        }
-
-        const setupCallPattern = /setup\s*\(\s*/m;
-        if (setupCallPattern.test(updated)) {
-            return updated.replace(
-                setupCallPattern,
-                (match) => `${match}data_files=[\n${launchEntry}\n    ],\n    `,
-            );
-        }
-        return updated;
-    }
-
-    private ensurePythonLaunchInstallInSetupCfg(setupCfg: string, packageName: string): string {
-        const lineEnding = setupCfg.includes('\r\n') ? '\r\n' : '\n';
-        const launchKey = `share/${packageName}/launch`;
-        const launchKeyPattern = new RegExp(`^\\s*${this.escapeRegex(launchKey)}\\s*=`, 'm');
-        if (launchKeyPattern.test(setupCfg)) {
-            return setupCfg;
-        }
-
-        const lines = setupCfg.split(/\r?\n/);
-        const dataFilesSectionIndex = lines.findIndex((line) => /^\s*\[options\.data_files\]\s*$/i.test(line));
-        if (dataFilesSectionIndex < 0) {
-            const trimmed = setupCfg.trimEnd();
-            const separator = trimmed ? `${lineEnding}${lineEnding}` : '';
-            return `${trimmed}${separator}[options.data_files]${lineEnding}${launchKey} =${lineEnding}    launch/*${lineEnding}`;
-        }
-
-        let insertIndex = lines.length;
-        for (let idx = dataFilesSectionIndex + 1; idx < lines.length; idx += 1) {
-            if (/^\s*\[.*\]\s*$/.test(lines[idx])) {
-                insertIndex = idx;
-                break;
-            }
-        }
-
-        lines.splice(
-            insertIndex,
-            0,
-            `${launchKey} =`,
-            '    launch/*',
-        );
-        return lines.join(lineEnding);
-    }
-
-    private ensureLaunchDirectoryInstalledInCmake(cmake: string): string {
-        const hasLaunchInstall = /install\s*\(\s*DIRECTORY\s+launch\b[\s\S]*?DESTINATION\s+share\s*\/\s*\$\{PROJECT_NAME\}[\s\S]*?\)/im.test(cmake);
-        if (hasLaunchInstall) {
-            return cmake;
-        }
-        const installBlock = [
-            'install(',
-            '  DIRECTORY launch',
-            '  DESTINATION share/${PROJECT_NAME}',
-            ')',
-        ].join('\n');
-        return this.insertBeforeAmentPackage(cmake, installBlock);
-    }
-
     private resolveSafeLaunchFileCandidates(
         packageDir: string,
         launchPathHint: string | undefined,
@@ -1294,8 +1238,8 @@ def generate_launch_description():
             );
             return false;
         }
-        const templateKind = this.normalizeNodeTemplateKind(nodeTemplate);
-        const normalizedTemplateTopic = this.normalizeNodeTemplateTopic(nodeTopic);
+        const templateKind = normalizeNodeTemplateKind(nodeTemplate);
+        const normalizedTemplateTopic = normalizeNodeTemplateTopic(nodeTopic);
 
         const pkgDir = this.resolveWorkspacePackagePath(safePackageName, packagePathHint);
         if (!pkgDir) {
@@ -1457,7 +1401,7 @@ def generate_launch_description():
         if (fs.existsSync(setupPyPath)) {
             try {
                 const setupPy = fs.readFileSync(setupPyPath, 'utf8');
-                const updated = this.removeNodeFromSetupPyConsoleScripts(setupPy, safeNodeName);
+                const updated = removeNodeFromSetupPyConsoleScripts(setupPy, safeNodeName);
                 if (updated !== setupPy) {
                     fs.writeFileSync(setupPyPath, updated, 'utf8');
                     changed = true;
@@ -1471,7 +1415,7 @@ def generate_launch_description():
         if (fs.existsSync(setupCfgPath)) {
             try {
                 const setupCfg = fs.readFileSync(setupCfgPath, 'utf8');
-                const updated = this.removeNodeFromSetupCfgConsoleScripts(setupCfg, safeNodeName);
+                const updated = removeNodeFromSetupCfgConsoleScripts(setupCfg, safeNodeName);
                 if (updated !== setupCfg) {
                     fs.writeFileSync(setupCfgPath, updated, 'utf8');
                     changed = true;
@@ -1510,7 +1454,7 @@ def generate_launch_description():
 
         try {
             const cmake = fs.readFileSync(cmakePath, 'utf8');
-            const updated = this.removeTargetFromCmake(cmake, safeNodeName);
+            const updated = removeTargetFromCmake(cmake, safeNodeName);
             if (updated !== cmake) {
                 fs.writeFileSync(cmakePath, updated, 'utf8');
                 changed = true;
@@ -1538,179 +1482,6 @@ def generate_launch_description():
         }
 
         return changed;
-    }
-
-    private removeNodeFromSetupPyConsoleScripts(setupPy: string, nodeName: string): string {
-        const escapedNode = this.escapeRegex(nodeName);
-        const consoleScriptsBlockPattern = /(['"]console_scripts['"]\s*:\s*\[)([\s\S]*?)(\])/gm;
-        let changed = false;
-
-        const updated = setupPy.replace(
-            consoleScriptsBlockPattern,
-            (full, prefix: string, body: string, suffix: string) => {
-                const updatedBody = this.removeNodeFromPythonConsoleScriptBody(body, escapedNode);
-                if (updatedBody !== body) {
-                    changed = true;
-                }
-                return `${prefix}${updatedBody}${suffix}`;
-            },
-        );
-
-        if (!changed) {
-            return setupPy;
-        }
-        return updated.replace(/\n{3,}/g, '\n\n');
-    }
-
-    private removeNodeFromPythonConsoleScriptBody(body: string, escapedNodeName: string): string {
-        let updatedBody = body;
-
-        // Primary path: remove normal list entries on their own lines.
-        const linePattern = new RegExp(
-            `^[ \\t]*['"]\\s*${escapedNodeName}\\s*=\\s*[^'"]+['"]\\s*,?\\s*(?:#.*)?\\r?\\n?`,
-            'gm',
-        );
-        updatedBody = updatedBody.replace(linePattern, '');
-
-        // Fallback for one-line lists.
-        if (!updatedBody.includes('\n') && !updatedBody.includes('\r')) {
-            const inlinePattern = new RegExp(
-                `(^|\\s*,\\s*)['"]\\s*${escapedNodeName}\\s*=\\s*[^'"]+['"]\\s*(?=\\s*,|\\s*$)`,
-                'g',
-            );
-            updatedBody = updatedBody
-                .replace(inlinePattern, '')
-                .replace(/^\s*,\s*/, '')
-                .replace(/\s*,\s*$/, '');
-        }
-
-        return updatedBody;
-    }
-
-    private removeNodeFromSetupCfgConsoleScripts(setupCfg: string, nodeName: string): string {
-        const escapedNode = this.escapeRegex(nodeName);
-        const lineEnding = setupCfg.includes('\r\n') ? '\r\n' : '\n';
-        const lines = setupCfg.split(/\r?\n/);
-        const nextLines: string[] = [];
-        let inEntryPointsSection = false;
-        const entryPattern = new RegExp(`^\\s*${escapedNode}\\s*=`);
-
-        for (const line of lines) {
-            if (/^\s*\[options\.entry_points\]\s*$/i.test(line)) {
-                inEntryPointsSection = true;
-                nextLines.push(line);
-                continue;
-            }
-            if (inEntryPointsSection && /^\s*\[.*\]\s*$/.test(line)) {
-                inEntryPointsSection = false;
-            }
-            if (inEntryPointsSection && entryPattern.test(line)) {
-                continue;
-            }
-            nextLines.push(line);
-        }
-
-        return nextLines.join(lineEnding).replace(/\n{3,}/g, '\n\n');
-    }
-
-    private removeTargetFromCmake(cmake: string, targetName: string): string {
-        let updated = cmake;
-        const targetAwareCommands = [
-            'add_executable',
-            'ament_target_dependencies',
-            'target_link_libraries',
-            'target_include_directories',
-            'target_compile_definitions',
-            'target_compile_options',
-            'target_compile_features',
-            'set_target_properties',
-        ];
-
-        targetAwareCommands.forEach((commandName) => {
-            updated = this.removeCmakeCommandBlockForTarget(updated, commandName, targetName);
-        });
-        updated = this.removeTargetFromInstallTargetsBlocks(updated, targetName);
-        updated = updated.replace(/\n{3,}/g, '\n\n');
-
-        return updated;
-    }
-
-    private removeCmakeCommandBlockForTarget(cmake: string, commandName: string, targetName: string): string {
-        const escapedCommand = this.escapeRegex(commandName);
-        const escapedTarget = this.escapeRegex(targetName);
-        const commandPattern = new RegExp(
-            `^[ \\t]*${escapedCommand}\\s*\\(\\s*${escapedTarget}\\b[\\s\\S]*?\\)\\s*\\n?`,
-            'gmi',
-        );
-        return cmake.replace(commandPattern, '');
-    }
-
-    private removeTargetFromInstallTargetsBlocks(cmake: string, targetName: string): string {
-        const installTargetsPattern = /install\s*\(\s*TARGETS[\s\S]*?\)/gim;
-        return cmake.replace(
-            installTargetsPattern,
-            (block: string) => this.removeTargetFromSingleInstallTargetsBlock(block, targetName),
-        );
-    }
-
-    private removeTargetFromSingleInstallTargetsBlock(block: string, targetName: string): string {
-        const openParen = block.indexOf('(');
-        const closeParen = block.lastIndexOf(')');
-        if (openParen < 0 || closeParen <= openParen) {
-            return block;
-        }
-
-        const inner = block.slice(openParen + 1, closeParen).trim();
-        if (!inner) {
-            return block;
-        }
-        const tokens = inner.split(/\s+/).filter(Boolean);
-        if (tokens.length < 2 || tokens[0].toUpperCase() !== 'TARGETS') {
-            return block;
-        }
-
-        const installKeywords = new Set([
-            'ARCHIVE',
-            'BUNDLE',
-            'COMPONENT',
-            'CONFIGURATIONS',
-            'DESTINATION',
-            'EXCLUDE_FROM_ALL',
-            'EXPORT',
-            'FRAMEWORK',
-            'INCLUDES',
-            'LIBRARY',
-            'NAMELINK_COMPONENT',
-            'NAMELINK_ONLY',
-            'NAMELINK_SKIP',
-            'OPTIONAL',
-            'PERMISSIONS',
-            'PRIVATE_HEADER',
-            'PUBLIC_HEADER',
-            'RESOURCE',
-            'RUNTIME',
-        ]);
-
-        let targetEnd = tokens.length;
-        for (let idx = 1; idx < tokens.length; idx += 1) {
-            if (installKeywords.has(tokens[idx].toUpperCase())) {
-                targetEnd = idx;
-                break;
-            }
-        }
-
-        const declaredTargets = tokens.slice(1, targetEnd);
-        const remainingTargets = declaredTargets.filter((token) => token !== targetName);
-        if (remainingTargets.length === declaredTargets.length) {
-            return block;
-        }
-        if (remainingTargets.length === 0) {
-            return '';
-        }
-
-        const trailingTokens = tokens.slice(targetEnd);
-        const rebuiltInner = ['TARGETS', ...remainingTargets, ...trailingTokens].join(' ');
-        return `${block.slice(0, openParen + 1)}${rebuiltInner}${block.slice(closeParen)}`;
     }
 
     private resolveSafeNodeSourceCandidates(
@@ -1783,7 +1554,7 @@ def generate_launch_description():
 
         // 1. Create the node .py file if it doesn't exist
         if (!fs.existsSync(nodeFilePath)) {
-            const template = this.buildPythonNodeTemplate(safeNodeName, templateKind, templateTopic);
+            const template = buildPythonNodeTemplate(safeNodeName, templateKind, templateTopic);
             try {
                 fs.writeFileSync(nodeFilePath, template, { mode: 0o755 });
             } catch (err) {
@@ -1840,274 +1611,6 @@ def generate_launch_description():
         return true;
     }
 
-    private normalizeNodeTemplateKind(rawKind?: string): RosNodeTemplateKind {
-        const normalized = String(rawKind || 'none').trim().toLowerCase();
-        switch (normalized) {
-            case 'publisher':
-            case 'subscriber':
-            case 'service':
-            case 'client':
-            case 'timer':
-                return normalized;
-            default:
-                return 'none';
-        }
-    }
-
-    private normalizeNodeTemplateTopic(rawTopic?: string): string {
-        const trimmed = String(rawTopic || '').trim();
-        if (!trimmed) {
-            return 'chatter';
-        }
-        return trimmed.replace(/\s+/g, '_');
-    }
-
-    private escapePythonSingleQuotedString(value: string): string {
-        return String(value || '').replace(/\\/g, '\\\\').replace(/'/g, '\\\'');
-    }
-
-    private escapeCppDoubleQuotedString(value: string): string {
-        return String(value || '').replace(/\\/g, '\\\\').replace(/"/g, '\\"');
-    }
-
-    private buildPythonNodeTemplate(
-        safeNodeName: string,
-        templateKind: RosNodeTemplateKind,
-        templateTopic: string,
-    ): string {
-        const className = `${this.toPascalCase(safeNodeName)}Node`;
-        const escapedTopicName = this.escapePythonSingleQuotedString(templateTopic);
-
-        if (templateKind === 'publisher') {
-            return `#!/usr/bin/env python3
-import rclpy
-from rclpy.node import Node
-from std_msgs.msg import String
-
-
-class ${className}(Node):
-    def __init__(self):
-        # Give this node a unique runtime name.
-        super().__init__('${safeNodeName}')
-        # 1) Publisher: sends String messages to this topic.
-        self.publisher_ = self.create_publisher(String, '${escapedTopicName}', 10)
-        # 2) Timer: calls timer_callback every 0.5s.
-        self.timer_ = self.create_timer(0.5, self.timer_callback)
-        self.counter_ = 0
-        self.get_logger().info('${safeNodeName} publisher node started on topic ${escapedTopicName}')
-
-    def timer_callback(self):
-        # This function runs repeatedly from the timer.
-        msg = String()
-        msg.data = f'Hello from ${safeNodeName}: {self.counter_}'
-        self.publisher_.publish(msg)
-        self.get_logger().info(f'Publishing: {msg.data}')
-        self.counter_ += 1
-
-
-def main(args=None):
-    # rclpy setup.
-    rclpy.init(args=args)
-    node = ${className}()
-    # Keep node alive so callbacks continue running.
-    rclpy.spin(node)
-    node.destroy_node()
-    rclpy.shutdown()
-
-
-if __name__ == '__main__':
-    main()
-`;
-        }
-
-        if (templateKind === 'subscriber') {
-            return `#!/usr/bin/env python3
-import rclpy
-from rclpy.node import Node
-from std_msgs.msg import String
-
-
-class ${className}(Node):
-    def __init__(self):
-        # Give this node a unique runtime name.
-        super().__init__('${safeNodeName}')
-        # Create subscriber for String messages on this topic.
-        self.subscription = self.create_subscription(
-            String,
-            '${escapedTopicName}',
-            self.listener_callback,
-            10,
-        )
-        self.get_logger().info('${safeNodeName} subscriber node listening on ${escapedTopicName}')
-
-    def listener_callback(self, msg):
-        # Called each time a new message is received.
-        self.get_logger().info(f'Received: {msg.data}')
-
-
-def main(args=None):
-    # rclpy setup.
-    rclpy.init(args=args)
-    node = ${className}()
-    # Keep node alive so callbacks continue running.
-    rclpy.spin(node)
-    node.destroy_node()
-    rclpy.shutdown()
-
-
-if __name__ == '__main__':
-    main()
-`;
-        }
-
-        if (templateKind === 'service') {
-            return `#!/usr/bin/env python3
-import rclpy
-from rclpy.node import Node
-from example_interfaces.srv import AddTwoInts
-
-
-class ${className}(Node):
-    def __init__(self):
-        # Give this node a unique runtime name.
-        super().__init__('${safeNodeName}')
-        # Create a very simple service server.
-        # Rename "add_two_ints" later if you want.
-        self.service_ = self.create_service(AddTwoInts, 'add_two_ints', self.add_two_ints_callback)
-        self.get_logger().info('Service ready: add_two_ints')
-
-    def add_two_ints_callback(self, request, response):
-        # request has "a" and "b"; fill response.sum.
-        response.sum = request.a + request.b
-        self.get_logger().info(f'Incoming request: a={request.a}, b={request.b}')
-        return response
-
-
-def main(args=None):
-    # rclpy setup.
-    rclpy.init(args=args)
-    node = ${className}()
-    # Keep node alive so it can answer service calls.
-    rclpy.spin(node)
-    node.destroy_node()
-    rclpy.shutdown()
-
-
-if __name__ == '__main__':
-    main()
-`;
-        }
-
-        if (templateKind === 'client') {
-            return `#!/usr/bin/env python3
-import rclpy
-from rclpy.node import Node
-from example_interfaces.srv import AddTwoInts
-
-
-class ${className}(Node):
-    def __init__(self):
-        # Give this node a unique runtime name.
-        super().__init__('${safeNodeName}')
-        # Create a client for the "add_two_ints" service.
-        self.client_ = self.create_client(AddTwoInts, 'add_two_ints')
-        while not self.client_.wait_for_service(timeout_sec=1.0):
-            self.get_logger().info('Service not available, waiting...')
-        self.request_ = AddTwoInts.Request()
-        self.get_logger().info('Client ready for service: add_two_ints')
-
-    def send_request(self, a, b):
-        # Fill request and send it asynchronously.
-        self.request_.a = a
-        self.request_.b = b
-        return self.client_.call_async(self.request_)
-
-
-def main(args=None):
-    # rclpy setup.
-    rclpy.init(args=args)
-    node = ${className}()
-    # Change these numbers to test different requests.
-    future = node.send_request(2, 3)
-    rclpy.spin_until_future_complete(node, future)
-
-    if future.result() is not None:
-        node.get_logger().info(f'Result: {future.result().sum}')
-    else:
-        node.get_logger().error('Service call failed')
-
-    node.destroy_node()
-    rclpy.shutdown()
-
-
-if __name__ == '__main__':
-    main()
-`;
-        }
-
-        if (templateKind === 'timer') {
-            return `#!/usr/bin/env python3
-import rclpy
-from rclpy.node import Node
-
-
-class ${className}(Node):
-    def __init__(self):
-        super().__init__('${safeNodeName}')
-        self.counter_ = 0
-        self.timer_ = self.create_timer(1.0, self.on_timer)
-        self.get_logger().info('${safeNodeName} timer node started')
-
-    def on_timer(self):
-        self.counter_ += 1
-        self.get_logger().info(f'Tick {self.counter_}')
-
-
-def main(args=None):
-    rclpy.init(args=args)
-    node = ${className}()
-    try:
-        rclpy.spin(node)
-    except KeyboardInterrupt:
-        pass
-    finally:
-        node.destroy_node()
-        rclpy.shutdown()
-
-
-if __name__ == '__main__':
-    main()
-`;
-        }
-
-        return `#!/usr/bin/env python3
-import rclpy
-from rclpy.node import Node
-
-
-class ${className}(Node):
-    def __init__(self):
-        super().__init__('${safeNodeName}')
-        self.get_logger().info('${safeNodeName} node started')
-
-
-def main(args=None):
-    rclpy.init(args=args)
-    node = ${className}()
-    try:
-        rclpy.spin(node)
-    except KeyboardInterrupt:
-        pass
-    finally:
-        node.destroy_node()
-        rclpy.shutdown()
-
-
-if __name__ == '__main__':
-    main()
-`;
-    }
-
     private async addCppNodeToPackage(
         pkgDir: string,
         safeNodeName: string,
@@ -2118,8 +1621,8 @@ if __name__ == '__main__':
         const cppSrcDir = path.join(pkgDir, 'src');
         const nodeFilePath = path.join(cppSrcDir, `${safeNodeName}.cpp`);
         const relativeSourcePath = path.posix.join('src', `${safeNodeName}.cpp`);
-        const template = this.buildCppNodeTemplate(safeNodeName, templateKind, templateTopic);
-        const templateDependencies = this.getCppTemplateDependencies(templateKind);
+        const template = buildCppNodeTemplate(safeNodeName, templateKind, templateTopic);
+        const templateDependencies = getCppTemplateDependencies(templateKind);
 
         try {
             fs.mkdirSync(cppSrcDir, { recursive: true });
@@ -2139,7 +1642,7 @@ if __name__ == '__main__':
 
         try {
             const cmake = fs.readFileSync(cmakePath, 'utf8');
-            const updated = this.ensureCppNodeRegisteredInCmake(
+            const updated = ensureCppNodeRegisteredInCmake(
                 cmake,
                 safeNodeName,
                 relativeSourcePath,
@@ -2156,362 +1659,6 @@ if __name__ == '__main__':
         const uri = vscode.Uri.file(nodeFilePath);
         await vscode.window.showTextDocument(uri, { preview: false });
         return true;
-    }
-
-    private ensureCppNodeRegisteredInCmake(
-        cmake: string,
-        nodeName: string,
-        relativeSourcePath: string,
-        extraDependencies: string[] = [],
-    ): string {
-        let updated = cmake;
-        const dependencies = Array.from(new Set(['rclcpp', ...extraDependencies]));
-        dependencies.forEach((dependency) => {
-            updated = this.ensureFindPackageDependency(updated, dependency);
-        });
-
-        const escapedNode = this.escapeRegex(nodeName);
-        const hasExecutable = new RegExp(
-            `add_executable\\s*\\(\\s*${escapedNode}\\b`,
-            'm',
-        ).test(updated);
-        if (!hasExecutable) {
-            const block = [
-                `add_executable(${nodeName} ${relativeSourcePath})`,
-                `ament_target_dependencies(${nodeName} ${dependencies.join(' ')})`,
-                'install(TARGETS',
-                `  ${nodeName}`,
-                '  DESTINATION lib/${PROJECT_NAME}',
-                ')',
-            ].join('\n');
-            updated = this.insertBeforeAmentPackage(updated, block);
-        }
-
-        dependencies.forEach((dependency) => {
-            updated = this.ensureTargetDependency(updated, nodeName, dependency);
-        });
-        updated = this.ensureInstallTarget(updated, nodeName);
-        return updated;
-    }
-
-    private getCppTemplateDependencies(templateKind: RosNodeTemplateKind): string[] {
-        if (templateKind === 'publisher' || templateKind === 'subscriber') {
-            return ['std_msgs'];
-        }
-        if (templateKind === 'service' || templateKind === 'client') {
-            return ['example_interfaces'];
-        }
-        return [];
-    }
-
-    private buildCppNodeTemplate(
-        safeNodeName: string,
-        templateKind: RosNodeTemplateKind,
-        templateTopic: string,
-    ): string {
-        const className = `${this.toPascalCase(safeNodeName)}Node`;
-        const escapedNodeName = this.escapeCppDoubleQuotedString(safeNodeName);
-        const escapedTopicName = this.escapeCppDoubleQuotedString(templateTopic);
-
-        if (templateKind === 'publisher') {
-            return `#include <chrono>
-#include <functional>
-#include <memory>
-#include <string>
-
-#include "rclcpp/rclcpp.hpp"
-#include "std_msgs/msg/string.hpp"
-
-class ${className} : public rclcpp::Node {
-public:
-  ${className}()
-  : Node("${escapedNodeName}"), published_(false) {
-    // 1) Publisher: sends String messages to this topic.
-    publisher_ = this->create_publisher<std_msgs::msg::String>("${escapedTopicName}", 10);
-    // 2) Timer: calls publish_once every 0.5s.
-    timer_ = this->create_wall_timer(
-      std::chrono::milliseconds(500),
-      std::bind(&${className}::publish_once, this)
-    );
-    RCLCPP_INFO(this->get_logger(), "${escapedNodeName} publisher node started on topic ${escapedTopicName}");
-  }
-
-private:
-  void publish_once() {
-    // This function runs repeatedly from the timer.
-    if (published_) {
-      return;
-    }
-    auto msg = std_msgs::msg::String();
-    msg.data = "hello world my name is ${escapedNodeName}";
-    publisher_->publish(msg);
-    RCLCPP_INFO(this->get_logger(), "Publishing: %s", msg.data.c_str());
-    published_ = true;
-    timer_->cancel();
-  }
-
-  rclcpp::Publisher<std_msgs::msg::String>::SharedPtr publisher_;
-  rclcpp::TimerBase::SharedPtr timer_;
-  bool published_;
-};
-
-int main(int argc, char * argv[]) {
-  rclcpp::init(argc, argv);
-  rclcpp::spin(std::make_shared<${className}>());
-  rclcpp::shutdown();
-  return 0;
-}
-`;
-        }
-
-        if (templateKind === 'subscriber') {
-            return `#include <functional>
-#include <memory>
-
-#include "rclcpp/rclcpp.hpp"
-#include "std_msgs/msg/string.hpp"
-
-class ${className} : public rclcpp::Node {
-public:
-  ${className}()
-  : Node("${escapedNodeName}") {
-    // Create subscriber for String messages on this topic.
-    subscription_ = this->create_subscription<std_msgs::msg::String>(
-      "${escapedTopicName}",
-      10,
-      std::bind(&${className}::on_message, this, std::placeholders::_1)
-    );
-    RCLCPP_INFO(this->get_logger(), "${escapedNodeName} subscriber node listening on ${escapedTopicName}");
-  }
-
-private:
-  void on_message(const std_msgs::msg::String::SharedPtr msg) const {
-    // Called each time a new message is received.
-    RCLCPP_INFO(this->get_logger(), "Received: %s", msg->data.c_str());
-  }
-
-  rclcpp::Subscription<std_msgs::msg::String>::SharedPtr subscription_;
-};
-
-int main(int argc, char * argv[]) {
-  rclcpp::init(argc, argv);
-  rclcpp::spin(std::make_shared<${className}>());
-  rclcpp::shutdown();
-  return 0;
-}
-`;
-        }
-
-        if (templateKind === 'service') {
-            return `#include <functional>
-#include <memory>
-
-#include "example_interfaces/srv/add_two_ints.hpp"
-#include "rclcpp/rclcpp.hpp"
-
-using std::placeholders::_1;
-using std::placeholders::_2;
-
-class ${className} : public rclcpp::Node {
-public:
-  ${className}()
-  : Node("${escapedNodeName}") {
-    // Create a very simple service server.
-    // Rename "add_two_ints" later if you want.
-    service_ = this->create_service<example_interfaces::srv::AddTwoInts>(
-      "add_two_ints",
-      std::bind(&${className}::add_two_ints, this, _1, _2)
-    );
-    RCLCPP_INFO(this->get_logger(), "Service ready: add_two_ints");
-  }
-
-private:
-  void add_two_ints(
-    const std::shared_ptr<example_interfaces::srv::AddTwoInts::Request> request,
-    std::shared_ptr<example_interfaces::srv::AddTwoInts::Response> response
-  ) {
-    // request has "a" and "b"; fill response->sum.
-    response->sum = request->a + request->b;
-    RCLCPP_INFO(
-      this->get_logger(),
-      "Incoming request: a=%ld, b=%ld",
-      static_cast<long>(request->a),
-      static_cast<long>(request->b)
-    );
-  }
-
-  rclcpp::Service<example_interfaces::srv::AddTwoInts>::SharedPtr service_;
-};
-
-int main(int argc, char * argv[]) {
-  rclcpp::init(argc, argv);
-  rclcpp::spin(std::make_shared<${className}>());
-  rclcpp::shutdown();
-  return 0;
-}
-`;
-        }
-
-        if (templateKind === 'client') {
-            return `#include <chrono>
-#include <memory>
-
-#include "example_interfaces/srv/add_two_ints.hpp"
-#include "rclcpp/rclcpp.hpp"
-
-using namespace std::chrono_literals;
-
-int main(int argc, char * argv[]) {
-  rclcpp::init(argc, argv);
-  auto node = rclcpp::Node::make_shared("${escapedNodeName}");
-
-  // Create a client for the "add_two_ints" service.
-  auto client = node->create_client<example_interfaces::srv::AddTwoInts>("add_two_ints");
-  while (!client->wait_for_service(1s)) {
-    RCLCPP_INFO(node->get_logger(), "Service not available, waiting...");
-  }
-
-  auto request = std::make_shared<example_interfaces::srv::AddTwoInts::Request>();
-  request->a = 2;
-  request->b = 3;
-
-  // Send request and wait for result.
-  auto future = client->async_send_request(request);
-  if (rclcpp::spin_until_future_complete(node, future) == rclcpp::FutureReturnCode::SUCCESS) {
-    RCLCPP_INFO(
-      node->get_logger(),
-      "Result: %ld",
-      static_cast<long>(future.get()->sum)
-    );
-  } else {
-    RCLCPP_ERROR(node->get_logger(), "Service call failed");
-  }
-
-  rclcpp::shutdown();
-  return 0;
-}
-`;
-        }
-
-        return `#include <memory>
-
-#include "rclcpp/rclcpp.hpp"
-
-class ${className} : public rclcpp::Node {
-public:
-  ${className}()
-  : Node("${escapedNodeName}") {
-    RCLCPP_INFO(this->get_logger(), "${escapedNodeName} node started");
-  }
-};
-
-int main(int argc, char * argv[]) {
-  rclcpp::init(argc, argv);
-  rclcpp::spin(std::make_shared<${className}>());
-  rclcpp::shutdown();
-  return 0;
-}
-`;
-    }
-
-    private ensureFindPackageDependency(cmake: string, dependency: string): string {
-        const escapedDep = this.escapeRegex(dependency);
-        if (new RegExp(`find_package\\s*\\(\\s*${escapedDep}\\b`, 'i').test(cmake)) {
-            return cmake;
-        }
-
-        const findAmentPattern = /find_package\s*\(\s*ament_cmake\s+REQUIRED\s*\)\s*\n?/i;
-        if (findAmentPattern.test(cmake)) {
-            return cmake.replace(
-                findAmentPattern,
-                (match) => `${match}find_package(${dependency} REQUIRED)\n`,
-            );
-        }
-
-        const projectPattern = /project\s*\([^\)]*\)\s*\n?/i;
-        if (projectPattern.test(cmake)) {
-            return cmake.replace(
-                projectPattern,
-                (match) => `${match}find_package(${dependency} REQUIRED)\n`,
-            );
-        }
-
-        return `find_package(${dependency} REQUIRED)\n${cmake}`;
-    }
-
-    private ensureTargetDependency(cmake: string, targetName: string, dependency: string): string {
-        const escapedTarget = this.escapeRegex(targetName);
-        const targetDepPattern = new RegExp(
-            `ament_target_dependencies\\s*\\(\\s*${escapedTarget}[\\s\\S]*?\\)`,
-            'm',
-        );
-        const existingCall = cmake.match(targetDepPattern)?.[0];
-        if (existingCall) {
-            const hasDependency = new RegExp(`\\b${this.escapeRegex(dependency)}\\b`, 'm').test(existingCall);
-            if (hasDependency) {
-                return cmake;
-            }
-            return cmake.replace(
-                targetDepPattern,
-                existingCall.replace(/\)\s*$/, ` ${dependency})`),
-            );
-        }
-
-        const executablePattern = new RegExp(
-            `add_executable\\s*\\(\\s*${escapedTarget}[\\s\\S]*?\\)`,
-            'm',
-        );
-        if (executablePattern.test(cmake)) {
-            return cmake.replace(
-                executablePattern,
-                (match) => `${match}\nament_target_dependencies(${targetName} ${dependency})`,
-            );
-        }
-
-        return this.insertBeforeAmentPackage(
-            cmake,
-            `ament_target_dependencies(${targetName} ${dependency})`,
-        );
-    }
-
-    private ensureInstallTarget(cmake: string, targetName: string): string {
-        const escapedTarget = this.escapeRegex(targetName);
-        const installTargetPattern = new RegExp(
-            `install\\s*\\(\\s*TARGETS[\\s\\S]*?\\b${escapedTarget}\\b[\\s\\S]*?\\)`,
-            'm',
-        );
-        if (installTargetPattern.test(cmake)) {
-            return cmake;
-        }
-
-        const installBlock = [
-            'install(TARGETS',
-            `  ${targetName}`,
-            '  DESTINATION lib/${PROJECT_NAME}',
-            ')',
-        ].join('\n');
-        return this.insertBeforeAmentPackage(cmake, installBlock);
-    }
-
-    private insertBeforeAmentPackage(cmake: string, block: string): string {
-        const normalizedBlock = block.trim();
-        const amentPackagePattern = /^\s*ament_package\s*\(\s*\)\s*$/m;
-        if (amentPackagePattern.test(cmake)) {
-            return cmake.replace(
-                amentPackagePattern,
-                `${normalizedBlock}\n\nament_package()`,
-            );
-        }
-
-        const trailingNewline = cmake.endsWith('\n') ? '' : '\n';
-        return `${cmake}${trailingNewline}\n${normalizedBlock}\n`;
-    }
-
-    private toPascalCase(name: string): string {
-        return name
-            .split(/[_-]/)
-            .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
-            .join('');
     }
 
     private getDefaultCreatePackageDependencies(buildType: string): string[] {
@@ -3123,7 +2270,7 @@ int main(int argc, char * argv[]) {
             // Prefer the real inner bash PID so SIGINT behaves like Ctrl+C.
             const innerPid = this.readInnerPid(tracked, false);
             if (innerPid) {
-                this.interruptProcess(innerPid, true);
+                interruptProcess(innerPid, true);
             } else {
                 // PID file may not be ready yet right after spawn; retry briefly.
                 this.scheduleDeferredInterrupt(id);
@@ -3143,19 +2290,19 @@ int main(int argc, char * argv[]) {
             }
 
             const hasActiveChildren = (): boolean => {
-                const descendants = this.getDescendantPids(shellPid);
+                const descendants = getDescendantPids(shellPid);
                 if (!descendants.length) {
                     return false;
                 }
 
                 for (const pid of descendants) {
-                    const processName = this.getProcessName(pid);
+                    const processName = getProcessName(pid);
                     if (!processName) {
                         // Process disappeared between pgrep and ps
                         // (e.g. zombie reaped); treat as gone.
                         continue;
                     }
-                    if (!this.isShellLikeProcess(processName)) {
+                    if (!isShellLikeProcess(processName)) {
                         return true;
                     }
                 }
@@ -3226,82 +2373,8 @@ int main(int argc, char * argv[]) {
         }, 250);
     }
 
-    private getProcessName(pid: number): string | undefined {
-        try {
-            const out = cp
-                .execSync(`ps -p ${pid} -o comm= 2>/dev/null`, { encoding: 'utf8' })
-                .trim()
-                .toLowerCase();
-            return out || undefined;
-        } catch {
-            return undefined;
-        }
-    }
-
-    private isShellLikeProcess(name: string): boolean {
-        const shellNames = new Set([
-            'bash',
-            'sh',
-            'zsh',
-            'fish',
-            'dash',
-            'ksh',
-            'tmux',
-        ]);
-        return shellNames.has(name);
-    }
-
     private delay(ms: number): Promise<void> {
         return new Promise((resolve) => setTimeout(resolve, ms));
-    }
-
-    private pickLaunchTerminal(profile?: { wslIntegrated?: boolean; wslDistro?: string }): TrackedTerminal | undefined {
-        const wantsWslIntegrated = profile?.wslIntegrated === true;
-        const wantedDistro = this.sanitizeWslDistroName(profile?.wslDistro);
-
-        if (this._preferredTerminalId) {
-            const preferred = this._trackedTerminals.get(this._preferredTerminalId);
-            if (
-                preferred?.kind === 'integrated'
-                && preferred.status === 'running'
-                && this.matchesIntegratedLaunchTerminalProfile(preferred, wantsWslIntegrated, wantedDistro)
-            ) {
-                return preferred;
-            }
-        }
-
-        const active = Array.from(this._trackedTerminals.values())
-            .filter((t) => (
-                t.kind === 'integrated'
-                && t.status === 'running'
-                && this.matchesIntegratedLaunchTerminalProfile(t, wantsWslIntegrated, wantedDistro)
-            ));
-
-        if (!active.length) {
-            return undefined;
-        }
-
-        active.sort((a, b) => b.lastUsed - a.lastUsed);
-        return active[0];
-    }
-
-    private matchesIntegratedLaunchTerminalProfile(
-        tracked: TrackedTerminal,
-        wantsWslIntegrated: boolean,
-        wantedDistro: string,
-    ): boolean {
-        if (wantsWslIntegrated) {
-            if (!tracked.wslIntegrated) {
-                return false;
-            }
-            const trackedDistro = this.sanitizeWslDistroName(tracked.wslDistro);
-            if (!wantedDistro) {
-                return !trackedDistro;
-            }
-            return trackedDistro.toLowerCase() === wantedDistro.toLowerCase();
-        }
-
-        return tracked.wslIntegrated !== true;
     }
 
     private createLaunchTerminal(
@@ -3311,7 +2384,7 @@ int main(int argc, char * argv[]) {
         const bashPath = this.resolveBashPath();
         const env = this.getTerminalEnv();
         const wantsWslIntegrated = process.platform === 'win32' && profile?.wslIntegrated === true;
-        const requestedDistro = this.sanitizeWslDistroName(profile?.wslDistro);
+        const requestedDistro = sanitizeWslDistroName(profile?.wslDistro);
         const num = this._terminalSeq++;
         const name = this.buildLaunchTerminalName(launchLabel, {
             wslIntegrated: wantsWslIntegrated,
@@ -3461,7 +2534,7 @@ int main(int argc, char * argv[]) {
 
             const innerPid = this.readInnerPid(tracked, false);
             if (innerPid) {
-                this.interruptProcess(innerPid, true);
+                interruptProcess(innerPid, true);
                 return;
             }
 
@@ -3479,7 +2552,7 @@ int main(int argc, char * argv[]) {
             wslArgs.push('-d', tracked.wslDistro);
         }
 
-        const pidFile = this.escapeShellArg(tracked.wslPidFile);
+        const pidFile = escapeShellArg(tracked.wslPidFile);
         const interruptScript = [
             `pid_file=${pidFile}`,
             '[ -f "$pid_file" ] || exit 0',
@@ -3558,7 +2631,7 @@ int main(int argc, char * argv[]) {
             wslArgs.push('-d', tracked.wslDistro);
         }
 
-        const pidFile = this.escapeShellArg(tracked.wslPidFile);
+        const pidFile = escapeShellArg(tracked.wslPidFile);
         const idleScript = [
             `pid_file=${pidFile}`,
             '[ -f "$pid_file" ] || exit 1',
@@ -3608,84 +2681,6 @@ int main(int argc, char * argv[]) {
         } catch {
             // ignore force-close failures
         }
-    }
-
-    /**
-     * Kill the inner bash process and its entire child tree.
-     * Sends SIGTERM, then SIGKILL after 500ms.
-     */
-    private killProcessTree(pid: number): void {
-        const descendants = this.getDescendantPids(pid);
-
-        // SIGTERM descendants leaf-first, then the parent
-        for (const desc of descendants) {
-            try { process.kill(desc, 'SIGTERM'); } catch { /* ignore */ }
-        }
-        try { process.kill(pid, 'SIGTERM'); } catch { /* ignore */ }
-
-        // Force kill after delay
-        setTimeout(() => {
-            for (const desc of descendants) {
-                try { process.kill(desc, 'SIGKILL'); } catch { /* ignore */ }
-            }
-            try { process.kill(pid, 'SIGKILL'); } catch { /* ignore */ }
-        }, 500);
-    }
-
-    /**
-     * Send SIGINT (Ctrl+C) to the inner bash's child processes.
-     * This interrupts ros2 launch without closing the terminal.
-     *
-     * For `ros2 run` the actual node is a grandchild of the bash, so we
-     * must walk the full descendant tree — `pkill -P` only hits direct
-     * children and would leave the node process orphaned.
-     */
-    private interruptProcess(pid: number, includeProcessGroup: boolean = false): void {
-        // Collect ALL descendant PIDs (recursive), leaf-first, so children
-        // are signalled before parents.
-        const descendants = this.getDescendantPids(pid);
-
-        if (includeProcessGroup) {
-            // Best-effort: signal the shell's process group to mimic Ctrl+C.
-            try {
-                process.kill(-pid, 'SIGINT');
-            } catch { /* ignore */ }
-        }
-
-        // Signal every descendant individually (leaf → root order).
-        for (const desc of descendants) {
-            try {
-                process.kill(desc, 'SIGINT');
-            } catch { /* ignore */ }
-        }
-
-        // Also send to the bash itself in case it's the foreground
-        try {
-            process.kill(pid, 'SIGINT');
-        } catch { /* ignore */ }
-    }
-
-    /**
-     * Recursively collect all descendant PIDs of `parentPid`,
-     * returned in leaf-first (deepest-first) order.
-     */
-    private getDescendantPids(parentPid: number): number[] {
-        const result: number[] = [];
-        try {
-            // `pgrep -P <pid>` lists direct children.
-            const raw = cp.execSync(`pgrep -P ${parentPid} 2>/dev/null`, { encoding: 'utf8' }).trim();
-            if (!raw) {
-                return result;
-            }
-            const children = raw.split('\n').map(s => parseInt(s, 10)).filter(n => n > 0);
-            // Recurse into each child first (depth-first) …
-            for (const child of children) {
-                result.push(...this.getDescendantPids(child));
-            }
-            // … then add the direct children.
-            result.push(...children);
-        } catch { /* pgrep returns non-zero when there are no children */ }
-        return result;
     }
 
     /**
@@ -3891,7 +2886,7 @@ int main(int argc, char * argv[]) {
 
             try {
                 if (key === 'nodes') {
-                    const parsedNodes = this.parseNodeList(parsed.output);
+                    const parsedNodes = parseNodeList(parsed.output);
                     defaults.nodes = {
                         ok: true,
                         data: parsedNodes.nodes,
@@ -3902,29 +2897,29 @@ int main(int argc, char * argv[]) {
                 if (key === 'topics') {
                     defaults.topics = {
                         ok: true,
-                        data: this.parseEntityList(parsed.output),
+                        data: parseEntityList(parsed.output),
                     };
                     continue;
                 }
                 if (key === 'services') {
                     defaults.services = {
                         ok: true,
-                        data: this.parseEntityList(parsed.output),
+                        data: parseEntityList(parsed.output),
                     };
                     continue;
                 }
                 if (key === 'actions') {
                     defaults.actions = {
                         ok: true,
-                        data: this.parseEntityList(parsed.output),
+                        data: parseEntityList(parsed.output),
                     };
                     continue;
                 }
                 defaults.parameters = {
                     ok: true,
                     data: this.isRos2()
-                        ? this.parseRos2ParameterList(parsed.output)
-                        : this.parseRos1ParameterList(parsed.output),
+                        ? parseRos2ParameterList(parsed.output)
+                        : parseRos1ParameterList(parsed.output),
                 };
             } catch (err) {
                 (defaults[key] as RosGraphSnapshotSection<unknown>).ok = false;
@@ -3977,7 +2972,7 @@ int main(int argc, char * argv[]) {
             const raw = this.isRos2()
                 ? await this.exec(`timeout ${timeoutSeconds}s ros2 node list`)
                 : await this.exec(`timeout ${timeoutSeconds}s rosnode list`);
-            return this.parseNodeList(raw).nodes;
+            return parseNodeList(raw).nodes;
         } catch {
             return [];
         }
@@ -3989,7 +2984,7 @@ int main(int argc, char * argv[]) {
             const raw = this.isRos2()
                 ? await this.exec(`timeout ${timeoutSeconds}s ros2 topic list -t`)
                 : await this.exec(`timeout ${timeoutSeconds}s rostopic list`);
-            return this.parseEntityList(raw);
+            return parseEntityList(raw);
         } catch {
             return [];
         }
@@ -4001,7 +2996,7 @@ int main(int argc, char * argv[]) {
             const raw = this.isRos2()
                 ? await this.exec(`timeout ${timeoutSeconds}s ros2 service list -t`)
                 : await this.exec(`timeout ${timeoutSeconds}s rosservice list`);
-            return this.parseEntityList(raw);
+            return parseEntityList(raw);
         } catch {
             return [];
         }
@@ -4014,7 +3009,7 @@ int main(int argc, char * argv[]) {
         try {
             const timeoutSeconds = this.getGraphListTimeoutSeconds();
             const raw = await this.exec(`timeout ${timeoutSeconds}s ros2 action list -t`);
-            return this.parseEntityList(raw);
+            return parseEntityList(raw);
         } catch {
             return [];
         }
@@ -4027,15 +3022,15 @@ int main(int argc, char * argv[]) {
                 ? await this.exec(`timeout ${timeoutSeconds}s ros2 param list`)
                 : await this.exec(`timeout ${timeoutSeconds}s rosparam list`);
             return this.isRos2()
-                ? this.parseRos2ParameterList(raw)
-                : this.parseRos1ParameterList(raw);
+                ? parseRos2ParameterList(raw)
+                : parseRos1ParameterList(raw);
         } catch {
             return [];
         }
     }
 
     async getLatestTopicMessage(topicName: string, timeoutSeconds = 2): Promise<string | undefined> {
-        if (!this.isValidRosResourceName(topicName)) {
+        if (!isValidRosResourceName(topicName)) {
             return undefined;
         }
 
@@ -4071,7 +3066,7 @@ int main(int argc, char * argv[]) {
         onMessage: (message: string) => void,
         onClosed?: (info: { code: number | null; signal: NodeJS.Signals | null; errorOutput?: string }) => void,
     ): RosTopicMessageSubscription | undefined {
-        if (!this.isValidRosResourceName(topicName)) {
+        if (!isValidRosResourceName(topicName)) {
             return undefined;
         }
 
@@ -4204,7 +3199,7 @@ int main(int argc, char * argv[]) {
     }
 
     async getTopicRoles(topicName: string): Promise<{ publishers: string[]; subscribers: string[] }> {
-        if (!this.isValidRosResourceName(topicName)) {
+        if (!isValidRosResourceName(topicName)) {
             return { publishers: [], subscribers: [] };
         }
 
@@ -4214,8 +3209,8 @@ int main(int argc, char * argv[]) {
                 ? await this.exec(`timeout ${timeoutSeconds}s ros2 topic info ${topicName} --verbose`)
                 : await this.exec(`timeout ${timeoutSeconds}s rostopic info ${topicName}`);
             return this.isRos2()
-                ? this.parseRos2TopicRoles(raw)
-                : this.parseRos1TopicRoles(raw);
+                ? parseRos2TopicRoles(raw)
+                : parseRos1TopicRoles(raw);
         } catch {
             return { publishers: [], subscribers: [] };
         }
@@ -4225,7 +3220,7 @@ int main(int argc, char * argv[]) {
         topicName: string,
         topicTypeHint?: string,
     ): Promise<RosTopicPublishTemplateResult> {
-        if (!this.isValidRosResourceName(topicName)) {
+        if (!isValidRosResourceName(topicName)) {
             return {
                 success: false,
                 topicName,
@@ -4247,7 +3242,7 @@ int main(int argc, char * argv[]) {
                 ? `ros2 interface show ${topicType}`
                 : `rosmsg show ${topicType}`;
             const rawDefinition = await this.exec(command);
-            const defaults = this.buildMessageDefaultsFromInterface(rawDefinition);
+            const defaults = buildMessageDefaultsFromInterface(rawDefinition);
             const template = JSON.stringify(defaults, null, 2);
             return {
                 success: true,
@@ -4270,7 +3265,7 @@ int main(int argc, char * argv[]) {
         payload: string,
         topicTypeHint?: string,
     ): Promise<RosTopicPublishResult> {
-        if (!this.isValidRosResourceName(topicName)) {
+        if (!isValidRosResourceName(topicName)) {
             return {
                 success: false,
                 topicName,
@@ -4330,7 +3325,7 @@ int main(int argc, char * argv[]) {
             };
         }
 
-        if (!this.isValidRosResourceName(actionName)) {
+        if (!isValidRosResourceName(actionName)) {
             return {
                 success: false,
                 actionName,
@@ -4349,8 +3344,8 @@ int main(int argc, char * argv[]) {
 
         try {
             const rawDefinition = await this.exec(`ros2 interface show ${actionType}`);
-            const goalDefinition = this.extractFirstInterfaceSection(rawDefinition);
-            const defaults = this.buildMessageDefaultsFromInterface(goalDefinition);
+            const goalDefinition = extractFirstInterfaceSection(rawDefinition);
+            const defaults = buildMessageDefaultsFromInterface(goalDefinition);
             const template = JSON.stringify(defaults, null, 2);
             return {
                 success: true,
@@ -4381,7 +3376,7 @@ int main(int argc, char * argv[]) {
             };
         }
 
-        if (!this.isValidRosResourceName(actionName)) {
+        if (!isValidRosResourceName(actionName)) {
             return {
                 success: false,
                 actionName,
@@ -4433,7 +3428,7 @@ int main(int argc, char * argv[]) {
             const raw = this.isRos2()
                 ? await this.exec(`timeout ${timeoutSeconds}s ros2 node info ${nodeName}`)
                 : await this.exec(`timeout ${timeoutSeconds}s rosnode info ${nodeName}`);
-            return this.parseNodeGraphInfo(raw);
+            return parseNodeGraphInfo(raw);
         } catch {
             return {
                 publishers: [],
@@ -4708,7 +3703,7 @@ int main(int argc, char * argv[]) {
             return undefined;
         }
 
-        const normalizedDistro = this.sanitizeWslDistroName(context.wslDistro) || undefined;
+        const normalizedDistro = sanitizeWslDistroName(context.wslDistro) || undefined;
         if (this._wslGraphRunner && this._wslGraphRunnerDistro !== normalizedDistro) {
             this._wslGraphRunner.dispose();
             this._wslGraphRunner = undefined;
@@ -4742,358 +3737,9 @@ int main(int argc, char * argv[]) {
         return Math.min(max, Math.max(min, Math.floor(numeric)));
     }
 
-    private parseEntityList(raw: string): RosGraphEntityInfo[] {
-        // ROS 2 uses "<name> [<type>]" while ROS 1 usually returns just "<name>".
-        // This parser accepts both formats and normalizes duplicates by name.
-        const lines = raw.split('\n').map((line) => line.trim()).filter(Boolean);
-        const entities: RosGraphEntityInfo[] = [];
-        const seen = new Set<string>();
-
-        for (const line of lines) {
-            const typedMatch = line.match(/^(\S+)\s+\[(.+)\]$/);
-            const name = typedMatch?.[1] ?? line;
-            const type = typedMatch?.[2] ?? 'unknown';
-
-            if (!name.startsWith('/')) {
-                continue;
-            }
-            if (seen.has(name)) {
-                continue;
-            }
-            seen.add(name);
-            entities.push({ name, type });
-        }
-
-        return entities;
-    }
-
-    private parseNodeList(raw: string): { nodes: string[]; warnings: string[] } {
-        const nodes: string[] = [];
-        const warnings: string[] = [];
-
-        for (const line of raw.split('\n')) {
-            const trimmed = line.trim();
-            if (!trimmed) {
-                continue;
-            }
-            if (trimmed.startsWith('/')) {
-                nodes.push(trimmed);
-                continue;
-            }
-            if (/^warning\b/i.test(trimmed)) {
-                warnings.push(trimmed);
-                continue;
-            }
-            warnings.push(trimmed);
-        }
-
-        return { nodes, warnings };
-    }
-
-    private parseRos2ParameterList(raw: string): RosParameterInfo[] {
-        const params: RosParameterInfo[] = [];
-        const seen = new Set<string>();
-        let currentNode = '';
-
-        for (const line of raw.split('\n')) {
-            const trimmed = line.trim();
-            if (!trimmed) {
-                continue;
-            }
-
-            if (trimmed.startsWith('/') && trimmed.endsWith(':')) {
-                const nodeName = trimmed.slice(0, -1).trim();
-                currentNode = this.isValidRosResourceName(nodeName) ? nodeName : '';
-                continue;
-            }
-
-            if (!currentNode) {
-                continue;
-            }
-
-            const paramName = trimmed.replace(/^-+\s*/, '').trim();
-            if (!this.isValidRosParameterName(paramName)) {
-                continue;
-            }
-
-            const key = `${currentNode}:${paramName}`;
-            if (seen.has(key)) {
-                continue;
-            }
-            seen.add(key);
-            params.push({ name: paramName, node: currentNode });
-        }
-
-        return params.sort(
-            (a, b) => (a.node ?? '').localeCompare(b.node ?? '') || a.name.localeCompare(b.name),
-        );
-    }
-
-    private parseRos1ParameterList(raw: string): RosParameterInfo[] {
-        const params: RosParameterInfo[] = [];
-        const seen = new Set<string>();
-
-        for (const line of raw.split('\n')) {
-            const trimmed = line.trim();
-            if (!trimmed || !this.isValidRosResourceName(trimmed) || seen.has(trimmed)) {
-                continue;
-            }
-            seen.add(trimmed);
-            params.push({ name: trimmed });
-        }
-
-        return params.sort((a, b) => a.name.localeCompare(b.name));
-    }
-
-    private parseNodeGraphInfo(raw: string): RosNodeGraphInfo {
-        // `ros2 node info` and `rosnode info` are section-based text outputs.
-        // We track the active section while scanning and route each discovered
-        // endpoint to its matching relation bucket.
-        const publishers: string[] = [];
-        const subscribers: string[] = [];
-        const serviceServers: string[] = [];
-        const serviceClients: string[] = [];
-        const actionServers: string[] = [];
-        const actionClients: string[] = [];
-
-        let section:
-            | 'pub'
-            | 'sub'
-            | 'srvServer'
-            | 'srvClient'
-            | 'actionServer'
-            | 'actionClient'
-            | null = null;
-
-        for (const line of raw.split('\n')) {
-            const trimmed = line.trim();
-            if (!trimmed) {
-                continue;
-            }
-
-            const lower = trimmed.toLowerCase();
-            if (
-                lower === 'publishers:' ||
-                lower === 'publications:' ||
-                lower.startsWith('publishers:')
-            ) {
-                section = 'pub';
-                continue;
-            }
-            if (
-                lower === 'subscribers:' ||
-                lower === 'subscriptions:' ||
-                lower.startsWith('subscribers:')
-            ) {
-                section = 'sub';
-                continue;
-            }
-            if (lower === 'service servers:' || lower.startsWith('service servers:')) {
-                section = 'srvServer';
-                continue;
-            }
-            if (lower === 'service clients:' || lower.startsWith('service clients:')) {
-                section = 'srvClient';
-                continue;
-            }
-            if (lower === 'services:' || lower.startsWith('services:')) {
-                section = 'srvServer';
-                continue;
-            }
-            if (lower === 'action servers:' || lower.startsWith('action servers:')) {
-                section = 'actionServer';
-                continue;
-            }
-            if (lower === 'action clients:' || lower.startsWith('action clients:')) {
-                section = 'actionClient';
-                continue;
-            }
-
-            const endpoint = this.parseNodeInfoEndpoint(trimmed);
-            if (!endpoint || !section) {
-                continue;
-            }
-
-            const normalizedEndpoint = this.normalizeGraphEndpoint(section, endpoint);
-
-            if (section === 'pub') {
-                publishers.push(normalizedEndpoint);
-                continue;
-            }
-            if (section === 'sub') {
-                subscribers.push(normalizedEndpoint);
-                continue;
-            }
-            if (section === 'srvServer') {
-                serviceServers.push(normalizedEndpoint);
-                continue;
-            }
-            if (section === 'srvClient') {
-                serviceClients.push(normalizedEndpoint);
-                continue;
-            }
-            if (section === 'actionServer') {
-                actionServers.push(normalizedEndpoint);
-                continue;
-            }
-            actionClients.push(normalizedEndpoint);
-        }
-
-        return {
-            publishers: Array.from(new Set(publishers)),
-            subscribers: Array.from(new Set(subscribers)),
-            serviceServers: Array.from(new Set(serviceServers)),
-            serviceClients: Array.from(new Set(serviceClients)),
-            actionServers: Array.from(new Set(actionServers)),
-            actionClients: Array.from(new Set(actionClients)),
-        };
-    }
-
-    private parseNodeInfoEndpoint(trimmedLine: string): string | undefined {
-        // Node info lines typically include one absolute ROS name first
-        // (topic/service/action path). We extract that first path token.
-        const pathMatch = trimmedLine.match(/(\/[^\s:\[]+)/);
-        if (!pathMatch?.[1]) {
-            return undefined;
-        }
-        return pathMatch[1];
-    }
-
-    private parseRos2TopicRoles(raw: string): { publishers: string[]; subscribers: string[] } {
-        const publishers: string[] = [];
-        const subscribers: string[] = [];
-        let currentNodeName = '';
-
-        for (const line of raw.split('\n')) {
-            const trimmed = line.trim();
-            if (!trimmed) {
-                continue;
-            }
-
-            const nodePrefix = 'Node name:';
-            if (trimmed.startsWith(nodePrefix)) {
-                currentNodeName = trimmed.slice(nodePrefix.length).trim();
-                continue;
-            }
-
-            const endpointPrefix = 'Endpoint type:';
-            if (!trimmed.startsWith(endpointPrefix)) {
-                continue;
-            }
-
-            const endpointType = trimmed.slice(endpointPrefix.length).trim().toUpperCase();
-            const normalizedNodeName = this.normalizeTopicRoleNodeName(currentNodeName);
-            if (!normalizedNodeName) {
-                continue;
-            }
-
-            if (endpointType.includes('PUBLISHER')) {
-                publishers.push(normalizedNodeName);
-                continue;
-            }
-            if (endpointType.includes('SUBSCRIPTION')) {
-                subscribers.push(normalizedNodeName);
-            }
-        }
-
-        return {
-            publishers: Array.from(new Set(publishers)),
-            subscribers: Array.from(new Set(subscribers)),
-        };
-    }
-
-    private parseRos1TopicRoles(raw: string): { publishers: string[]; subscribers: string[] } {
-        const publishers: string[] = [];
-        const subscribers: string[] = [];
-        let section: 'publishers' | 'subscribers' | null = null;
-
-        for (const line of raw.split('\n')) {
-            const trimmed = line.trim();
-            if (!trimmed) {
-                continue;
-            }
-
-            const lower = trimmed.toLowerCase();
-            if (lower.startsWith('publishers:')) {
-                section = 'publishers';
-                continue;
-            }
-            if (lower.startsWith('subscribers:')) {
-                section = 'subscribers';
-                continue;
-            }
-
-            const nodeName = this.parseTopicRoleNodeEntry(trimmed);
-            if (!nodeName || !section) {
-                continue;
-            }
-
-            if (section === 'publishers') {
-                publishers.push(nodeName);
-                continue;
-            }
-            subscribers.push(nodeName);
-        }
-
-        return {
-            publishers: Array.from(new Set(publishers)),
-            subscribers: Array.from(new Set(subscribers)),
-        };
-    }
-
-    private parseTopicRoleNodeEntry(trimmedLine: string): string | undefined {
-        if (!(trimmedLine.startsWith('*') || trimmedLine.startsWith('-'))) {
-            return undefined;
-        }
-
-        const withoutBullet = trimmedLine.replace(/^[-*]\s*/, '').trim();
-        if (!withoutBullet) {
-            return undefined;
-        }
-
-        const token = withoutBullet.split(/\s+/)[0] ?? '';
-        return this.normalizeTopicRoleNodeName(token);
-    }
-
-    private normalizeTopicRoleNodeName(rawName: string): string | undefined {
-        const trimmed = String(rawName || '').trim();
-        if (!trimmed) {
-            return undefined;
-        }
-
-        if (this.isValidRosResourceName(trimmed)) {
-            return trimmed;
-        }
-
-        // ROS 2 topic info can print relative node names (without leading '/').
-        if (/^[A-Za-z0-9_./~-]+$/.test(trimmed)) {
-            const normalized = '/' + trimmed.replace(/^\/+/, '');
-            return this.isValidRosResourceName(normalized) ? normalized : undefined;
-        }
-
-        return undefined;
-    }
-
-    private isValidRosResourceName(name: string): boolean {
-        // Reject whitespace and shell metacharacters because names are used
-        // in CLI commands. ROS names we care about are absolute paths.
-        return /^\/[A-Za-z0-9_./~-]+$/.test(name);
-    }
-
-    private isValidRosParameterName(name: string): boolean {
-        // ROS parameter names are identifiers with namespace separators, used
-        // in CLI calls and therefore must not contain shell metacharacters.
-        return /^[A-Za-z0-9_./~-]+$/.test(name);
-    }
-
-    private isValidRosTypeName(typeName: string): boolean {
-        // ROS type names are slash-delimited package/type tokens.
-        return /^[A-Za-z][A-Za-z0-9_]*(?:\/[A-Za-z][A-Za-z0-9_]*)+$/.test(typeName);
-    }
-
     private async resolveTopicType(topicName: string, topicTypeHint?: string): Promise<string | undefined> {
         const hinted = String(topicTypeHint ?? '').trim();
-        if (hinted && hinted !== 'unknown' && this.isValidRosTypeName(hinted)) {
+        if (hinted && hinted !== 'unknown' && isValidRosTypeName(hinted)) {
             return hinted;
         }
 
@@ -5107,7 +3753,7 @@ int main(int argc, char * argv[]) {
                 .map((line) => line.trim())
                 .find(Boolean);
 
-            if (!resolved || !this.isValidRosTypeName(resolved)) {
+            if (!resolved || !isValidRosTypeName(resolved)) {
                 return undefined;
             }
             return resolved;
@@ -5122,7 +3768,7 @@ int main(int argc, char * argv[]) {
         }
 
         const hinted = String(actionTypeHint ?? '').trim();
-        if (hinted && hinted !== 'unknown' && this.isValidRosTypeName(hinted)) {
+        if (hinted && hinted !== 'unknown' && isValidRosTypeName(hinted)) {
             return hinted;
         }
 
@@ -5133,7 +3779,7 @@ int main(int argc, char * argv[]) {
                 .map((line) => line.trim())
                 .find(Boolean);
 
-            if (!resolved || !this.isValidRosTypeName(resolved)) {
+            if (!resolved || !isValidRosTypeName(resolved)) {
                 return undefined;
             }
             return resolved;
@@ -5151,163 +3797,6 @@ int main(int argc, char * argv[]) {
         return text.length > maxChars
             ? `${text.slice(0, maxChars)}...`
             : text;
-    }
-
-    private buildMessageDefaultsFromInterface(rawInterface: string): Record<string, unknown> {
-        type ParseContext = {
-            indent: number;
-            target: Record<string, unknown>;
-        };
-
-        const root: Record<string, unknown> = {};
-        const stack: ParseContext[] = [{ indent: -1, target: root }];
-
-        // `ros2 interface show` and `rosmsg show` present nested message fields
-        // as indentation-based trees. We reconstruct that tree and assign simple
-        // scalar defaults so users get an editable publish-ready payload.
-        for (const line of rawInterface.split('\n')) {
-            const withoutComment = line.split('#')[0].trimEnd();
-            if (!withoutComment.trim()) {
-                continue;
-            }
-            if (withoutComment.trim() === '---') {
-                // Service request/response separator (not expected for topics),
-                // but ignored defensively.
-                continue;
-            }
-
-            const indent = withoutComment.length - withoutComment.trimStart().length;
-            const trimmed = withoutComment.trim();
-            const parts = trimmed.split(/\s+/);
-            if (parts.length < 2) {
-                continue;
-            }
-
-            const typeToken = parts[0];
-            const fieldToken = parts[1];
-            if (!fieldToken || fieldToken.includes('=')) {
-                // Constant line (e.g. uint8 FOO=1), not a message field.
-                continue;
-            }
-            if (!/^[A-Za-z][A-Za-z0-9_]*$/.test(fieldToken)) {
-                continue;
-            }
-
-            while (stack.length > 1 && indent <= stack[stack.length - 1].indent) {
-                stack.pop();
-            }
-            const parent = stack[stack.length - 1].target;
-
-            const descriptor = this.parseInterfaceTypeDescriptor(typeToken);
-            const primitiveDefault = this.getPrimitiveDefaultValue(descriptor.baseType);
-
-            if (!descriptor.isArray && primitiveDefault !== undefined) {
-                parent[fieldToken] = primitiveDefault;
-                continue;
-            }
-
-            if (descriptor.isArray && primitiveDefault !== undefined) {
-                if (descriptor.fixedLength && descriptor.fixedLength > 0) {
-                    parent[fieldToken] = Array.from({ length: descriptor.fixedLength }, () => primitiveDefault);
-                } else {
-                    parent[fieldToken] = [];
-                }
-                continue;
-            }
-
-            // Complex message field. For arrays we pre-populate one sample item
-            // so nested structure is visible/editable in the modal by default.
-            const nestedTemplate: Record<string, unknown> = {};
-            if (descriptor.isArray) {
-                if (descriptor.fixedLength && descriptor.fixedLength > 0) {
-                    parent[fieldToken] = Array.from({ length: descriptor.fixedLength }, () => nestedTemplate);
-                } else {
-                    parent[fieldToken] = [nestedTemplate];
-                }
-            } else {
-                parent[fieldToken] = nestedTemplate;
-            }
-
-            stack.push({ indent, target: nestedTemplate });
-        }
-
-        return root;
-    }
-
-    private extractFirstInterfaceSection(rawInterface: string): string {
-        const lines: string[] = [];
-        for (const line of String(rawInterface || '').split('\n')) {
-            if (line.trim() === '---') {
-                break;
-            }
-            lines.push(line);
-        }
-        return lines.join('\n');
-    }
-
-    private parseInterfaceTypeDescriptor(typeToken: string): {
-        baseType: string;
-        isArray: boolean;
-        fixedLength?: number;
-    } {
-        const arrayMatch = typeToken.match(/^(.+)\[([^\]]*)\]$/);
-        if (!arrayMatch) {
-            return { baseType: typeToken, isArray: false };
-        }
-
-        const baseType = arrayMatch[1].trim();
-        const lengthToken = arrayMatch[2].trim();
-        const fixedLength = /^[0-9]+$/.test(lengthToken)
-            ? parseInt(lengthToken, 10)
-            : undefined;
-
-        return { baseType, isArray: true, fixedLength };
-    }
-
-    private getPrimitiveDefaultValue(baseType: string): string | number | boolean | undefined {
-        const normalized = baseType.trim().toLowerCase();
-
-        if (
-            normalized === 'string'
-            || normalized === 'wstring'
-            || normalized.startsWith('string<=')
-            || normalized.startsWith('wstring<=')
-        ) {
-            return '';
-        }
-        if (normalized === 'bool') {
-            return false;
-        }
-        if (
-            normalized === 'byte'
-            || normalized === 'char'
-            || normalized === 'float'
-            || normalized === 'double'
-            || /^u?int(8|16|32|64)$/.test(normalized)
-            || /^float(32|64)$/.test(normalized)
-        ) {
-            return 0;
-        }
-        return undefined;
-    }
-
-    private normalizeGraphEndpoint(
-        section: 'pub' | 'sub' | 'srvServer' | 'srvClient' | 'actionServer' | 'actionClient',
-        endpoint: string,
-    ): string {
-        if (section !== 'actionServer' && section !== 'actionClient') {
-            return endpoint;
-        }
-
-        // Some ROS 2 node-info outputs expose internal action transport topics
-        // (e.g. /fibonacci/_action/feedback). Normalize those back to /fibonacci
-        // so they match `ros2 action list -t` entries used by the UI.
-        const actionMatch = endpoint.match(/^(\/.+?)\/_action(?:\/.*)?$/);
-        if (actionMatch?.[1]) {
-            return actionMatch[1];
-        }
-
-        return endpoint;
     }
 
     // ── Utilities ──────────────────────────────────────────────
@@ -5388,7 +3877,7 @@ int main(int argc, char * argv[]) {
         if (fs.existsSync(cmakePath)) {
             try {
                 const cmake = fs.readFileSync(cmakePath, 'utf8');
-                const addExecutableRegex = /add_executable\s*\(\s*([^\s\)]+)\s+([\s\S]*?)\)/gm;
+                const addExecutableRegex = /add_executable\s*\(\s*([^\s)]+)\s+([\s\S]*?)\)/gm;
                 let match: RegExpExecArray | null;
                 while ((match = addExecutableRegex.exec(cmake)) !== null) {
                     const executableName = match[1].trim();
@@ -5443,7 +3932,7 @@ int main(int argc, char * argv[]) {
             return undefined;
         }
 
-        const pkgPrefix = new RegExp(`^${this.escapeRegex(packageName)}\\s+([^\\s]+)`);
+        const pkgPrefix = new RegExp(`^${escapeRegex(packageName)}\\s+([^\\s]+)`);
         const prefixedMatch = trimmed.match(pkgPrefix);
         const candidate = prefixedMatch?.[1]
             || (trimmed.includes(' ') ? '' : trimmed);
@@ -5572,10 +4061,6 @@ int main(int argc, char * argv[]) {
             return undefined;
         }
         return trimmed;
-    }
-
-    private escapeRegex(value: string): string {
-        return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
     }
 
     getWorkspacePath(): string {
@@ -5766,56 +4251,6 @@ int main(int argc, char * argv[]) {
 
         walk(launchDir, depth);
         return results.sort();
-    }
-
-    private parsePythonLaunchArgs(content: string): LaunchArgOption[] {
-        const results: LaunchArgOption[] = [];
-        const regex = /DeclareLaunchArgument\(\s*['"]([^'"]+)['"][^\)]*\)/g;
-
-        let match: RegExpExecArray | null;
-        while ((match = regex.exec(content)) !== null) {
-            const block = match[0];
-            const name = match[1];
-
-            const defaultMatch = block.match(/default_value\s*=\s*([^,\)]+)/);
-            const defaultValue = defaultMatch
-                ? defaultMatch[1].trim().replace(/^['"]|['"]$/g, '')
-                : undefined;
-
-            results.push({ name, defaultValue });
-        }
-
-        return this.deduplicateArgs(results);
-    }
-
-    private parseXmlLaunchArgs(content: string): LaunchArgOption[] {
-        const results: LaunchArgOption[] = [];
-        const regex = /<arg\s+[^>]*name=["']([^"']+)["'][^>]*>/g;
-
-        let match: RegExpExecArray | null;
-        while ((match = regex.exec(content)) !== null) {
-            const tag = match[0];
-            const name = match[1];
-            const defaultMatch = tag.match(/default=["']([^"']+)["']/);
-            const defaultValue = defaultMatch ? defaultMatch[1] : undefined;
-
-            results.push({ name, defaultValue });
-        }
-
-        return this.deduplicateArgs(results);
-    }
-
-    private deduplicateArgs(args: LaunchArgOption[]): LaunchArgOption[] {
-        const seen = new Set<string>();
-        const results: LaunchArgOption[] = [];
-        for (const arg of args) {
-            if (seen.has(arg.name)) {
-                continue;
-            }
-            seen.add(arg.name);
-            results.push(arg);
-        }
-        return results;
     }
 
     runInTerminal(cmd: string): void {
@@ -6042,7 +4477,7 @@ int main(int argc, char * argv[]) {
         } else {
             const innerPid = this.readInnerPid(tracked, false);
             if (innerPid) {
-                this.interruptProcess(innerPid, true);
+                interruptProcess(innerPid, true);
             }
         }
 
@@ -6162,7 +4597,7 @@ int main(int argc, char * argv[]) {
         }
 
         const wsPath = this.getWorkspacePathForRunTarget(runTarget);
-        const pkgArg = this.escapeShellArg(normalizedPkg);
+        const pkgArg = escapeShellArg(normalizedPkg);
 
         if (this.isRos2()) {
             const useSymlink = vscode.workspace
@@ -6239,7 +4674,7 @@ int main(int argc, char * argv[]) {
             return undefined;
         }
 
-        const distro = this.sanitizeWslDistroName(rawDistro);
+        const distro = sanitizeWslDistroName(rawDistro);
         return distro || undefined;
     }
 
@@ -6289,7 +4724,7 @@ int main(int argc, char * argv[]) {
         if (!rawDistro) {
             return undefined;
         }
-        const distro = this.sanitizeWslDistroName(rawDistro);
+        const distro = sanitizeWslDistroName(rawDistro);
         return distro || undefined;
     }
 
@@ -6316,17 +4751,8 @@ int main(int argc, char * argv[]) {
         return normalized;
     }
 
-    private sanitizeWslDistroName(value?: string): string {
-        return String(value || '')
-            .replace(/\u0000/g, '')
-            .replace(/\uFEFF/g, '')
-            .replace(/[\u0001-\u001F\u007F-\u009F\u200B-\u200F\u202A-\u202E\u2060-\u206F]/g, '')
-            .replace(/^"+|"+$/g, '')
-            .trim();
-    }
-
     private resolveInstalledWslDistro(requested?: string): string | undefined {
-        const desired = this.sanitizeWslDistroName(requested);
+        const desired = sanitizeWslDistroName(requested);
         if (!desired) {
             return undefined;
         }
@@ -6356,7 +4782,7 @@ int main(int argc, char * argv[]) {
     }
 
     private resolveInstalledWslDistroQuiet(requested?: string): string | undefined {
-        const desired = this.sanitizeWslDistroName(requested);
+        const desired = sanitizeWslDistroName(requested);
         if (!desired) {
             return undefined;
         }
@@ -6384,45 +4810,13 @@ int main(int argc, char * argv[]) {
                 windowsHide: true,
                 maxBuffer: 1024 * 1024,
             });
-            const raw = this.decodeWslCliOutput(rawBuffer);
-            return this.parseWslList(raw)
-                .map((distro) => this.sanitizeWslDistroName(distro.name))
+            const raw = decodeWslCliOutput(rawBuffer);
+            return parseWslList(raw)
+                .map((distro) => sanitizeWslDistroName(distro.name))
                 .filter(Boolean);
         } catch {
             return [];
         }
-    }
-
-    private decodeWslCliOutput(raw: Buffer | string): string {
-        if (typeof raw === 'string') {
-            return raw;
-        }
-        if (!raw || raw.length === 0) {
-            return '';
-        }
-
-        const hasUtf16Bom = raw.length >= 2 && raw[0] === 0xFF && raw[1] === 0xFE;
-        const looksUtf16Le = raw.length >= 4 && raw[1] === 0x00 && raw[3] === 0x00;
-        if (hasUtf16Bom || looksUtf16Le) {
-            return raw.toString('utf16le');
-        }
-        return raw.toString('utf8');
-    }
-
-    private formatWslDistroArg(distro: string): string {
-        const normalized = this.sanitizeWslDistroName(distro);
-        if (!normalized) {
-            return '';
-        }
-        if (/^[A-Za-z0-9._-]+$/.test(normalized)) {
-            return normalized;
-        }
-        return `"${normalized.replace(/"/g, '\\"')}"`;
-    }
-
-    private escapeShellArg(value: string): string {
-        const normalized = String(value ?? '');
-        return `'${normalized.replace(/'/g, `'\\''`)}'`;
     }
 
     private resolveRosSetupPath(runTarget?: string): string {
@@ -6521,80 +4915,10 @@ int main(int argc, char * argv[]) {
         }
         try {
             const content = fs.readFileSync(filePath, 'utf8');
-            return this.parseOsReleaseInfo(content);
+            return parseOsReleaseInfo(content);
         } catch {
             return undefined;
         }
-    }
-
-    private parseOsReleaseInfo(content: string): OsReleaseInfo | undefined {
-        if (!content.trim()) {
-            return undefined;
-        }
-
-        const info: OsReleaseInfo = {};
-        for (const line of content.split(/\r?\n/)) {
-            const trimmed = line.trim();
-            if (!trimmed || trimmed.startsWith('#')) {
-                continue;
-            }
-
-            const eqIdx = trimmed.indexOf('=');
-            if (eqIdx <= 0) {
-                continue;
-            }
-
-            const key = trimmed.slice(0, eqIdx).trim();
-            let value = trimmed.slice(eqIdx + 1).trim();
-            if (
-                (value.startsWith('"') && value.endsWith('"'))
-                || (value.startsWith('\'') && value.endsWith('\''))
-            ) {
-                value = value.slice(1, -1);
-            }
-
-            if (key === 'NAME') {
-                info.name = value;
-            } else if (key === 'VERSION') {
-                info.version = value;
-            } else if (key === 'VERSION_ID') {
-                info.versionId = value;
-            } else if (key === 'PRETTY_NAME') {
-                info.prettyName = value;
-            }
-        }
-
-        if (!info.prettyName && !info.name && !info.version && !info.versionId) {
-            return undefined;
-        }
-        return info;
-    }
-
-    private formatLinuxDistro(info: OsReleaseInfo): string {
-        if (info.prettyName?.trim()) {
-            return info.prettyName.trim();
-        }
-
-        const name = info.name?.trim() || '';
-        const version = info.version?.trim() || info.versionId?.trim() || '';
-        const joined = [name, version].filter(Boolean).join(' ').trim();
-        return joined || 'unknown';
-    }
-
-    private formatRosEnvironment(rosDistro?: string, rosVersion?: string): string {
-        const distro = String(rosDistro || '').trim();
-        const version = String(rosVersion || '').trim();
-
-        if (!distro && !version) {
-            return 'not set';
-        }
-        if (distro && version) {
-            return `${distro} (ROS ${version})`;
-        }
-        if (distro) {
-            return `${distro} (ROS version unknown)`;
-        }
-        return `unknown distro (ROS ${version})`;
     }
 
     private listRosInstallations(rosRoot: string): string[] {
@@ -6614,44 +4938,6 @@ int main(int argc, char * argv[]) {
         } catch {
             return [];
         }
-    }
-
-    private parseWslList(raw: string): WslDistroSummary[] {
-        const distros: WslDistroSummary[] = [];
-        const cleanedRaw = raw.replace(/\u0000/g, '').replace(/\uFEFF/g, '');
-
-        for (const line of cleanedRaw.split(/\r?\n/)) {
-            const trimmed = line.trim();
-            if (!trimmed || /^name\s+state\s+version$/i.test(trimmed)) {
-                continue;
-            }
-
-            let normalized = trimmed;
-            let isDefault = false;
-            if (normalized.startsWith('*')) {
-                isDefault = true;
-                normalized = normalized.slice(1).trim();
-            }
-
-            const parts = normalized.split(/\s{2,}/).map((part) => part.trim()).filter(Boolean);
-            if (parts.length < 3) {
-                continue;
-            }
-
-            const name = this.sanitizeWslDistroName(parts[0]);
-            if (!name) {
-                continue;
-            }
-
-            distros.push({
-                name,
-                state: parts[1] || 'unknown',
-                version: parts[2] || '?',
-                isDefault,
-            });
-        }
-
-        return distros;
     }
 
     private async probeWslDistro(name: string): Promise<{
@@ -6684,10 +4970,10 @@ int main(int argc, char * argv[]) {
 
         const probeOutput = probe.stdout.replace(/\u0000/g, '').replace(/\uFEFF/g, '');
         const parts = probeOutput.split(probeSeparator);
-        const osInfo = this.parseOsReleaseInfo(parts[0] || '');
+        const osInfo = parseOsReleaseInfo(parts[0] || '');
         const envChunk = parts[1] || '';
-        const rosDist = this.extractEnvVar(envChunk, 'ROS_DISTRO');
-        const rosVersion = this.extractEnvVar(envChunk, 'ROS_VERSION');
+        const rosDist = extractEnvVar(envChunk, 'ROS_DISTRO');
+        const rosVersion = extractEnvVar(envChunk, 'ROS_VERSION');
         const rosInstalls = (parts[2] || '')
             .split(/\r?\n/)
             .map((line) => line.trim())
@@ -6695,18 +4981,11 @@ int main(int argc, char * argv[]) {
             .sort((a, b) => a.localeCompare(b));
 
         return {
-            linuxDistro: osInfo ? this.formatLinuxDistro(osInfo) : undefined,
+            linuxDistro: osInfo ? formatLinuxDistro(osInfo) : undefined,
             rosDistro: rosDist,
             rosVersion,
             rosInstalls,
         };
-    }
-
-    private extractEnvVar(content: string, key: string): string | undefined {
-        const escapedKey = key.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-        const match = content.match(new RegExp(`^${escapedKey}=(.*)$`, 'm'));
-        const value = match?.[1]?.trim();
-        return value || undefined;
     }
 
     private execFileSafe(

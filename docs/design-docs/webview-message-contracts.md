@@ -116,5 +116,4 @@ When adding/renaming/removing a command:
 3. Update this document.
 4. Run targeted suites:
    - `npm run test:webview`
-   - `npm run test:matrix`
-   - `npm run test:ui-click` for interaction changes.
+   - `npm run test:integration`
